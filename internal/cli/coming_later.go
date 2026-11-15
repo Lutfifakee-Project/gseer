@@ -22,26 +22,19 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// registerComingLaterCmds registers the four planned-but-absent commands
-// (SPEC-03 §2): update, scan, asset, export.  Each is registered so that
-// `gseer <name>` does not fall through to cobra's generic "unknown
-// command" suggestion; instead it prints the honest pointer line and
-// exits 64 (AC-5.7–5.8).
+// registerComingLaterCmds registers the planned-but-absent command
+// `asset` (SPEC-03 §2).  It is registered so that `gseer asset` does
+// not fall through to cobra's generic "unknown command" suggestion;
+// instead it prints the honest pointer line and exits 64 (AC-5.7–5.8).
 //
-// These commands are NOT listed in the top-level "Commands:" section of
-// help (they appear only in the "Coming later" pointer line); they are
+// (`scan` graduated to a real command in v0.3.2 — scan.go, behind the
+// default-deny gateway; it is no longer a coming-later stub.)
+//
+// This command is NOT listed in the top-level "Commands:" section of
+// help (it appears only in the "Coming later" pointer line); it is
 // hidden from cobra's auto-completion and help listing via Hidden=true.
-//
-// `gseer update --check` evaluation: the owner's Phase 1 directive
-// requires evaluating whether v0.0.1 ships a check-only subcommand.  The
-// evaluation outcome will be recorded in the M11 report.  Until then,
-// `gseer update` (any invocation, including --check) prints the pointer
-// line and exits 64.  We do not advertise unavailable functionality.
 func registerComingLaterCmds(root *cobra.Command) {
-	// v0.1.0 arrivals: `update` and `export` are real commands now
-	// (export.go / update.go).  The remaining planned commands stay
-	// hidden stubs with the honest pointer line + exit 64.
-	for _, name := range []string{"scan", "asset"} {
+	for _, name := range []string{"asset"} {
 		cmd := &cobra.Command{
 			Use:    name,
 			Short:  "Planned, not in this release — see docs/ROADMAP.md",
@@ -62,8 +55,6 @@ func registerComingLaterCmds(root *cobra.Command) {
 					"E_NOT_IMPLEMENTED: \"gseer %s\" is planned, not in this release.\n",
 					cmd.Name())
 				switch cmd.Name() {
-				case "scan":
-					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Authorized service observation waits on the P2/PAC regime (D-9) — see docs/ROADMAP.md.")
 				case "asset":
 					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Asset detail view is planned for a later release — see docs/ROADMAP.md.")
 				}

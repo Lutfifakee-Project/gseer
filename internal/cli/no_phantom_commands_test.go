@@ -85,12 +85,13 @@ func TestNoPhantomCommands(t *testing.T) {
 		}
 	}
 
-	// The remaining planned commands (scan/asset) MUST be registered (as
-	// hidden commands that exit 64) so that invocation does not fall
+	// The remaining planned command (asset) MUST be registered (as a
+	// hidden command that exits 64) so that invocation does not fall
 	// through to cobra's "unknown command" suggestion.  AC-5.7–5.8:
 	// pointer line + exit 64.  (update/export became real commands in
-	// v0.1.0 and are asserted by the Commands: scan above.)
-	for _, name := range []string{"scan", "asset"} {
+	// v0.1.0; scan became a REAL command in v0.3.2 — both asserted
+	// visible below.)
+	for _, name := range []string{"asset"} {
 		c, ok := registered[name]
 		if !ok {
 			t.Errorf("planned command %q not registered (should be hidden + exit 64)", name)
@@ -100,8 +101,9 @@ func TestNoPhantomCommands(t *testing.T) {
 			t.Errorf("planned command %q must be Hidden=true (only the Coming-later pointer line lists it)", name)
 		}
 	}
-	// And the v0.1.0 promotions must NOT be hidden stubs anymore.
-	for _, name := range []string{"update", "export"} {
+	// And the promotions must NOT be hidden stubs anymore (v0.1.0:
+	// update/export; v0.3.2: scan — the default-deny-gateway regime).
+	for _, name := range []string{"update", "export", "scan"} {
 		c, ok := registered[name]
 		if !ok {
 			t.Errorf("v0.1.0 command %q not registered", name)

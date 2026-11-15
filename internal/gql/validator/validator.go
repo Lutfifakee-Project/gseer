@@ -112,14 +112,14 @@ var fields = map[string]*Field{
 	"hostname":            {Canonical: "hostname", Type: TypeString, Ops: opStrText | ast.OpSetInDomain},
 	"asn":                 {Canonical: "asn", Type: TypeInt, Ops: opOrdered},
 	"asn_org":             {Canonical: "asn_org", Aliases: []string{"org"}, Type: TypeString, Ops: opStrText},
-	"geo_country":         {Canonical: "geo_country", Aliases: []string{"country"}, Type: TypeString, Ops: opEqNeqIn},
-	"geo_region":          {Canonical: "geo_region", Aliases: []string{"region"}, Type: TypeString, Ops: opEqNeqIn},
-	"geo_city":            {Canonical: "geo_city", Aliases: []string{"city"}, Type: TypeString, Ops: opStrText},
+	"geo_country":         {Canonical: "geo_country", Aliases: []string{"country", "ip_country"}, Type: TypeString, Ops: opEqNeqIn},
+	"geo_region":          {Canonical: "geo_region", Aliases: []string{"region", "ip_region"}, Type: TypeString, Ops: opEqNeqIn},
+	"geo_city":            {Canonical: "geo_city", Aliases: []string{"city", "ip_city"}, Type: TypeString, Ops: opStrText},
 	"port":                {Canonical: "port", Type: TypeInt, Ops: opOrdered},
 	"transport":           {Canonical: "transport", Aliases: []string{"base_protocol"}, Type: TypeString, Ops: opEqNeqIn},
 	"protocol":            {Canonical: "protocol", Type: TypeString, Ops: opEqNeqIn},
 	"name":                {Canonical: "name", Type: TypeString, Ops: opStrText},
-	"product":             {Canonical: "product", Type: TypeString, Ops: opStrText},
+	"product":             {Canonical: "product", Aliases: []string{"app"}, Type: TypeString, Ops: opStrText},
 	"version":             {Canonical: "version", Type: TypeString, Ops: opStrText},
 	"http.status":         {Canonical: "http.status", Aliases: []string{"status", "status_code"}, Type: TypeInt, Ops: opOrdered},
 	"http.title":          {Canonical: "http.title", Aliases: []string{"title"}, Type: TypeString, Ops: opStrText},
@@ -128,11 +128,19 @@ var fields = map[string]*Field{
 	"tls.cert_subject_cn": {Canonical: "tls.cert_subject_cn", Aliases: []string{"cert_subject_cn", "cert_subject", "cert.subject.cn"}, Type: TypeString, Ops: opStrText},
 	"tls.cert_issuer_cn":  {Canonical: "tls.cert_issuer_cn", Aliases: []string{"cert_issuer_cn", "cert_issuer", "cert.issuer.cn"}, Type: TypeString, Ops: opStrText},
 	"tls.cert_expiry":     {Canonical: "tls.cert_expiry", Aliases: []string{"cert_expiry"}, Type: TypeTime, Ops: opOrdered},
-	"technologies":        {Canonical: "technologies", Aliases: []string{"tech", "fingerprint"}, Type: TypeList, Ops: ast.OpSetContains},
-	"sources":             {Canonical: "sources", Type: TypeList, Ops: ast.OpSetContains},
-	"first_seen":          {Canonical: "first_seen", Type: TypeTime, Ops: opOrdered},
-	"last_seen":           {Canonical: "last_seen", Type: TypeTime, Ops: opOrdered},
-	"stale":               {Canonical: "stale", Type: TypeBool, Ops: opEqNeq},
+	// v0.3.2 certificate breadth (approved STAGE 4 item 6): the TLS
+	// observer captures cert_serial + cert_sans_dns into evidence and
+	// migration 0021 (PG) / 0005 (personal SQLite) projects them into
+	// latest_tls → search_index.  cert_sans_dns is stored as a
+	// comma-joined string, so CONTAINS answers "does the certificate
+	// cover this domain (or a subdomain of it)".
+	"tls.cert_serial":   {Canonical: "tls.cert_serial", Aliases: []string{"cert_sn", "cert.sn"}, Type: TypeString, Ops: opStrText},
+	"tls.cert_sans_dns": {Canonical: "tls.cert_sans_dns", Aliases: []string{"cert.domain", "cert_domain"}, Type: TypeString, Ops: opStrText},
+	"technologies":      {Canonical: "technologies", Aliases: []string{"tech", "fingerprint"}, Type: TypeList, Ops: ast.OpSetContains},
+	"sources":           {Canonical: "sources", Type: TypeList, Ops: ast.OpSetContains},
+	"first_seen":        {Canonical: "first_seen", Type: TypeTime, Ops: opOrdered},
+	"last_seen":         {Canonical: "last_seen", Type: TypeTime, Ops: opOrdered},
+	"stale":             {Canonical: "stale", Type: TypeBool, Ops: opEqNeq},
 	// Derived boolean fields (compatibility syntax; the planner lowers
 	// them to predicates over the underlying columns - no new column).
 	"is_domain":       {Canonical: "is_domain", Type: TypeBool, Ops: opEqNeq},
@@ -146,8 +154,12 @@ var fields = map[string]*Field{
 
 	// Compatibility rewrites: the user-written name carries the
 	// direction (after -> >=, before -> <=) over the canonical time field.
-	"after":                 {Canonical: "after", Type: TypeDate, Ops: opOrdered, RewriteTo: "last_seen", RewriteOp: ast.OpGe},
-	"before":                {Canonical: "before", Type: TypeDate, Ops: opOrdered, RewriteTo: "last_seen", RewriteOp: ast.OpLe},
+	// ip_after / ip_before are the v0.3.2 IP-aggregation compat aliases
+	// (the aggregation functions themselves — ip_filter()/ip_exclude()/
+	// port_size — remain intentionally unsupported; see
+	// docs/SEARCH-SYNTAX.md).
+	"after":                 {Canonical: "after", Aliases: []string{"ip_after"}, Type: TypeDate, Ops: opOrdered, RewriteTo: "last_seen", RewriteOp: ast.OpGe},
+	"before":                {Canonical: "before", Aliases: []string{"ip_before"}, Type: TypeDate, Ops: opOrdered, RewriteTo: "last_seen", RewriteOp: ast.OpLe},
 	"cert.not_after.after":  {Canonical: "cert.not_after.after", Type: TypeDate, Ops: opOrdered, RewriteTo: "tls.cert_expiry", RewriteOp: ast.OpGe},
 	"cert.not_after.before": {Canonical: "cert.not_after.before", Type: TypeDate, Ops: opOrdered, RewriteTo: "tls.cert_expiry", RewriteOp: ast.OpLe},
 }
@@ -245,11 +257,41 @@ func expandFreeText(n ast.Node) ast.Node {
 	case *ast.Quantified:
 		t.Body = expandFreeText(t.Body)
 		return t
+	case *ast.Exists:
+		// v0.3.2 Easy-to-Use grammar completion (MASTER §3: the
+		// documented experience `gseer search 'nginx'` must search):
+		// an UNQUOTED bare word that is NOT a known field and carries
+		// no dot is a free-text term, not a field-presence test.
+		// Explicit presence tests stay available and pinned as
+		// exists(<field>) — known fields (e.g. `http.title`) and dotted
+		// unknown names (a typo like `http.titl`) keep their semantics.
+		if term, ok := bareKeywordTerm(t.Field); ok {
+			return freeTextTree(&ast.FreeText{Terms: []string{term}, Line: t.Line, Col: t.Col})
+		}
+		return t
 	case *ast.FreeText:
 		return freeTextTree(t)
 	default:
 		return n
 	}
+}
+
+// bareKeywordTerm reports whether an unquoted bare word should be
+// treated as a free-text term: it must be a single dot-free token that
+// is NOT a known field name (those keep the exists(field) semantics)
+// and not an operator keyword (the lexer never emits those as Idents
+// here, so the lookup miss is the decision point).
+func bareKeywordTerm(field string) (string, bool) {
+	if field == "" || strings.Contains(field, ".") {
+		return "", false
+	}
+	if _, key := lookupField(field); key != "" {
+		return "", false // e.g. `ip`, `host`, `technologies` — presence test
+	}
+	if _, isScope := knownScopes[field]; isScope {
+		return "", false // host / service are quantifier scopes, never terms
+	}
+	return field, true
 }
 
 // freeTextTree builds the AND-of-ORs comparison tree for one

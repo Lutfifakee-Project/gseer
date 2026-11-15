@@ -10,7 +10,249 @@ first.  Versions follow semver (three-component).
 > shipped with; pending sections and all active documentation follow
 > the register-only policy.
 
-## [v0.3.1] — Install Path & First-Run Correctness (pending tag)
+## [Unreleased] — Final remediation round (implementation complete; release pending)
+
+Final remediation mandate on the `GSEER-v032-GLM-BASELINE-20261115`
+integration baseline.  Every change is additive or fail-closed-strengthening;
+no FIX5/FIX7 feature, security boundary, exit-code meaning, or public
+compatibility was altered.
+
+### Fixed
+
+- **The shared-index pipeline is now genuinely fail-closed and atomic**
+  (`.github/workflows/index.yml` + new `pipeline/resolve-sequence.sh` +
+  `pipeline/publish.sh`): a genuinely nonexistent release is distinguished
+  from an existing-but-inaccessible one (release view AND the releases API
+  must agree before a sequence-1 bootstrap; an unreachable API is fatal, so
+  the sequence is never silently reset to 1); a release whose manifest cannot
+  be retrieved fails the run; signature, checksum, sequence, schema,
+  integrity, and counts are all verified before a previous snapshot is
+  restored as the working store; publication is ATOMIC (immutable snapshot →
+  retrieval + checksum verification → anti-rollback/concurrency gate on the
+  current pointer → pointer manifest last → independent post-publication
+  verification) — a failed snapshot upload never advances the pointer.
+  `force_fresh` remains an explicit owner-dispatched input, never an
+  automatic fallback.  Negative + positive matrix proven by
+  `scripts/v032-sequence-acceptance.sh` (stub-gh, offline, 12 assertions).
+- **Production trust-anchor consistency**: both the shared-index workflow and
+  the release workflow now VALIDATE `INDEX_PUB_B64` and ASSERT the production
+  anchor is embedded in every built binary (release candidates included) —
+  the in-repo test anchor can never silently become the production trust
+  root.  Proven by `scripts/v032-anchor-acceptance.sh` (exact GoReleaser
+  ldflags, both binaries, test-key rejection).
+
+### Added
+
+- **Cumulative shared-index pipeline** (docs/SHARED-INDEX.md §3): each
+  sequence RESTORES the previously published snapshot as its working store
+  after full trust verification — sequence N carries every fact of sequence
+  N-1, so a fresh client's first import sees the whole accumulated coverage.
+  Verified by `scripts/v032-cumulative-acceptance.sh` with real internet data
+  (sequence persistence, client dedup, tampered/foreign-key refusals).
+- **`gseer-provider inspect`** — the restore-time snapshot gate: SQLite
+  `integrity_check` + schema position (never NEWER than this build —
+  `InspectSnapshot` now refuses schema-ahead bases, mirroring the client's
+  `ValidateSnapshot`) with an optional consistency cross-check against the
+  signed manifest (sequence ≥ 1, schema and counts must match).
+- **`app` as a GQL alias of `product`** (`app="nginx"` — FOFA/Shodan-style
+  field naming; additive registry change, documented in
+  `docs/SEARCH-SYNTAX.md`).
+
+### Changed
+
+- **CLI-only product contract in the official documentation** (README,
+  QUICKSTART, INSTALL, DOCKER): the official product path is the CLI
+  (INSTALL → SETUP → USE → SEARCH) with the autonomous GitHub Shared Index
+  as the data source; the self-hosted PostgreSQL/Docker stack and the
+  REST/dashboard surface are re-labeled as maintained developer internals —
+  NOT official installation or usage paths.  No legacy code was removed:
+  `internal/api`, `internal/dashboard`, and the PostgreSQL engine are
+  load-bearing for CLI commands, tests, and migrations.
+
+## [v0.3.2] — Real Internet Asset Data: Active Observation (implementation complete; release pending)
+
+The v0.3.2 objective — real internet asset data — lands on two legs:
+the passive pipeline (shipped, and verified against live DNS/ASN
+sources — the independent live check of the `ptr` connector was
+inconclusive because the verification environment's resolver did not
+respond, so no live-PTR claim is made) is now completed by the
+AUTHORIZED ACTIVE OBSERVATION regime.
+
+### Added
+
+- **`gseer scope` — the operator's authorization registry** (default-deny
+  for active observation).  `scope add <kind> <value> --protocols
+  http,tls --ports 80,443` records an explicit, operator-declared scope
+  (the `--note` is where the authorization basis lives); `scope list`
+  keeps revoked/expired history visible; `scope revoke <id>` takes
+  effect on the next connection; `scope audit` shows every gateway
+  decision.  A scope permits ONLY what it lists — empty protocol/port
+  lists are refused at creation.  Private/loopback addresses are
+  reachable only with a scope that explicitly covers the address or
+  range.
+- **Default-deny authorization gateway** (`internal/observe`).  Every
+  connection — first request, every redirect hop, every reconnect —
+  re-validates against the registry: missing/revoked/expired/mismatched
+  scope ⇒ `E_SCOPE_DENIED` (exit 5), audited, and NO probe fires.  DNS
+  rebinding protection: the gateway resolves once, validates every
+  address, and observers dial only the validated address.  The residual
+  pre-dial window is documented in docs/SCANNING.md, not overstated.
+- **Two separate observers.**  `gseer scan http` performs ONE HTTP GET
+  (status/title/server, response capped by the scope's byte budget);
+  `gseer scan tls` performs ONE TLS handshake (version, cipher,
+  certificate captured — capture, not verification).  Redirects
+  re-enter the gateway hop by hop; `https://` redirects are recorded,
+  not followed.  Both record honestly: a connection failure is an
+  observation of failure, never "asset absent".
+- **Migration `0018_active_observation` (PostgreSQL)** — the deferred
+  `scopes` table extended in place (protocols, ports, expiry,
+  revocation, execution limits) + the append-only `scan_audits` +
+  additive `gseer_app` table grants (no sequence grants: the fail-closed
+  privilege audit treats those as least-privilege violations).
+- **Migration `0002_active_observation` (personal SQLite)** — personal
+  mode gains the FULL scope registry + audit log (parity with PG).
+- **`docs/SCANNING.md`** — the operating manual for the regime.
+- **The shared index (approved v0.3.2 scope) — the search-engine
+  half of the product.**  `internal/index` implements the full trust
+  chain (Ed25519-signed manifest → sequence gate → SHA-256 →
+  integrity/schema/count validation → atomic install with one-
+  generation rollback → L1/L2-dedup import with provenance
+  `shared-index`); `cmd/gseer-provider` (keygen/build/manifest/verify)
+  and the scheduled `.github/workflows/index.yml` build and publish
+  the versioned snapshot to the rolling `shared-index` release
+  (immutable per-sequence artifact + atomic pointer manifest;
+  `--latest=false`).  `docs/SHARED-INDEX.md` is the manual.
+- **`gseer setup` is now the Easy-to-Use default (v0.3.2).**  On a
+  fresh machine it provisions personal mode AND downloads the official
+  signed shared index — after it, `gseer search 'nginx'` returns real
+  indexed internet assets.  `gseer setup --server <url>` implements
+  the client-profile wizard (persists `client.endpoint` + health
+  check); configuration failures exit 3 (`ExitConfig`); the
+  self-hosted validator refuses a non-`postgres://` DSN (the mirror of
+  the personal guard — the audited SQLite-path-as-PG-DSN bug).
+- **`gseer index update|status`** — the client lifecycle command
+  (freshness check, full update, status); `gseer doctor` and the bare
+  `gseer` status panel surface index freshness.
+- **Certificate breadth + IP-aggregation aliases (approved scope).**
+  Migrations `0021_cert_projection` (PG) / `0005_cert_projection`
+  (personal SQLite) project the TLS observer's `cert_serial` and
+  `cert_sans_dns` into `latest_tls` → `search_index`; new searchable
+  fields `cert.sn` and `cert.domain`, plus the compat aliases
+  `ip_country/ip_region/ip_city/ip_after/ip_before`.  The aggregate
+  functions (`ip_filter()`, `ip_exclude()`, `port_size*`) remain
+  intentionally unsupported (docs/SEARCH-SYNTAX.md).
+- **Scan-path fingerprint enrichment (wiring fix).**  `gseer scan`
+  now attaches the same rule engine the collect path uses, so
+  scan-http/tls evidence is fingerprint-enriched at ingestion and
+  `technologies` is searchable right after a scan.
+- **Bare-keyword grammar completion.**  An unquoted bare word that is
+  not a known field is free text (`gseer search 'nginx'`); known
+  fields keep the `exists` semantics and dotted typos still fail with
+  `GQL_E_FIELD`.  Both search services now compile the VALIDATOR'S
+  rewritten tree (the pre-expansion tree was silently compiled
+  before — free-text/bare-keyword expansions were dropped).
+
+### Changed
+
+- `gseer scan` is no longer a coming-later stub (it was a hidden exit-64
+  pointer): it is a real command behind the gateway.  `gseer asset`
+  remains the one planned-but-absent command.
+- The root help now shows the authorized-observation quick start; the
+  Search ≠ Scan invariant is untouched (search still imports nothing
+  from the observation path).
+
+### Security (final independent-review remediation — lease identity & domain-aware revalidation)
+
+- **Pre-dial re-validation is now domain-aware (Blocker A).**  The
+  earlier `Gateway.Revalidate` rebuilt its decision from the pinned IP
+  alone, silently re-writing `domain`/`domain_suffix` scopes into
+  address matching: validly-scoped hostname targets were denied at the
+  pre-dial gate, and hostname permissions were no longer re-tested at
+  all.  Re-validation now carries the ORIGINAL normalized hostname
+  alongside the pinned address — domain/suffix scopes keep matching by
+  name (exact label boundaries: `example.com.attacker.test` is never
+  `example.com`), `ip`/`cidr` scopes and the restricted-address policy
+  keep matching by the address that will actually be dialed, and
+  protocol/port/expiry/revocation are re-checked against the CURRENT
+  registry.  No DNS resolution happens inside re-validation: the pin
+  stands, rebinding protection is unchanged, and a bare IP target is
+  never covered by a domain scope.  Covered by a gateway-level matrix
+  (no dial, TEST-NET-3 decision targets) plus loopback end-to-end runs
+  for both observers.
+- **Leases now carry per-acquisition ownership tokens (Blocker B,
+  part 1).**  The 0019/0003 holder identity (`hostname#pid`) was shared
+  by every observation in one process, and release matched
+  (scope, slot, holder): a late-finishing observation could DELETE a
+  newer observation's lease on the same slot, silently opening a
+  concurrency slot that was still in use.  Each acquisition now owns a
+  128-bit crypto/rand token (additive migrations 0020 PostgreSQL /
+  0004 SQLite); release matches (scope, slot, token), so an old
+  holder's late release is a no-op against a newer holder's lease, and
+  double release is safe.
+- **Leases are renewed while the observation is live (Blocker B,
+  part 2).**  A TTL without renewal let an ACTIVE observation's lease
+  be stolen mid-run.  A renewal heartbeat now extends the lease every
+  TTL/3 (~40 s for the 2-minute TTL), token-verified and never
+  resurrecting a stolen or lapsed lease (`storage.ErrLeaseLost`).  A
+  renewal failure — lease lost or lease-storage error — is fatal for
+  the observation: no NEW connection is opened (HTTP loop gate, HTTP
+  dial gate, TLS pre-dial gate), in-flight work completes and is
+  recorded honestly, and the heartbeat goroutine never outlives its
+  run (Stop is idempotent and waits).  Crash recovery via TTL is
+  unchanged; the concurrency limit remains per-scope across processes
+  (SQLite and PostgreSQL in lock-step), never claimed as a global
+  quota.
+
+### Security (independent-review remediation — v0.3.2 microfix)
+
+- **Audit persistence fails closed (FIX A).**  The gateway previously
+  recorded an `audit_error` detail but returned the allow anyway; an
+  authorization whose audit row cannot be persisted is now an explicit
+  `AUDIT_UNAVAILABLE` deny — no HTTP request or TLS connection may run
+  unaudited.  Denies keep their original reason and surface the audit
+  failure; a failed insert writes no row, so no duplicate audit rows
+  appear; the registry-unavailable deny is now audited too (that path
+  previously skipped the trail).
+- **Authorization is re-validated before EVERY connection (FIX B).**
+  The first hop previously reused the initial decision: a scope
+  revoked between `Authorize` and the first dial was not enforced
+  until a redirect.  Now the first hop re-authorizes immediately
+  before its request, every redirect hop revalidates its new
+  destination, and every dial — first, retry, reconnect — passes
+  `Gateway.Revalidate` (pinned address vs the CURRENT registry,
+  audited) immediately before the socket connect.  Revoked, expired,
+  missing or out-of-scope targets deny with nothing sent; rebinding
+  protection and the pinned address are unchanged.  The residual
+  registry-read→connect window is documented (docs/SCANNING.md), never
+  overstated.
+- **`max_total_bytes` is an ACCUMULATED run budget (FIX C).**  It was
+  reused as a fresh per-hop limit, letting N redirect hops consume N ×
+  budget.  The counter now spans the whole run — the metric is bytes
+  actually read from response bodies (headers excluded; the one-byte
+  truncation probe counts because it is read), never reset on a
+  redirect, subtraction clamped so it cannot underflow.  Mid-body read
+  errors are recorded as failures (previously silently swallowed);
+  exhaustion is recorded (`truncated` / recorded-not-sent), never a
+  silent complete response; the accumulated count lands in the
+  persisted evidence (`scan.response_bytes`).
+- **`max_concurrency` is now actually enforced, cross-process
+  (FIX D).**  The knob existed with no enforcement anywhere.  A run
+  must hold one of the scope's `scan_leases` slots (1..N) for its
+  whole duration — new additive migrations 0019 (PostgreSQL) / 0003
+  (SQLite), identical protocol on both engines: slots are stolen only
+  when their TTL (2 min) has passed (crash-safe, no unlimited stale
+  locks), releases are holder-scoped, and busy or any lease-storage
+  failure fails closed with no probe (`E_SCOPE_BUSY`, exit 1, is the
+  busy answer — not a denial).
+- **Documentation now matches the enforcement (FIX E).**  The 0018
+  wording ("per-run connection concurrency") described a knob nothing
+  used; the authoritative semantics — accumulated response-body bytes
+  across hops, scope-level simultaneous observations across processes —
+  are documented in docs/SCANNING.md, the CLI help, and (PostgreSQL)
+  `COMMENT ON COLUMN` corrections in 0019.  Historical migrations are
+  untouched.
+
+## [v0.3.1] — Install Path & First-Run Correctness
 
 Real-world acceptance testing found two correctness failures that CI
 could not see: the documented install command failed outright, and the
@@ -58,6 +300,10 @@ behavior was faked.
   this release fixes; `@main` installs cleanly from the proxy today
   (honest "unknown" VCS fields), and `@latest` resolves v0.3.1 by the
   same rule once it is the latest tag.
+  (Status note, added 2026-11-14: v0.3.1 is now the latest published
+  tag — the Go module proxy serves v0.3.1 and the documented `@latest`
+  install resolves it.  The paragraph above records the transitional
+  state during the release cycle only.)
 - **Zero-configuration first run covers every engine command.**  With
   no configuration anywhere, the first `gseer search`, `gseer source
   add`, `gseer collect`, `gseer suppress`, `gseer export`, or

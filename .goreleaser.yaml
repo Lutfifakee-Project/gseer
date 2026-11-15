@@ -74,6 +74,7 @@ builds:
         -X github.com/Lutfifakee-Project/gseer/internal/version.Version={{ .Version }}
         -X github.com/Lutfifakee-Project/gseer/internal/version.Commit={{ .FullCommit }}
         -X github.com/Lutfifakee-Project/gseer/internal/version.BuiltAt={{ .Date }}
+        -X github.com/Lutfifakee-Project/gseer/internal/index.EmbeddedIndexPublicKeyB64={{ .Env.INDEX_PUB_B64 }}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
 archives:

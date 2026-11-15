@@ -41,6 +41,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Lutfifakee-Project/gseer/internal/config"
+	"github.com/Lutfifakee-Project/gseer/internal/index"
 	"github.com/Lutfifakee-Project/gseer/internal/version"
 )
 
@@ -204,16 +205,42 @@ func printPersonalIndex(cmd *cobra.Command, cfg *config.Config) {
 	switch {
 	case meta.Empty:
 		printf(out, "  index:    EMPTY — nothing collected yet\n")
-		printf(out, "  try:      gseer setup --load-fixtures   (labeled synthetic evaluation corpus)\n")
+		printf(out, "  fastest:  gseer setup   (downloads the official shared index — real internet assets)\n")
+		printf(out, "  try it:   gseer setup --load-fixtures   (labeled synthetic evaluation corpus)\n")
 		printf(out, "  real:     gseer source add my-dns --type dns --seeds <domains> --enable --yes\n")
 		printf(out, "            gseer collect run --source my-dns\n")
 	case meta.FixtureOnly:
 		printf(out, "  index:    %d assets, %d services, %d observations (SYNTHETIC fixture data — not real internet data)\n",
 			meta.Assets, meta.Services, meta.Observations)
-		printf(out, "  real:     gseer source add my-dns --type dns --seeds <domains> --enable --yes\n")
-		printf(out, "            gseer collect run --source my-dns\n")
+		printf(out, "  real:     gseer setup   (downloads the official shared index)  or  gseer source add my-dns --type dns --seeds <domains> --enable --yes\n")
 	default:
 		printf(out, "  index:    %d assets, %d services, %d observations\n",
 			meta.Assets, meta.Services, meta.Observations)
+	}
+	printSharedIndexStatus(cmd)
+}
+
+// printSharedIndexStatus reports the installed shared index (read-only;
+// an absent or unreadable index directory is an honest hint, never a
+// panic).  v0.3.2: the status panel must surface index freshness —
+// Easy-to-Use includes knowing HOW FRESH the data is.
+func printSharedIndexStatus(cmd *cobra.Command) {
+	out := cmd.OutOrStdout()
+	st, err := index.LoadState(sharedIndexDir())
+	if err != nil || st == nil {
+		if err != nil {
+			printf(out, "  shared:   not readable (%v)\n", err)
+		}
+		return
+	}
+	age := time.Since(st.BuiltAt).Round(time.Second)
+	imported := "yes"
+	if !st.Imported {
+		imported = "NO — run: gseer index update"
+	}
+	printf(out, "  shared:   sequence %d, built %s (age %s), imported: %s\n",
+		st.Sequence, st.BuiltAt.UTC().Format("2006-01-02 15:04 UTC"), age, imported)
+	if age > 14*24*time.Hour {
+		printf(out, "            [warn] older than two weeks — refresh with: gseer index update\n")
 	}
 }

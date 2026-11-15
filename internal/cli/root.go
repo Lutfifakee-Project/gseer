@@ -70,11 +70,16 @@ var RootCmd = &cobra.Command{
 Search internet assets. Collect authorized data. Store locally. Search easily.
 
 Quick start:
+  gseer setup                     provision personal mode + download the shared index
+  gseer search 'port==443'        query the index
   gseer                           first run initializes personal mode automatically
   gseer setup --load-fixtures     load the labeled synthetic evaluation corpus
   gseer search 'port==443 && title CONTAINS "login"'
+Authorized observation (docs/SCANNING.md — default-deny gateway, explicit only):
+  gseer scope add cidr 127.0.0.1/32 --protocols http,tls --ports 8080,8443
+  gseer scan http --target localhost --port 8080
 Coming later (not in this release — see docs/ROADMAP.md):
-  scan (authorized observation), asset
+  asset
 License: GNU AGPL-3.0 — https://github.com/Lutfifakee-Project/gseer`,
 	// Disable the cobra completion subcommand's auto-help banner; we
 	// register `completion` ourselves with the exact short description.
@@ -117,11 +122,15 @@ func init() {
 	registerHostCmd(RootCmd)
 	registerSetupCmd(RootCmd)
 	registerDoctorCmd(RootCmd)
+	registerStatusCmd(RootCmd)
 	registerServerCmd(RootCmd)
 	registerSourceCmd(RootCmd)
 	registerCollectCmd(RootCmd)
+	registerScopeCmd(RootCmd)
+	registerScanCmd(RootCmd)
 	registerSuppressCmd(RootCmd)
 	registerExportCmd(RootCmd)
+	registerIndexCmd(RootCmd)
 	registerUpdateCmd(RootCmd)
 	registerRulesCmd(RootCmd)
 	registerDBCmd(RootCmd)

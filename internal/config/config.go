@@ -57,6 +57,7 @@ type Config struct {
 	Defaults     DefaultsConfig     `yaml:"defaults"`
 	Fingerprints FingerprintsConfig `yaml:"fingerprints"`
 	Update       UpdateConfig       `yaml:"update"`
+	Index        IndexConfig        `yaml:"index"`
 
 	// Source is the file path the config was loaded from, or "env-only"
 	// when no file was present (defaults + env + flags only).  Set by
@@ -171,6 +172,29 @@ type UpdateConfig struct {
 	// proves nothing (docs/UPDATE.md).
 	ManifestURL string `yaml:"manifest_url"`
 }
+
+// IndexConfig points the CLI at the signed shared-index channel
+// (v0.3.2 — the approved shared-index architecture).  The shared index
+// is a versioned, signed SQLite snapshot published by the project's
+// scheduled pipeline; `gseer setup` (default) and `gseer index update`
+// download, verify, and import it into the personal store.
+type IndexConfig struct {
+	// ManifestURL is the signed index manifest location.  Empty means
+	// the official project channel (OfficialIndexManifestURL).  The
+	// manifest MUST carry an Ed25519 signature that verifies against
+	// the index trust key embedded in the binary — the URL alone
+	// proves nothing (docs/SHARED-INDEX.md, mirroring docs/UPDATE.md).
+	// Plain http:// is accepted ONLY for loopback hosts (local testing).
+	ManifestURL string `yaml:"manifest_url"`
+}
+
+// OfficialIndexManifestURL is the default signed shared-index manifest
+// location: the rolling `shared-index` GitHub release maintained by the
+// project's scheduled index pipeline.  That release is deliberately
+// kept NON-latest (gh release create --latest=false) so the binary
+// releases remain the headline "Latest" release; the pointer URL is
+// stable while the manifest inside it is re-signed per sequence.
+const OfficialIndexManifestURL = "https://github.com/Lutfifakee-Project/gseer/releases/download/shared-index/gseer-index-manifest.json"
 
 // SourceConfig is a registered data source (config-only in v0.0.1;
 // never collected).  The collection framework lands in v0.0.2.

@@ -239,6 +239,8 @@ var searchColumns = map[string]string{
 	"tls.cert_subject_cn": "cert_subject_cn",
 	"tls.cert_issuer_cn":  "cert_issuer_cn",
 	"tls.cert_expiry":     "cert_expiry",
+	"tls.cert_serial":     "cert_serial",
+	"tls.cert_sans_dns":   "cert_sans_dns",
 	"technologies":        "technologies",
 	"sources":             "sources",
 	"first_seen":          "first_seen",
@@ -254,8 +256,8 @@ var sortableFields = map[string]bool{
 	"name": true, "product": true, "version": true,
 	"http.status": true, "http.title": true, "http.server": true,
 	"tls.version": true, "tls.cert_subject_cn": true, "tls.cert_issuer_cn": true,
-	"tls.cert_expiry": true,
-	"first_seen":      true, "last_seen": true,
+	"tls.cert_expiry": true, "tls.cert_serial": true, "tls.cert_sans_dns": true,
+	"first_seen": true, "last_seen": true,
 }
 
 // allSearchColumns is the canonical projection list, in view order —
@@ -268,6 +270,7 @@ var allSearchColumns = []string{
 	"port", "transport", "protocol", "name", "product", "version",
 	"http_status", "http_title", "http_server",
 	"tls_version", "cert_subject_cn", "cert_issuer_cn", "cert_expiry",
+	"cert_serial", "cert_sans_dns",
 	"technologies", "sources", "first_seen", "last_seen", "stale",
 }
 

@@ -27,14 +27,20 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -388,6 +394,549 @@ func TestRestoreCloseFailureInjection(t *testing.T) {
 	if rerr := os.RemoveAll(dir); rerr != nil {
 		t.Errorf("temp directory not removable after the injected close failure (an open handle leaked): %v", rerr)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// FIX ROUND 3 + 4: bounded sync waits and watchdog completeness.  A
+// wedged storage layer (journal commit that never completes, NFS
+// server gone, failing disk) used to hang the CLI forever at one of
+// the unbounded sync points (owner-side evidence: K2 of
+// scripts/v032-acceptance.sh hung >22 minutes, threads parked in
+// futex/wait_woken, no output, no error).  These tests pin the
+// contract: every durability wait (staged fsync, staged-copy file
+// close, EVERY sql.DB close on every path, directory fsync) is
+// bounded; a wedge is an EXPLICIT typed error; the sync itself is
+// never skipped; a timed-out operation never leads to a second
+// blocking close; a new restore FAILS CLOSED while an operation is
+// still outstanding and self-heals once it drains; no wedge path
+// prints a false success; the live database and the recovery file
+// stay consistent; and no operation left behind after the cleanup can
+// damage or resurrect any file once the wedge resolves.
+// ---------------------------------------------------------------------------
+
+// shrinkSyncTimeout shrinks the watchdog bound for the test.  It
+// returns the release channel the seam closures block on and an
+// unwedge function (once-guarded: safe to call from the test body AND
+// from the cleanup).  The cleanup unwedges and then DRAINS the
+// outstanding-wedge registry, so a later test never runs with a stale
+// fail-closed state from this one.
+func shrinkSyncTimeout(t *testing.T) (chan struct{}, func()) {
+	t.Helper()
+	orig := restoreSyncTimeout
+	restoreSyncTimeout = 250 * time.Millisecond
+	t.Cleanup(func() { restoreSyncTimeout = orig })
+	release := make(chan struct{})
+	var once sync.Once
+	unwedge := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(func() {
+		unwedge()
+		drainRestoreWedge(t)
+	})
+	return release, unwedge
+}
+
+// drainRestoreWedge waits until no restore sync operation is
+// outstanding anymore (restoreWedgeOutstanding back to zero).
+func drainRestoreWedge(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for restoreWedgeOutstanding.Load() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("outstanding restore wedge operations did not drain: %d", restoreWedgeOutstanding.Load())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestRestoreBoundedSyncPassesThrough(t *testing.T) {
+	if err := restoreBoundedSync("probe", func() error { return nil }); err != nil {
+		t.Fatalf("a healthy sync must pass through untouched: %v", err)
+	}
+	want := errors.New("boom")
+	if err := restoreBoundedSync("probe", func() error { return want }); !errors.Is(err, want) {
+		t.Fatalf("a failed sync must surface verbatim (errors.Is), got %v", err)
+	}
+	if n := restoreWedgeOutstanding.Load(); n != 0 {
+		t.Fatalf("a completing sync must never register as outstanding (got %d)", n)
+	}
+}
+
+func TestRestoreBoundedSyncExpiresWithTypedError(t *testing.T) {
+	release, _ := shrinkSyncTimeout(t)
+	// run() only unblocks when the cleanup unwedges (after the test
+	// body) — waiting for it here would self-deadlock the test, so the
+	// goroutine is simply left to finish on its own (the buffered
+	// result channel makes that leak-safe).
+	err := restoreBoundedSync("the probe sync", func() error {
+		<-release
+		return nil
+	})
+	if err == nil || !errors.Is(err, errRestoreSyncStuck) {
+		t.Fatalf("error = %v, want E_DB_RESTORE_SYNC_STUCK (errors.Is errRestoreSyncStuck)", err)
+	}
+	if !strings.Contains(err.Error(), "E_DB_RESTORE_SYNC_STUCK") ||
+		!strings.Contains(err.Error(), "the probe sync") ||
+		!strings.Contains(err.Error(), "DURABILITY IS UNCONFIRMED") {
+		t.Fatalf("error must name the code, the stuck operation and the durability terms, got: %v", err)
+	}
+	if n := restoreWedgeOutstanding.Load(); n != 1 {
+		t.Fatalf("a timed-out operation must register exactly one outstanding wedge (got %d)", n)
+	}
+}
+
+// noFalseSuccess is the FIX ROUND 4 no-false-success assertion shared
+// by every wedge test: none of the wedge paths may print the success
+// line.
+func noFalseSuccess(t *testing.T, out string) {
+	t.Helper()
+	if strings.Contains(out, "[ ok  ] restored") {
+		t.Errorf("a wedged restore must never print the success line, got: %s", out)
+	}
+}
+
+func TestRestoreStuckStagedFileSyncReportsExplicitly(t *testing.T) {
+	dir := t.TempDir()
+	live := newEmptyPersonalDB(t, dir, "gseer.db")
+	backup := newPopulatedPersonalDB(t, dir, "backup.db")
+	before := fileHash(t, live)
+
+	release, unwedge := shrinkSyncTimeout(t)
+	orig := restoreSyncFile
+	restoreSyncFile = func(*os.File) error { <-release; return nil }
+	t.Cleanup(func() { restoreSyncFile = orig })
+
+	out, err := runRestore(t, live, backup)
+	if err == nil || !errors.Is(err, errRestoreSyncStuck) || !strings.Contains(err.Error(), "fsync of the staged copy") {
+		t.Fatalf("error = %v, want E_DB_RESTORE_SYNC_STUCK naming the staged-copy fsync", err)
+	}
+	noFalseSuccess(t, out)
+	if after := fileHash(t, live); after != before {
+		t.Errorf("live database changed on a wedged staging fsync")
+	}
+	assertNoStagingLeft(t, dir)
+
+	// FIX ROUND 4: un-wedge and prove the outstanding operation does
+	// NO damage afterwards — the fsync keeps working on the unlinked
+	// inode: no staging file may reappear and the live database stays
+	// byte-identical.
+	unwedge()
+	drainRestoreWedge(t)
+	assertNoStagingLeft(t, dir)
+	if after := fileHash(t, live); after != before {
+		t.Errorf("the released wedged fsync changed the live database")
+	}
+}
+
+func TestRestoreStuckDirectorySyncReportsExplicitlyAfterSwap(t *testing.T) {
+	dir := t.TempDir()
+	live := newEmptyPersonalDB(t, dir, "gseer.db")
+	backup := newPopulatedPersonalDB(t, dir, "backup.db")
+	wantHash := fileHash(t, backup) // the content the restore installs
+
+	release, unwedge := shrinkSyncTimeout(t)
+	orig := restoreSyncDir
+	restoreSyncDir = func(string) error { <-release; return nil }
+	t.Cleanup(func() { restoreSyncDir = orig })
+
+	out, err := runRestore(t, live, backup)
+	if err == nil || !errors.Is(err, errRestoreSyncStuck) || !strings.Contains(err.Error(), "E_DB_RESTORE_DIRSYNC") {
+		t.Fatalf("error = %v, want E_DB_RESTORE_DIRSYNC wrapping E_DB_RESTORE_SYNC_STUCK", err)
+	}
+	// The "[ ok ] restored" line prints only AFTER the directory sync —
+	// a wedged dir sync must NOT claim success, only state the swap is
+	// in place with durability unconfirmed (honest terms).
+	noFalseSuccess(t, out)
+	if !strings.Contains(err.Error(), "the restore IS in place") {
+		t.Errorf("error must state the restore is in place, got: %v", err)
+	}
+	if after := fileHash(t, live); after != wantHash {
+		t.Errorf("after the swap the live database must hold the restored content")
+	}
+	if _, serr := os.Stat(live + ".restore-old"); serr != nil {
+		t.Errorf("the recovery copy must exist after a successful swap: %v", serr)
+	}
+	assertNoStagingLeft(t, dir)
+
+	// FIX ROUND 4: once the wedged dir fsync drains, nothing may change
+	// — the deferred fsync only flushes directory metadata of the
+	// already-completed renames; the live database, the recovery file
+	// and the clean directory must all be exactly as reported.
+	unwedge()
+	drainRestoreWedge(t)
+	if after := fileHash(t, live); after != wantHash {
+		t.Errorf("the released wedged dir fsync changed the live database")
+	}
+	if _, serr := os.Stat(live + ".restore-old"); serr != nil {
+		t.Errorf("the recovery copy must survive the released wedge: %v", serr)
+	}
+	assertNoStagingLeft(t, dir)
+}
+
+func TestRestoreStuckStagingCloseReportsExplicitly(t *testing.T) {
+	// The staging close runs the driver's checkpoint + fsync — the same
+	// bounded-sync contract, wedged through the restoreCloseDB seam
+	// (deterministic, like every other seam in this file).  FIX ROUND
+	// 4: the seam wedges ONLY the validated staging close (the second
+	// sql.DB close of the restore); the probe close (the first one) is
+	// bounded separately and passes through here.
+	dir := t.TempDir()
+	live := newEmptyPersonalDB(t, dir, "gseer.db")
+	backup := newPopulatedPersonalDB(t, dir, "backup.db")
+	before := fileHash(t, live)
+
+	release, unwedge := shrinkSyncTimeout(t)
+	orig := restoreCloseDB
+	var closeCalls atomic.Int64
+	restoreCloseDB = func(db *sql.DB) error {
+		if closeCalls.Add(1) >= 2 { // call 1 = probe close, call 2 = validated staging close
+			<-release
+		}
+		return db.Close()
+	}
+	t.Cleanup(func() { restoreCloseDB = orig })
+
+	out, err := runRestore(t, live, backup)
+	if err == nil || !errors.Is(err, errRestoreSyncStuck) || !strings.Contains(err.Error(), "close of the validated staging copy") {
+		t.Fatalf("error = %v, want E_DB_RESTORE_SYNC_STUCK naming the staging close", err)
+	}
+	noFalseSuccess(t, out)
+	if after := fileHash(t, live); after != before {
+		t.Errorf("live database changed on a wedged staging close")
+	}
+	assertNoStagingLeft(t, dir)
+
+	// FIX ROUND 4: after the wedge resolves, the deferred close runs
+	// its real checkpoint against the UNLINKED staging inode and its
+	// by-name sidecar cleanup finds nothing — nothing may be
+	// resurrected and the live database must stay byte-identical.
+	unwedge()
+	drainRestoreWedge(t)
+	assertNoStagingLeft(t, dir)
+	if after := fileHash(t, live); after != before {
+		t.Errorf("the released wedged staging close changed the live database")
+	}
+}
+
+func TestRestoreStuckCloseAfterFailedIntegrityCheck(t *testing.T) {
+	// FIX ROUND 4 (audit item 1, every path): the close after a FAILED
+	// integrity check is bounded too — a real connection exists there
+	// (quickCheck just ran), so its close-time checkpoint+fsync is
+	// exactly the wedge class from the owner's evidence.  The corrupt
+	// backup follows the truncated-database technique of
+	// TestRestoreInvalidBackupRejected.
+	dir := t.TempDir()
+	live := newEmptyPersonalDB(t, dir, "gseer.db")
+	full := newPopulatedPersonalDB(t, dir, "full.db")
+	raw, rerr := os.ReadFile(full)
+	if rerr != nil {
+		t.Fatalf("read full db: %v", rerr)
+	}
+	if len(raw) < 8192 {
+		t.Fatalf("fixture db unexpectedly small (%d bytes); cannot truncate", len(raw))
+	}
+	backup := filepath.Join(dir, "truncated.db")
+	if werr := os.WriteFile(backup, raw[:len(raw)/2], 0o600); werr != nil {
+		t.Fatalf("write truncated backup: %v", werr)
+	}
+	before := fileHash(t, live)
+
+	release, unwedge := shrinkSyncTimeout(t)
+	orig := restoreCloseDB
+	var closeCalls atomic.Int64
+	restoreCloseDB = func(db *sql.DB) error {
+		if closeCalls.Add(1) >= 2 { // call 1 = probe close (passes), call 2 = post-integrity-failure close (wedges)
+			<-release
+		}
+		return db.Close()
+	}
+	t.Cleanup(func() { restoreCloseDB = orig })
+
+	out, err := runRestore(t, live, backup)
+	if err == nil || !errors.Is(err, errRestoreSyncStuck) || !strings.Contains(err.Error(), "close of the staged copy after a failed integrity check") {
+		t.Fatalf("error = %v, want E_DB_RESTORE_SYNC_STUCK naming the post-integrity-failure close", err)
+	}
+	if !strings.Contains(err.Error(), "integrity check") {
+		t.Errorf("the integrity failure must stay the primary failure, got: %v", err)
+	}
+	noFalseSuccess(t, out)
+	if after := fileHash(t, live); after != before {
+		t.Errorf("live database changed on a wedged post-integrity-failure close")
+	}
+	assertNoStagingLeft(t, dir)
+
+	unwedge()
+	drainRestoreWedge(t)
+	assertNoStagingLeft(t, dir)
+	if after := fileHash(t, live); after != before {
+		t.Errorf("the released wedged close changed the live database")
+	}
+}
+
+func TestRestoreStuckProbeCloseReportsExplicitly(t *testing.T) {
+	// FIX ROUND 4 (audit item 1): even the probe close is bounded —
+	// trivial today (the lazy opener holds no connection) but
+	// mechanically guaranteed.  Wedge the FIRST sql.DB close.
+	dir := t.TempDir()
+	live := newEmptyPersonalDB(t, dir, "gseer.db")
+	backup := newPopulatedPersonalDB(t, dir, "backup.db")
+	before := fileHash(t, live)
+
+	release, unwedge := shrinkSyncTimeout(t)
+	orig := restoreCloseDB
+	var closeCalls atomic.Int64
+	restoreCloseDB = func(db *sql.DB) error {
+		if closeCalls.Add(1) == 1 { // call 1 = the backup probe close
+			<-release
+		}
+		return db.Close()
+	}
+	t.Cleanup(func() { restoreCloseDB = orig })
+
+	out, err := runRestore(t, live, backup)
+	if err == nil || !errors.Is(err, errRestoreSyncStuck) || !strings.Contains(err.Error(), "close of the backup probe") {
+		t.Fatalf("error = %v, want E_DB_RESTORE_SYNC_STUCK naming the probe close", err)
+	}
+	noFalseSuccess(t, out)
+	if after := fileHash(t, live); after != before {
+		t.Errorf("live database changed on a wedged probe close")
+	}
+	// The restore aborted before any staging file was created.
+	assertNoStagingLeft(t, dir)
+
+	unwedge()
+	drainRestoreWedge(t)
+	assertNoStagingLeft(t, dir)
+	if after := fileHash(t, live); after != before {
+		t.Errorf("the released wedged probe close changed the live database")
+	}
+}
+
+func TestRestoreStuckStagedCopyCloseReportsExplicitly(t *testing.T) {
+	// FIX ROUND 4 (audit item 2): the staged-copy FILE close after the
+	// fsync is bounded too — close(2) with an fsync in flight can
+	// block (NFS writeback), so the wedge must surface as an explicit
+	// error and the cleanup must NOT attempt a second close (os.File
+	// serializes closes; it would hang behind the wedged one).
+	dir := t.TempDir()
+	live := newEmptyPersonalDB(t, dir, "gseer.db")
+	backup := newPopulatedPersonalDB(t, dir, "backup.db")
+	before := fileHash(t, live)
+
+	release, unwedge := shrinkSyncTimeout(t)
+	orig := restoreCloseFile
+	restoreCloseFile = func(*os.File) error { <-release; return nil }
+	t.Cleanup(func() { restoreCloseFile = orig })
+
+	out, err := runRestore(t, live, backup)
+	if err == nil || !errors.Is(err, errRestoreSyncStuck) || !strings.Contains(err.Error(), "close of the staged copy") {
+		t.Fatalf("error = %v, want E_DB_RESTORE_SYNC_STUCK naming the staged-copy close", err)
+	}
+	noFalseSuccess(t, out)
+	if after := fileHash(t, live); after != before {
+		t.Errorf("live database changed on a wedged staged-copy close")
+	}
+	assertNoStagingLeft(t, dir)
+
+	unwedge()
+	drainRestoreWedge(t)
+	assertNoStagingLeft(t, dir)
+	if after := fileHash(t, live); after != before {
+		t.Errorf("the released wedged staged-copy close changed the live database")
+	}
+}
+
+func TestRestoreSecondRestoreFailsClosedWhileWedgeOutstanding(t *testing.T) {
+	// FIX ROUND 4 fail-closed policy: while a previous restore's sync
+	// is still outstanding on wedged storage, a SECOND restore in the
+	// same process is refused (its staging path could collide with the
+	// deferred checkpoint / by-name sidecar cleanup of the outstanding
+	// close).  Once the wedge drains, restores work again (self-heal).
+	dir := t.TempDir()
+	live := newEmptyPersonalDB(t, dir, "gseer.db")
+	backup := newPopulatedPersonalDB(t, dir, "backup.db")
+	wantHash := fileHash(t, backup) // the content the restore installs
+
+	release, unwedge := shrinkSyncTimeout(t)
+	orig := restoreSyncDir
+	restoreSyncDir = func(string) error { <-release; return nil }
+	t.Cleanup(func() { restoreSyncDir = orig })
+
+	// Restore 1 wedges at the directory fsync, AFTER the swap.
+	out1, err1 := runRestore(t, live, backup)
+	if err1 == nil || !errors.Is(err1, errRestoreSyncStuck) || !strings.Contains(err1.Error(), "E_DB_RESTORE_DIRSYNC") {
+		t.Fatalf("restore 1: error = %v, want E_DB_RESTORE_DIRSYNC", err1)
+	}
+	noFalseSuccess(t, out1)
+	if n := restoreWedgeOutstanding.Load(); n != 1 {
+		t.Fatalf("after restore 1 the wedge registry must hold exactly 1 outstanding operation (got %d)", n)
+	}
+
+	// Restore 2, same process, wedge still outstanding: refused BEFORE
+	// anything is staged or replaced.
+	out2, err2 := runRestore(t, live, backup)
+	if err2 == nil || !strings.Contains(err2.Error(), "E_DB_RESTORE_INFLIGHT") {
+		t.Fatalf("restore 2: error = %v, want E_DB_RESTORE_INFLIGHT (fail-closed)", err2)
+	}
+	noFalseSuccess(t, out2)
+	if after := fileHash(t, live); after != wantHash {
+		t.Errorf("the refused restore must not touch the live database")
+	}
+	assertNoStagingLeft(t, dir)
+
+	// The wedge drains when storage recovers — the policy self-heals.
+	unwedge()
+	drainRestoreWedge(t)
+
+	out3, err3 := runRestore(t, live, backup)
+	if err3 != nil {
+		t.Fatalf("restore 3 after the wedge drained must succeed: %v", err3)
+	}
+	if !strings.Contains(out3, "[ ok  ] restored") {
+		t.Errorf("restore 3 must print the success line, got: %s", out3)
+	}
+	if after := fileHash(t, live); after != wantHash {
+		t.Errorf("restore 3 must leave the restored content in place")
+	}
+	if _, serr := os.Stat(live + ".restore-old"); serr != nil {
+		t.Errorf("restore 3 must keep a recovery copy (the previous one is archived, never discarded): %v", serr)
+	}
+	assertNoStagingLeft(t, dir)
+}
+
+// dirListing returns the sorted names of the entries directly inside
+// dir (one level) — used to prove a refused restore adds and removes
+// NOTHING from the database's directory.
+func dirListing(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir %s: %v", dir, err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	return names
+}
+
+func TestRestoreConcurrentEntryRefusedWithoutBlocking(t *testing.T) {
+	// FIX ROUND 5: the entry guard is exclusive and NON-BLOCKING.
+	// Restore A is parked at an injectable operation (the staged fsync)
+	// while holding the guard; restore B must fail IMMEDIATELY with
+	// E_DB_RESTORE_INFLIGHT while A is still executing — B RETURNS
+	// before releaseA is closed, which is the deterministic proof of
+	// non-blocking (a blocking guard would deadlock the test right
+	// there).  B creates no staging artifacts and does not touch the
+	// live database.  Once A is released it completes normally, and a
+	// later restore succeeds again.
+	dir := t.TempDir()
+	live := newEmptyPersonalDB(t, dir, "gseer.db")
+	backup := newPopulatedPersonalDB(t, dir, "backup.db")
+	before := fileHash(t, live)
+	wantHash := fileHash(t, backup) // the content the restore installs
+
+	// The config is written and installed ONCE, before any concurrency:
+	// flags.configPath is shared package state and must never be
+	// written from two goroutines.  The invocations below build their
+	// own cobra commands and output buffers — no other shared state.
+	cfgPath := writePersonalConfigForTest(t, live)
+	oldCfg := flags.configPath
+	flags.configPath = cfgPath
+	t.Cleanup(func() { flags.configPath = oldCfg })
+
+	// A parks at the staged fsync and signals exactly when it is there:
+	// at that point A has already acquired the entry guard.  ONLY the
+	// first fsync invocation (restore A) parks; later invocations (the
+	// final restore) pass through to the real Sync.
+	enteredA := make(chan struct{})
+	releaseA := make(chan struct{})
+	var fsyncCalls atomic.Int64
+	orig := restoreSyncFile
+	restoreSyncFile = func(f *os.File) error {
+		if fsyncCalls.Add(1) == 1 {
+			close(enteredA)
+			<-releaseA
+		}
+		return f.Sync()
+	}
+	t.Cleanup(func() { restoreSyncFile = orig })
+
+	run := func() (string, error) {
+		cmd := &cobra.Command{Use: "restore"}
+		out := &bytes.Buffer{}
+		cmd.SetOut(out)
+		err := runPersonalDBRestore(cmd, backup, true)
+		return out.String(), err
+	}
+
+	type restoreResult struct {
+		out string
+		err error
+	}
+	doneA := make(chan restoreResult, 1)
+	go func() {
+		out, err := run()
+		doneA <- restoreResult{out, err}
+	}()
+	<-enteredA // A holds the entry guard, parked at the fsync seam
+	// A legitimately holds its OWN staging file right now (it was
+	// created before the fsync) — the invariant for B is that it adds
+	// and removes NOTHING, so the directory snapshot taken here must be
+	// byte-for-byte the same after B returns.
+	snapA := dirListing(t, dir)
+
+	// B runs while A is still executing: refused immediately, without
+	// waiting, without staging anything, without touching the live
+	// database.
+	outB, errB := run()
+	if errB == nil || !strings.Contains(errB.Error(), "E_DB_RESTORE_INFLIGHT") {
+		t.Fatalf("restore B: error = %v, want E_DB_RESTORE_INFLIGHT", errB)
+	}
+	if !strings.Contains(errB.Error(), "already running") {
+		t.Errorf("restore B error must name the concurrent-entry cause (not the wedge cause), got: %v", errB)
+	}
+	noFalseSuccess(t, outB)
+	if after := fileHash(t, live); after != before {
+		t.Errorf("the refused restore must not touch the live database")
+	}
+	if now := dirListing(t, dir); !slices.Equal(now, snapA) {
+		t.Errorf("the refused restore must not create or remove any file: before %v, after %v", snapA, now)
+	}
+
+	// Release A: normal recovery — A completes the whole restore, the
+	// swap is in place, the recovery file exists, and no wedge is
+	// registered (every one of A's operations completed).
+	close(releaseA)
+	resA := <-doneA
+	if resA.err != nil {
+		t.Fatalf("restore A must complete once released: %v\n%s", resA.err, resA.out)
+	}
+	if !strings.Contains(resA.out, "[ ok  ] restored") {
+		t.Errorf("restore A must print the success line, got: %s", resA.out)
+	}
+	if after := fileHash(t, live); after != wantHash {
+		t.Errorf("restore A must leave the restored content in place")
+	}
+	if _, serr := os.Stat(live + ".restore-old"); serr != nil {
+		t.Errorf("restore A must keep the recovery copy: %v", serr)
+	}
+	if n := restoreWedgeOutstanding.Load(); n != 0 {
+		t.Errorf("a completing restore must leave no outstanding wedge (got %d)", n)
+	}
+
+	// A later restore succeeds (the guard is free again).
+	outC, errC := run()
+	if errC != nil {
+		t.Fatalf("restore C after A finished must succeed: %v\n%s", errC, outC)
+	}
+	if !strings.Contains(outC, "[ ok  ] restored") {
+		t.Errorf("restore C must print the success line, got: %s", outC)
+	}
+	if after := fileHash(t, live); after != wantHash {
+		t.Errorf("restore C must leave the restored content in place")
+	}
+	assertNoStagingLeft(t, dir)
 }
 
 // ---------------------------------------------------------------------------

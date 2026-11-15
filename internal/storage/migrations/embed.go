@@ -44,6 +44,23 @@
 //	                      safe-cast helpers + rebuilt latest_http /
 //	                      latest_tls views (GAP-1 mandate; malformed
 //	                      evidence can no longer break search)
+//	0018_active_observation
+//	                      the v0.3.2 active-observation surface: scopes
+//	                      extended in place (protocols, ports, expiry,
+//	                      revocation, execution limits) + the append-only
+//	                      scan_audits gateway decision log + additive
+//	                      gseer_app grants for the two objects
+//	0019_scan_concurrency_leases
+//	                      the v0.3.2 security-microfix surface: the
+//	                      transient scan_leases table that makes
+//	                      scopes.max_concurrency a real cross-process
+//	                      limit + COMMENT ON COLUMN corrections for the
+//	                      0018 execution-limit semantics (FIX D/E)
+//	0020_scan_lease_tokens
+//	                      the FINAL security-microfix surface: the
+//	                      per-acquisition lease ownership token column
+//	                      (release + renewal are token-scoped; renewal
+//	                      refuses stolen/lapsed leases — FIX B)
 //
 // The schema_migrations table is owned by the golang-migrate driver and
 // is NEVER created or modified by an application migration.

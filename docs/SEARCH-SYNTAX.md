@@ -46,9 +46,11 @@ Two deliberate exclusions, per the Search ≠ Scan architecture:
 - `ip` keeps exact-value semantics — use `ip *= "203.0.113.*"` for
   pattern matching.
 
-An UNQUOTED bare word stays a field-presence test (GQL `exists`
-form) — e.g. `gseer search 'hostname'`. Only quoted literals are
-free text.
+An **UNQUOTED** bare word that is NOT a known field is free text
+too — `gseer search 'nginx'` searches the same surfaces as
+`gseer search '"nginx"'` (v0.3.2). A bare KNOWN field stays the
+presence test — `gseer search 'hostname'` is the `exists(hostname)`
+form; use `exists(field)` explicitly for presence tests.
 
 ## Field aliases
 
@@ -60,7 +62,12 @@ free text.
 | `status_code` | `http.status` | `status_code=200` |
 | `cert.subject.cn` | `tls.cert_subject_cn` | `cert.subject.cn="example.com"` |
 | `cert.issuer.cn` | `tls.cert_issuer_cn` | `cert.issuer.cn="R3"` |
+| `cert.sn`, `cert_sn` | `tls.cert_serial` | `cert.sn="04f2a9c1de7b"` (v0.3.2) |
+| `cert.domain`, `cert_domain` | `tls.cert_sans_dns` | `cert.domain contains "example.com"` — the SAN DNS entries as comma-joined text (v0.3.2) |
 | `country`, `region`, `city` | `geo_country`, `geo_region`, `geo_city` | `country="id"` |
+| `app` | `product` | `app="nginx"` (v0.3.2 compat) |
+| `ip_country`, `ip_region`, `ip_city` | `geo_country`, `geo_region`, `geo_city` | `ip_country="id"` (v0.3.2 compat) |
+| `ip_after`, `ip_before` | `after`, `before` | `ip_after="2026-01-01"` (v0.3.2 compat) |
 | `status`, `title`, `server` | `http.status`, `http.title`, `http.server` | `title*="Port?l"` |
 | `tech`, `fingerprint` | `technologies` | `tech contains "wordpress"` |
 | `cert_subject`, `cert_issuer` | `tls.cert_subject_cn`, `tls.cert_issuer_cn` | |
@@ -71,8 +78,8 @@ free text.
 
 | Field | Lowers to | Example |
 | --- | --- | --- |
-| `after` | `last_seen >= date` | `after="2026-01-01"` |
-| `before` | `last_seen <= date` | `before="2026-01-01"` |
+| `after`, `ip_after` | `last_seen >= date` | `after="2026-01-01"` |
+| `before`, `ip_before` | `last_seen <= date` | `before="2026-01-01"` |
 | `cert.not_after.after` | `tls.cert_expiry >= date` | certificates expiring after the date |
 | `cert.not_after.before` | `tls.cert_expiry <= date` | certificates expiring before the date |
 
@@ -108,16 +115,21 @@ Computed predicates — no dedicated column, no extra data:
    equality. Fuzzy matching is `*=` with explicit wildcards — nothing
    matches by accident.
 3. **No body/header/icon/JS/hash fields** (`body`, `header`, `icon_hash`,
-   `js_md5`, `cname`, `banner`, `jarm`, `ja3s`, `cert.sn`, `sdk_hash`,
+   `js_md5`, `cname`, `banner`, `jarm`, `ja3s`, `sdk_hash`,
    …): GSEER indexes **facts it is given** (Search ≠ Scan). It does not
    crawl or store page content, so fields over fetched content do not
    exist. The closest stored-surface equivalents are `http.title`,
-   `http.server`, `tls.*`, `technologies`.
+   `http.server`, `tls.*`, `technologies` — and `cert.sn` / `cert.domain`
+   ARE searchable since v0.3.2 (the TLS observer captures the leaf
+   certificate; migration 0021/0005 projects serial + SAN DNS).
 4. **No third-party-maintained metadata fields** (`app`-style vendor
    rules by name, aggregated site fingerprint IDs, categories, cloud /
    fraud / honeypot labels, dedicated-IP aggregates like
-   `port_size_gt`): these require a hosted aggregation backend or data
-   sets GSEER does not license. Local equivalents: `technologies
+   `port_size_gt`, `ip_filter()`, `ip_exclude()`): these require a hosted
+   aggregation backend or data sets GSEER does not license. The v0.3.2
+   IP-aggregation compat ALIASES that map onto real stored fields
+   (`ip_country/ip_region/ip_city/ip_after/ip_before`) are supported;
+   the aggregate functions are not. Local equivalents: `technologies
    contains "…"` over the local fingerprint rule set (`gseer rules`).
 5. **`host` alias vs `host` scope**: `host=` in a comparison is the
    `hostname` alias; `ANY(host){ … }` remains the host-level

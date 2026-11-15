@@ -60,6 +60,59 @@ package cli
 // or sidecar makes the rename fail — which aborts the restore cleanly
 // with everything rolled back.  Either way the operator is asked to
 // run the restore while no other GSEER process is using the database.
+//
+// FIX ROUND 4 — watchdog completeness.  FIX ROUND 3 bounded the three
+// durability waits (staged fsync, staging SQLite close, directory
+// fsync).  The audit found the remaining unbounded waits and lifecycle
+// gaps; FIX ROUND 4 closes them:
+//
+//  1. EVERY sql.DB close on every path is bounded (backup probe close,
+//     staged-copy close on the success path AND on the integrity-failure
+//     path).  The probe close is trivial today (sqlite.Open is lazy — an
+//     existing file opens no connection), but the bound is mechanical:
+//     the invariant cannot silently regress if the opener ever starts
+//     pinging.
+//  2. The staged-copy FILE close is bounded too: close(2) on a file
+//     whose fsync is still in flight can itself block (NFS close waits
+//     for the outstanding writeback — exactly what a timed-out fsync
+//     leaves behind), so a bounded fsync must never be followed by an
+//     unbounded close.  On a timed-out fsync/close the cleanup SKIPS
+//     the second real out.Close(): os.File.Close serializes on an
+//     internal mutex, so it would wait behind the wedged one and hang
+//     the cleanup — the staging path is unlinked instead, which is
+//     safe while the fd is held.
+//  3. Lifecycle when a watchdog expires: the leaked goroutine keeps
+//     the fds of the (already unlinked) staging inode; an fsync writes
+//     no content, a deferred SQLite close checkpoint-writes only to
+//     the unlinked inode and unlinks sidecars BY NAME — which is why a
+//     new restore in the same process FAILS CLOSED (see
+//     restoreWedgeOutstanding) until the outstanding operation drains.
+//     The CLI is one-shot per process, so in production the wedge and
+//     its fds die with the process; the registry makes the in-process
+//     retry policy explicit and testable instead of implicit.
+//  4. Scoped honestly: metadata operations (stat/lstat/chmod/remove/
+//     rename, directory listing) can also block on pathological
+//     storage, but they are not durability waits — they are required
+//     for the swap itself and are left plain; the wedge class fixed
+//     here is the one the owner evidence showed (durability syncs and
+//     the driver's close-time checkpoint).
+//
+// FIX ROUND 5 — restore entry concurrency guard.  FIX ROUND 4 made the
+// outstanding-wedge policy fail-closed, but two restores RUNNING AT
+// THE SAME TIME in one process could still interleave: the second
+// restore would pass the wedge registry (nothing outstanding yet),
+// stage its own copy, and then race the first restore's swap against
+// the SAME live path — its .restore-old step would archive the first
+// restore's freshly installed database, and the two directory fsyncs
+// would race.  FIX ROUND 5 adds an exclusive, NON-BLOCKING entry
+// guard (restoreEntryGuard): exactly one runPersonalDBRestore executes
+// at a time; a concurrent invocation is refused immediately with the
+// stable code E_DB_RESTORE_INFLIGHT instead of waiting.  The guard is
+// acquired BEFORE the outstanding-wedge check (only one invocation at
+// a time reaches the registry) and released on every normal return
+// and error path via defer; a timed-out underlying operation remains
+// protected by restoreWedgeOutstanding after the function returns —
+// the janitor decrements only when the operation itself completes.
 
 import (
 	"database/sql"
@@ -70,6 +123,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -87,10 +142,142 @@ var (
 	restoreOpenSrc    = func(name string) (io.ReadCloser, error) { return os.Open(name) } //nolint:gosec // G304: the operator-supplied backup path IS the feature
 	restoreSyncFile   = func(f *os.File) error { return f.Sync() }
 	restoreCloseFile  = func(f *os.File) error { return f.Close() }
+	restoreCloseDB    = func(db *sql.DB) error { return db.Close() }
 	restoreRename     = renameFileDefault
 	restoreSyncDir    = syncDirDefault
 	restoreSQLiteOpen = sqlite.Open
+
+	// restoreSyncTimeout bounds how long the CLI WAITS on a sync
+	// primitive (staged-copy fsync AND close, the SQLite driver's
+	// close-time checkpoint+fsync on every path, the directory fsync).
+	// FIX ROUND 3: on storage whose journal commit wedges (full
+	// journal, NFS server gone, failing disk) an fsync never returns
+	// and the old code hung the CLI forever — threads parked in
+	// futex/wait_woken with no output and no error.  fsync cannot be
+	// cancelled from userspace, so the watchdog does NOT skip or abort
+	// the sync: it stops WAITING and reports explicitly.  Durability
+	// terms stay the honest ones this file already uses: on expiry the
+	// operation's durability is UNCONFIRMED, never silently assumed.
+	// Tests shrink this value.
+	restoreSyncTimeout = 30 * time.Second
 )
+
+// restoreWedgeOutstanding counts sync operations that have already
+// outlived their bounded wait in THIS process and are still running in
+// their leaked watchdog goroutines.  FIX ROUND 4 fail-closed policy:
+// while it is non-zero, a NEW restore in the same process is refused —
+// a wedged SQLite close still holds the staged database open, and when
+// storage recovers it performs its deferred checkpoint and its by-name
+// -wal/-shm cleanup; letting a new restore reuse the staging path
+// first could collide with those deferred operations (the staging
+// inode is unlinked, but the NAMES would be reused).  The CLI is
+// one-shot per process, so in production the wedge dies with the
+// process and the kernel drops its fds — the registry is what makes
+// the in-process retry policy explicit and testable instead of
+// implicit.  Each outstanding operation decrements the counter exactly
+// once, when its operation finally completes (restoreBoundedSync's
+// janitor), so the policy self-heals when storage recovers.
+var restoreWedgeOutstanding atomic.Int64
+
+// restoreEntryGuard serializes restore invocations within one process:
+// only ONE runPersonalDBRestore may execute at a time.  FIX ROUND 5:
+// two concurrent restores would interleave their staging and swap
+// steps against the same live database path — the staging PATH is
+// unique per attempt, but the swap targets the same live file, so the
+// second restore's .restore-old step would archive the first restore's
+// freshly installed database and the two directory fsyncs would race.
+// The guard is EXCLUSIVE and NON-BLOCKING (sync.Mutex.TryLock): a
+// concurrent invocation fails immediately with the stable code
+// E_DB_RESTORE_INFLIGHT, never queues.  It is acquired at the very top
+// of runPersonalDBRestore — before the outstanding-wedge registry
+// check — and released on every normal return and error path via
+// defer.  A timed-out underlying operation stays protected by
+// restoreWedgeOutstanding AFTER the guard is released (the janitor
+// decrements only when the operation itself completes), so the two
+// layers compose: the guard excludes simultaneous execution, the
+// registry excludes retries while an earlier operation is still
+// outstanding.
+var restoreEntryGuard sync.Mutex
+
+// errRestoreSyncStuck marks every bounded-sync expiry (errors.Is target).
+var errRestoreSyncStuck = errors.New("bounded sync wait expired (storage wedged)")
+
+// restoreBoundedSync runs run() and waits at most restoreSyncTimeout for
+// it.  On expiry it returns an explicit E_DB_RESTORE_SYNC_STUCK error
+// naming the stuck operation; the goroutine keeps running (a wedged
+// fsync cannot be cancelled — the buffered channel means it never
+// blocks anyone else, it just finishes or wedges on its own), and the
+// caller's cleanup (removing a not-yet-installed staging file) is safe
+// on POSIX even while the sync is still in flight (unlink is
+// independent of the fd).
+//
+// FIX ROUND 4: an expiry also registers the operation in
+// restoreWedgeOutstanding (fail-closed input — see the var comment).
+// The pairing is race-free by construction: the increment happens only
+// when the completion channel is still empty at expiry (re-checked
+// non-blockingly, so an operation completing "just in time" is never
+// miscounted), and a per-invocation janitor decrements exactly once
+// when the operation eventually completes — no flag the leaked
+// goroutine and the watchdog could observe in different orders.  If
+// the operation never completes (true wedge until process exit), the
+// registration stays and every further restore in this process fails
+// closed.
+func restoreBoundedSync(op string, run func() error) error {
+	type syncResult struct{ err error }
+	ch := make(chan syncResult, 1)
+	done := make(chan struct{})
+	go func() {
+		ch <- syncResult{run()}
+		close(done)
+	}()
+	select {
+	case r := <-ch:
+		return r.err
+	case <-time.After(restoreSyncTimeout):
+		// The operation may have completed while the timer fired:
+		// re-check the channel non-blockingly first, so a completing
+		// operation is never registered as outstanding.
+		select {
+		case r := <-ch:
+			return r.err
+		default:
+		}
+		restoreWedgeOutstanding.Add(1)
+		go func() {
+			<-done // the wedged operation completed (or never will — then this janitor simply never runs)
+			restoreWedgeOutstanding.Add(-1)
+		}()
+		return fmt.Errorf("E_DB_RESTORE_SYNC_STUCK: %w: the %s did not return within %s — the storage layer appears wedged (full journal, NFS server gone, failing disk). The sync itself cannot be cancelled and continues in the background; DURABILITY IS UNCONFIRMED for this operation. Verify with `gseer search` / `gseer doctor` and re-run the restore when storage is healthy", errRestoreSyncStuck, op, restoreSyncTimeout)
+	}
+}
+
+// removeStagingArtifacts unlinks the staging file and its SQLite
+// sidecars.  POSIX unlink is safe while a leaked watchdog goroutine
+// still holds the fds; SQLite cannot resurrect a deleted WAL by name
+// during the eventual real close (close only ever DELETES its own
+// sidecar names).  Returns the paths that could NOT be removed —
+// reported by the caller, never silently discarded.
+func removeStagingArtifacts(staging string) []string {
+	var leftover []string
+	if rerr := os.Remove(staging); rerr != nil && !os.IsNotExist(rerr) {
+		leftover = append(leftover, staging)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if rerr := os.Remove(staging + suffix); rerr != nil && !os.IsNotExist(rerr) {
+			leftover = append(leftover, staging+suffix)
+		}
+	}
+	return leftover
+}
+
+// stagingLeftoverNote renders the explicit leftover note for a cleanup
+// that could not remove everything ("" when the directory is clean).
+func stagingLeftoverNote(leftover []string) string {
+	if len(leftover) == 0 {
+		return ""
+	}
+	return " — leftover staging artifacts that can be deleted once no process uses them: " + strings.Join(leftover, ", ")
+}
 
 // restoreNoChmodErr reports whether a chmod error is the expected
 // no-op on platforms without POSIX mode bits (mirrors the storage
@@ -145,6 +332,11 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
+	// The backup source handle is closed read-only in the deferred
+	// close below and is deliberately NOT bounded: a read-only fd has
+	// no dirty page writeback, POSIX close does not wait for in-flight
+	// reads, and NFS close-to-open consistency only concerns writes —
+	// this close cannot wedge on the storage classes in scope here.
 	defer func() { _ = in.Close() }()
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode) //nolint:gosec // G304: a fresh staging path inside the database's own directory
 	if err != nil {
@@ -152,15 +344,50 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	}
 	_, copyErr := io.Copy(out, in)
 	if copyErr == nil {
-		copyErr = restoreSyncFile(out)
+		// FIX ROUND 3: bounded wait — a wedged storage layer must
+		// surface as an explicit error, not an infinite CLI hang.
+		// The seam is captured into a local BEFORE the bounded call:
+		// the watchdog goroutine must never read the package-level
+		// seam var (a cleanup/test could restore it concurrently —
+		// an unsynchronized access the race detector rightly flags).
+		syncFile := restoreSyncFile
+		copyErr = restoreBoundedSync("fsync of the staged copy", func() error {
+			return syncFile(out)
+		})
 	}
-	closeErr := restoreCloseFile(out)
+	// FIX ROUND 4: the staged-copy file close is bounded as well.  A
+	// close(2) with an fsync still in flight can itself block (NFS
+	// close waits for the outstanding writeback — exactly what the
+	// timed-out fsync above leaves behind), so a bounded fsync must
+	// never be followed by an unbounded close.  Same seam-capture rule
+	// as the fsync above.
+	closeFile := restoreCloseFile
+	closeErr := restoreBoundedSync("close of the staged copy", func() error {
+		return closeFile(out)
+	})
 	if copyErr == nil {
 		copyErr = closeErr
 	}
 	if copyErr != nil {
-		// A FAILED close can leave the underlying handle OPEN (the
-		// seam in tests simulates it; a real EINTR/EIO close or a
+		if errors.Is(copyErr, errRestoreSyncStuck) {
+			// FIX ROUND 4: a TIMED-OUT fsync or close is still IN
+			// FLIGHT inside the leaked goroutine and holds the real
+			// handle.  Do NOT call out.Close() again here: os.File
+			// serializes closes on an internal mutex, so a second
+			// close would wait behind the wedged one and hang the
+			// cleanup — the exact hang this fix removes.  Unlink the
+			// staging path instead (safe on POSIX while the fd is
+			// held; the in-flight operation keeps working on the
+			// unlinked inode and cannot write anything back by
+			// name).  A removal that still fails (Windows sharing
+			// violation) is REPORTED, never silently discarded.
+			if rerr := os.Remove(dst); rerr != nil {
+				return fmt.Errorf("%w (cleanup: the partial staging file could not be removed and is still at %s: %v — it can be deleted once no process uses it)", copyErr, dst, rerr)
+			}
+			return copyErr
+		}
+		// A FAILED (fast) close can leave the underlying handle OPEN
+		// (the seam in tests simulates it; a real EINTR/EIO close or a
 		// failed CloseHandle does it in production).  Removing an
 		// open file fails on Windows with a sharing violation, which
 		// used to silently leave a partial staging file behind.  The
@@ -168,12 +395,13 @@ func copyFile(src, dst string, mode os.FileMode) error {
 		// out.Close(), deliberately NOT the seam, whose injected
 		// failure is exactly what the cleanup must survive — and
 		// only then removes the partial destination.  This second
-		// close is safe to call on an already-closed *os.File (it
-		// returns os.ErrClosed, an expected non-failure).  Its own
-		// error carries no recoverable information beyond what the
-		// Remove below surfaces: if the handle somehow survived, the
-		// Remove fails on Windows and THAT error is reported next to
-		// the primary one instead of being silently discarded.
+		// close is safe on this path: the failed close is no longer
+		// in flight, and on an already-closed *os.File it returns
+		// os.ErrClosed, an expected non-failure.  Its own error
+		// carries no recoverable information beyond what the Remove
+		// below surfaces: if the handle somehow survived, the Remove
+		// fails on Windows and THAT error is reported next to the
+		// primary one instead of being silently discarded.
 		_ = out.Close()
 		if rerr := os.Remove(dst); rerr != nil {
 			return fmt.Errorf("%w (cleanup: the partial staging file could not be removed and is still at %s: %v — it can be deleted once no process uses it)", copyErr, dst, rerr)
@@ -208,11 +436,25 @@ func quickCheck(db *sql.DB) error {
 // live database is not touched anywhere in this step; on failure no
 // staging file is left behind.
 func stageValidatedRestoreCopy(backup, live string) (string, error) {
+	// FIX ROUND 4: every sql.DB close on every path below goes through
+	// the same bounded wrapper with the seam captured into a local —
+	// the invariant "no unbounded close on the restore path" is
+	// mechanical, not incidental.
+	closeDB := restoreCloseDB
+
 	probe, err := restoreSQLiteOpen(backup)
 	if err != nil {
 		return "", fmt.Errorf("E_DB_RESTORE: the backup file is not a valid GSEER database: %w", err)
 	}
-	_ = probe.DB.Close()
+	// The probe pool holds no connection today (sqlite.Open is lazy:
+	// an existing file opens nothing), so this close is trivial — but
+	// it is bounded anyway so the invariant cannot silently regress if
+	// the opener ever starts pinging (FIX ROUND 4, audit item 1).
+	if cerr := restoreBoundedSync("close of the backup probe", func() error {
+		return closeDB(probe.DB)
+	}); cerr != nil {
+		return "", fmt.Errorf("E_DB_RESTORE: the backup probe could not be closed cleanly (the live database was not touched): %w", cerr)
+	}
 
 	staging, err := uniqueRestorePath(live + ".restore-staging")
 	if err != nil {
@@ -228,11 +470,39 @@ func stageValidatedRestoreCopy(backup, live string) (string, error) {
 		return "", fmt.Errorf("E_DB_RESTORE: the staged copy is not a valid database (the live database was not touched): %w", err)
 	}
 	if qerr := quickCheck(validated.DB); qerr != nil {
-		_ = validated.DB.Close()
-		_ = os.Remove(staging)
-		return "", fmt.Errorf("E_DB_RESTORE: the staged copy failed the integrity check (the live database was not touched): %w", qerr)
+		// FIX ROUND 4 (audit item 1): this path previously closed the
+		// staging database UNBOUNDED — a real connection exists here
+		// (quickCheck just ran), so its close-time checkpoint+fsync is
+		// exactly the wedge class the owner hit.  Bounded on every
+		// path now.
+		cerr := restoreBoundedSync("close of the staged copy after a failed integrity check (checkpoint + fsync on close)", func() error {
+			return closeDB(validated.DB)
+		})
+		leftover := removeStagingArtifacts(staging)
+		if errors.Is(cerr, errRestoreSyncStuck) {
+			return "", fmt.Errorf("E_DB_RESTORE: the staged copy failed the integrity check (%v), and its close did not return within %s either — the live database was not touched; the integrity error is the primary failure, the wedge only delays the cleanup: %w%s", qerr, restoreSyncTimeout, cerr, stagingLeftoverNote(leftover))
+		}
+		return "", fmt.Errorf("E_DB_RESTORE: the staged copy failed the integrity check (the live database was not touched): %w%s", qerr, stagingLeftoverNote(leftover))
 	}
-	_ = validated.DB.Close()
+	// FIX ROUND 3: the last pool connection's close is where SQLite
+	// checkpoints the WAL, fsyncs and removes the sidecars — on wedged
+	// storage this wait never returned.  Bounded now (through the
+	// restoreCloseDB seam, captured locally — see above — so the
+	// watchdog goroutine never reads the package var); a wedge aborts
+	// the restore with the staging file removed (POSIX unlink is safe
+	// while the leaked goroutine still holds the fd) and the live
+	// database untouched.
+	if cerr := restoreBoundedSync("close of the validated staging copy (checkpoint + fsync on close)", func() error {
+		return closeDB(validated.DB)
+	}); cerr != nil {
+		// The staging file and its sidecars are not installed anywhere:
+		// remove them (POSIX unlink is safe while the leaked goroutine
+		// still holds the fds; sqlite cannot resurrect a deleted WAL by
+		// name during the eventual real close) and say exactly where
+		// anything that survived is, never silently.
+		leftover := removeStagingArtifacts(staging)
+		return "", fmt.Errorf("E_DB_RESTORE: the staged copy could not be closed cleanly (the live database was not touched): %w%s", cerr, stagingLeftoverNote(leftover))
+	}
 
 	// On Windows the POSIX mode bits do not exist (the ACL follows the
 	// parent directory — see the storage package's SQ-04 note), so the
@@ -353,6 +623,16 @@ func swapStagedRestore(staging, live, old string) error {
 // the full guarantee model; it is deliberately NOT documented as
 // atomic).
 func runPersonalDBRestore(cmd *cobra.Command, backupPath string, yes bool) error {
+	// FIX ROUND 5: exclusive, non-blocking entry guard — acquired
+	// before the outstanding-wedge check below (only one invocation at
+	// a time reaches the registry) and released on EVERY return path
+	// via defer.  A concurrent invocation is refused immediately,
+	// never queued: see the restoreEntryGuard comment.
+	if !restoreEntryGuard.TryLock() {
+		return fmt.Errorf("E_DB_RESTORE_INFLIGHT: another restore is already running in this process — refused without waiting (non-blocking): a restore stages into and replaces the live database, so two running at once could interleave their staging and swap steps; wait for the running restore to finish and re-run")
+	}
+	defer restoreEntryGuard.Unlock()
+
 	cfg, err := loadEngineConfig()
 	if err != nil {
 		return err
@@ -367,6 +647,16 @@ func runPersonalDBRestore(cmd *cobra.Command, backupPath string, yes bool) error
 	live := filepath.Clean(cfg.Database.DSN)
 	if live == filepath.Clean(abs) {
 		return fmt.Errorf("E_DB_RESTORE: the backup path is the live database itself — nothing to restore")
+	}
+	// FIX ROUND 4 fail-closed policy: refuse a new restore while a
+	// previous one's sync operation is still outstanding on wedged
+	// storage (its deferred SQLite checkpoint / by-name sidecar cleanup
+	// could collide with a reused staging path — see the
+	// restoreWedgeOutstanding comment).  The policy self-heals when the
+	// outstanding operation drains; in the one-shot CLI the wedge dies
+	// with the process.
+	if n := restoreWedgeOutstanding.Load(); n > 0 {
+		return fmt.Errorf("E_DB_RESTORE_INFLIGHT: %d previous restore sync operation(s) in this process are still outstanding on wedged storage (their deferred SQLite checkpoint and sidecar cleanup are not finished). Fail-closed: re-run the restore from a fresh process, or wait for storage to recover and retry — proceeding first could collide with the outstanding operations", n)
 	}
 	if !yes {
 		out := cmd.OutOrStdout()
@@ -401,8 +691,18 @@ func runPersonalDBRestore(cmd *cobra.Command, backupPath string, yes bool) error
 	// Crash durability for the swap: fsync the directory on POSIX (a
 	// no-op-with-barrier on Windows — see restorefs_windows.go).  The
 	// replacement has ALREADY happened here: a failure must be
-	// reported, never rolled back.
-	if serr := restoreSyncDir(filepath.Dir(live)); serr != nil {
+	// reported, never rolled back.  FIX ROUND 3: bounded wait — on
+	// wedged storage this fsync never returned and the CLI hung past
+	// the successful swap with no output; now it reports explicitly
+	// (same E_DB_RESTORE_DIRSYNC semantics: restore IS in place,
+	// durability unconfirmed).
+	syncDir := restoreSyncDir // captured locally before the goroutine (see copyFile)
+	if serr := restoreBoundedSync("directory fsync after the replacement", func() error {
+		return syncDir(filepath.Dir(live))
+	}); serr != nil {
+		if errors.Is(serr, errRestoreSyncStuck) {
+			return fmt.Errorf("E_DB_RESTORE_DIRSYNC: the restore IS in place, but the %w — after a crash or power loss the previous database file may reappear. Verify with `gseer search` and re-run the restore to make it durable", serr)
+		}
 		return fmt.Errorf("E_DB_RESTORE_DIRSYNC: the restore IS in place, but flushing the directory entry to disk failed — after a crash or power loss the previous database file may reappear. Verify with `gseer search` and re-run the restore to make it durable: %w", serr)
 	}
 

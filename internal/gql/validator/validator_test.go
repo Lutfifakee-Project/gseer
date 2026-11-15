@@ -112,6 +112,7 @@ func TestValidateAccepts(t *testing.T) {
 func TestValidateAliasRewrite(t *testing.T) {
 	cases := []struct{ src, want string }{
 		{`country == "US"`, `geo_country == "US"`},
+		{`app == "nginx"`, `product == "nginx"`},
 		{`title CONTAINS "login"`, `http.title CONTAINS "login"`},
 		{`server == "nginx"`, `http.server == "nginx"`},
 		{`status == 200`, `http.status == 200`},
@@ -337,5 +338,36 @@ func TestFieldNames(t *testing.T) {
 		if !found {
 			t.Errorf("registry missing %q", want)
 		}
+	}
+}
+
+// TestValidateBareKeywordIsFreeText — v0.3.2 Easy-to-Use grammar
+// completion: an unquoted bare word that is not a known field and has
+// no dot is a FREE-TEXT term (MASTER §3: `gseer search 'nginx'`),
+// while known fields and dotted names keep the exists/unknown
+// semantics.
+func TestValidateBareKeywordIsFreeText(t *testing.T) {
+	n, perr := parser.Parse(`nginx`)
+	if perr != nil {
+		t.Fatalf("parse: %v", perr)
+	}
+	got, err := Validate(n)
+	if err != nil {
+		t.Fatalf("bare keyword `nginx` must become free text, got: %v", err)
+	}
+	if !strings.Contains(got.String(), `asset_value CONTAINS "nginx"`) {
+		t.Fatalf("expected free-text expansion, got: %s", got.String())
+	}
+	// Known field stays a presence test.
+	got, err = Validate(mustParse(t, `http.title`))
+	if err != nil {
+		t.Fatalf("known-field bare exists rejected: %v", err)
+	}
+	if got.String() != "exists(http.title)" {
+		t.Fatalf("known-field bare exists changed: %s", got.String())
+	}
+	// Dotted unknown names still fail with GQL_E_FIELD.
+	if _, err := Validate(mustParse(t, `http.titl`)); err == nil {
+		t.Fatal("dotted unknown field must still fail")
 	}
 }

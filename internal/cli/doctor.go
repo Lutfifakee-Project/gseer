@@ -29,6 +29,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Lutfifakee-Project/gseer/internal/config"
+	"github.com/Lutfifakee-Project/gseer/internal/index"
 	"github.com/Lutfifakee-Project/gseer/internal/search"
 	"github.com/Lutfifakee-Project/gseer/internal/searchlite"
 	"github.com/Lutfifakee-Project/gseer/internal/storage/postgres"
@@ -289,6 +290,37 @@ func reportPersonalDBChecks(cmd *cobra.Command, cfg *config.Config, report func(
 		return
 	}
 	reportIndexMeta(meta, report)
+	reportSharedIndex(report)
+}
+
+// reportSharedIndex reports the shared-index freshness contract (v0.3.2,
+// personal profile): not installed (HINT + the one-command fix), or the
+// installed sequence + age with a refresh hint past two weeks.  The
+// EMPTY hint names `gseer setup` FIRST — the shared index is the
+// fastest honest path to real internet-asset data.
+func reportSharedIndex(report func(name, outcome, detail, fix string, err error)) {
+	st, err := index.LoadState(sharedIndexDir())
+	if err != nil {
+		report("shared index", "FAIL", "cannot read the index state", "gseer index status", err)
+		return
+	}
+	if st == nil {
+		report("shared index", "HINT", "not installed — search would return only locally collected data",
+			"gseer setup  (or: gseer index update)", nil)
+		return
+	}
+	age := time.Since(st.BuiltAt).Round(time.Second)
+	detail := fmt.Sprintf("sequence %d, built %s (age %s), imported: %v",
+		st.Sequence, st.BuiltAt.UTC().Format("2006-01-02 15:04 UTC"), age, st.Imported)
+	if age > 14*24*time.Hour {
+		report("shared index", "HINT", detail+" — older than two weeks", "gseer index update", nil)
+		return
+	}
+	if !st.Imported {
+		report("shared index", "HINT", detail, "gseer index update  (re-runs the import; idempotent)", nil)
+		return
+	}
+	report("shared index", "PASS", detail, "", nil)
 }
 
 // reportIndexMeta renders the shared IndexMeta honesty contract

@@ -46,6 +46,7 @@ import (
 //      GSEER_LOG_FORMAT                 → Log.Format
 //      GSEER_POLICY_EVALUATION_FIXTURES → Policy.EvaluationFixtures
 //      GSEER_UPDATE_MANIFEST_URL        → Update.ManifestURL (v0.1.0)
+//      GSEER_INDEX_MANIFEST_URL         → Index.ManifestURL (v0.3.2 shared index)
 //      GSEER_FINGERPRINTS_DISABLED      → Fingerprints.Disabled (v0.1.0)
 //      GSEER_FINGERPRINTS_RULES_DIR     → Fingerprints.RulesDir (v0.1.0)
 //
@@ -205,6 +206,13 @@ var envMapping = []struct {
 			return false
 		}
 		c.Update.ManifestURL = v
+		return true
+	}},
+	{"GSEER_INDEX_MANIFEST_URL", func(c *Config, v string) bool {
+		if v == "" {
+			return false
+		}
+		c.Index.ManifestURL = v
 		return true
 	}},
 	{"GSEER_FINGERPRINTS_DISABLED", func(c *Config, v string) bool {

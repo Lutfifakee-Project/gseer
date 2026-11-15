@@ -248,6 +248,7 @@ func runPersonalSearch(out io.Writer, cfg *config.Config, q search.Query, fr fac
 	if err != nil {
 		printf(out, "E_DB_UNAVAILABLE: cannot open the personal database\nWhy: %v\nTry: gseer setup --personal\n", err)
 		exitWith(ExitUnavailable)
+		return nil // unreachable in production (exitWith exits); keeps the nil-result fall-through impossible under the test seam
 	}
 	defer closeDB()
 
@@ -255,6 +256,7 @@ func runPersonalSearch(out io.Writer, cfg *config.Config, q search.Query, fr fac
 	if err != nil {
 		renderSearchError(out, err)
 		exitWith(searchExitCode(err))
+		return nil
 	}
 	var fres *search.FacetsResult
 	if fr.Enabled {
@@ -265,6 +267,7 @@ func runPersonalSearch(out io.Writer, cfg *config.Config, q search.Query, fr fac
 		if err != nil {
 			renderSearchError(out, err)
 			exitWith(searchExitCode(err))
+			return nil
 		}
 	}
 	renderSearchWithFacets(out, res, fres, jsonOutput())

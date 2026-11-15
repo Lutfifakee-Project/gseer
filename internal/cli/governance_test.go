@@ -101,7 +101,7 @@ func TestGovernanceNoCollectorDirectory(t *testing.T) {
 }
 
 func TestGovernancePlannedCommandsExit64(t *testing.T) {
-	for _, name := range []string{"scan", "asset"} { // update/export are real commands as of v0.1.0
+	for _, name := range []string{"asset"} { // update/export (v0.1.0) and scan (v0.3.2) are real commands now
 		t.Run(name, func(t *testing.T) {
 			// Stub the process-exit seam (coming_later exits 64).
 			orig := exitFunc

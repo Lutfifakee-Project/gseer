@@ -18,6 +18,8 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strings"
 
@@ -154,7 +156,33 @@ func validateValues(c *Config) *Error {
 				"server.listen must be host:port (e.g. 127.0.0.1:8443)")
 		}
 	}
+	// Index manifest URL shape (v0.3.2 shared index): https always;
+	// plain http ONLY for loopback hosts (local testing).  The trust
+	// still comes from the Ed25519 signature, not the URL — this check
+	// only refuses plaintext transport to non-local endpoints.
+	if c.Index.ManifestURL != "" {
+		u, uerr := url.Parse(c.Index.ManifestURL)
+		if uerr != nil || u.Scheme == "" || u.Host == "" {
+			return errInvalidValue("index.manifest_url", c.Index.ManifestURL,
+				"index.manifest_url must be an absolute https URL (or http:// on a loopback host for local testing)")
+		}
+		if u.Scheme != "https" && !(u.Scheme == "http" && isLoopbackHost(u.Hostname())) {
+			return errInvalidValue("index.manifest_url", c.Index.ManifestURL,
+				"index.manifest_url must use https; plain http is accepted only for loopback hosts")
+		}
+	}
 	return nil
+}
+
+// isLoopbackHost reports whether the host is a loopback address or the
+// literal name "localhost" (the local-testing exception for the index
+// manifest URL's transport check).
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // applyDefaults fills in owner-approved defaults (PD-1…PD-9 and the

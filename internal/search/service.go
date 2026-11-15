@@ -158,8 +158,13 @@ func (s *Service) Search(ctx context.Context, q Query) (*Result, error) {
 	if err != nil {
 		return nil, wrapGQLError(err)
 	}
-	if _, err := validator.Validate(tree); err != nil {
-		return nil, wrapGQLError(err)
+	// v0.3.2 fix: use the VALIDATOR'S REWRITTEN tree — Validate
+	// performs in-place alias rewrites AND tree-replacing expansions
+	// (free-text/bare-keyword → CONTAINS chains); compiling the
+	// pre-expansion tree silently dropped those rewrites.
+	tree, verr := validator.Validate(tree)
+	if verr != nil {
+		return nil, wrapGQLError(verr)
 	}
 	plan, err := planner.Compile(tree, planner.Options{
 		Mode:    mode,
@@ -370,8 +375,13 @@ func (s *Service) Plan(q Query) (*planner.Plan, error) {
 	if err != nil {
 		return nil, wrapGQLError(err)
 	}
-	if _, err := validator.Validate(tree); err != nil {
-		return nil, wrapGQLError(err)
+	// v0.3.2 fix: use the VALIDATOR'S REWRITTEN tree — Validate
+	// performs in-place alias rewrites AND tree-replacing expansions
+	// (free-text/bare-keyword → CONTAINS chains); compiling the
+	// pre-expansion tree silently dropped those rewrites.
+	tree, verr := validator.Validate(tree)
+	if verr != nil {
+		return nil, wrapGQLError(verr)
 	}
 	return planner.Compile(tree, planner.Options{
 		Mode:    mode,

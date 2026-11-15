@@ -269,10 +269,13 @@ var searchColumns = map[string]string{
 	"tls.version": "tls_version",
 	// The 0003 view projects latest_tls's columns WITHOUT a tls_ prefix:
 	// cert_subject_cn, cert_issuer_cn, cert_expiry (the tls_version name
-	// comes from the latest_tls view itself).
+	// comes from the latest_tls view itself).  0021 adds cert_serial and
+	// cert_sans_dns to the same surface.
 	"tls.cert_subject_cn": "cert_subject_cn",
 	"tls.cert_issuer_cn":  "cert_issuer_cn",
 	"tls.cert_expiry":     "cert_expiry",
+	"tls.cert_serial":     "cert_serial",
+	"tls.cert_sans_dns":   "cert_sans_dns",
 	"technologies":        "technologies",
 	"sources":             "sources",
 	"first_seen":          "first_seen",
@@ -291,12 +294,12 @@ var sortableFields = map[string]bool{
 	"name": true, "product": true, "version": true,
 	"http.status": true, "http.title": true, "http.server": true,
 	"tls.version": true, "tls.cert_subject_cn": true, "tls.cert_issuer_cn": true,
-	"tls.cert_expiry": true,
-	"first_seen":      true, "last_seen": true,
+	"tls.cert_expiry": true, "tls.cert_serial": true, "tls.cert_sans_dns": true,
+	"first_seen": true, "last_seen": true,
 }
 
 // allSearchColumns is the canonical projection list, in view order
-// (migration 0003).  Used when Options.Fields is empty.
+// (migration 0003, extended by 0021).  Used when Options.Fields is empty.
 var allSearchColumns = []string{
 	"row_id", "row_kind",
 	"asset_id", "asset_kind", "asset_value",
@@ -305,6 +308,7 @@ var allSearchColumns = []string{
 	"port", "transport", "protocol", "name", "product", "version",
 	"http_status", "http_title", "http_server",
 	"tls_version", "cert_subject_cn", "cert_issuer_cn", "cert_expiry",
+	"cert_serial", "cert_sans_dns",
 	"technologies", "sources", "first_seen", "last_seen", "stale",
 }
 

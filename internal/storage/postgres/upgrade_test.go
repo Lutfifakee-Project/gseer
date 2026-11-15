@@ -109,8 +109,8 @@ func TestV010ToV020UpgradePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upgrade migrations: %v", err)
 	}
-	if head != 17 || applied != 2 { // exactly 0016 + 0017 on top of (6, false)
-		t.Fatalf("upgrade applied %d to head %d, want 2 applied to head 17", applied, head)
+	if head != 20 || applied != 5 { // exactly 0016+0017+0018+0019+0020 on top of (6, false) — final microfix head
+		t.Fatalf("upgrade applied %d to head %d, want 5 applied to head 20", applied, head)
 	}
 	if _, err := ApplyRuntimeGrants(ctx, dsn); err != nil {
 		t.Fatalf("runtime grants: %v", err)

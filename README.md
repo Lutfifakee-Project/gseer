@@ -3,6 +3,7 @@
 ![GSEER banner](docs/assets/banner.png)
 
 > **GSEER — internet-asset search engine**
+> Search internet assets. Collect authorized data. Store locally. Search easily.
 
 [![CI](https://github.com/Lutfifakee-Project/gseer/actions/workflows/ci.yml/badge.svg)](https://github.com/Lutfifakee-Project/gseer/actions/workflows/ci.yml)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
@@ -12,10 +13,11 @@
 ## 1. What is GSEER?
 
 GSEER is an open-source, **self-hosted search engine for internet assets**.
-You tell it which identifiers you care about, its passive collectors gather
-public facts about them (DNS answers, reverse-DNS names, ASN ownership), and
-you search everything it has indexed with a simple query language — from a
-CLI, a REST API, and a built-in dashboard.
+Its autonomous GitHub Shared Index gathers public facts (DNS answers,
+reverse-DNS names, ASN ownership) and every fact is searchable with a simple
+query language from ONE interface: the **CLI** (`gseer`).  Install it,
+run `gseer setup`, search — no URL to paste, no seeds, no database server,
+no crawler to operate.
 
 **Everything runs on your machine**: your database, your data, your rules.
 No account, no API key, no hosted service. A query can only ever READ —
@@ -70,11 +72,14 @@ gseer search 'port==443 && title CONTAINS "login"'
 gseer db backup --out backup.db
 ```
 
-Your first REAL data comes from collection — see section 6.
+Your first REAL data comes from the official shared index — `gseer setup`
+fetches it automatically (see [`docs/SHARED-INDEX.md`](docs/SHARED-INDEX.md)).
 
-Prefer a bigger, multi-user setup? The self-hosted profile runs on
-PostgreSQL 16+ with a hardened deployment order — see
-[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) and section 7.
+> **Developer self-hosting internals (not the official product path):** a
+> self-hosted PostgreSQL profile with a hardened deployment order is
+> maintained as an internal engineering capability — see
+> [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) and section 7.  The official
+> product is the CLI above: INSTALL → SETUP → USE.
 
 ## 4. Search examples
 
@@ -173,9 +178,10 @@ gseer db restore backup.db          # staged, validated, recoverable replacement
 # Move to another machine: copy gseer.db (and config.yaml), done.
 ```
 
-**Self-hosted mode.** PostgreSQL 16+ as the engine, credential separation
+**Self-hosted mode (developer internals — not the official product path).** A
+maintained internal capability on PostgreSQL 16+ (credential separation
 (operator vs. least-privilege `gseer_app` runtime), a fail-closed privilege
-audit before the server binds, and Docker compose generation:
+audit before the server binds, and Docker compose generation):
 
 ```bash
 gseer setup --self-hosted --with-compose   # writes compose + .env, then follows docs/QUICKSTART.md
@@ -233,10 +239,12 @@ the existing database.
 
 ## Security, limitations, license
 
-- **Search ≠ Scan** — no code path in this repository port-scans,
-  banner-grabs, or enumerates the internet. A query can only read.
-  Planned active observation (`gseer scan`) does not exist; invoking it
-  exits 64.
+- **Search ≠ Scan** — search can only read; it never collects or scans.
+  Active observation (`gseer scan`) is a separate, explicit regime gated
+  by a default-deny authorization gateway: nothing is probed without a
+  live scope you registered (`gseer scope add`), every decision is
+  audited (`gseer scope audit`), and denials never touch the network.
+  See docs/SCANNING.md.
 - **Nothing runs uninvoked** — no daemon, no scheduler. Every collection
   run is an explicit operator command, gated by the terms register.
 - **Passive facts are asset-level** — a DNS/PTR answer proves a name was
@@ -256,8 +264,8 @@ are the easiest starting point.
 
 - [`docs/QUICKSTART.md`](docs/QUICKSTART.md) — the canonical fresh-install workflow
 - [`docs/INSTALL.md`](docs/INSTALL.md) — install methods, checksums, build from source
-- [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — self-hosted credential model, hardened startup
-- [`docs/DOCKER.md`](docs/DOCKER.md) — full Docker stack
+- [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — developer self-hosting internals (credential model, hardened startup; NOT an official product path)
+- [`docs/DOCKER.md`](docs/DOCKER.md) — developer Docker stack (legacy internal; the official product is the CLI)
 - [`docs/UPDATE.md`](docs/UPDATE.md) — the signed-update chain
 - [`docs/SOURCES.md`](docs/SOURCES.md) — data-source review register (where collection data comes from)
 - [`docs/RULES.md`](docs/RULES.md) — fingerprint rule format and contributions

@@ -23,6 +23,7 @@ package searchlite_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -302,15 +303,72 @@ func TestExplainAndValidate(t *testing.T) {
 	}
 }
 
-// TestSearchTimeout — a normal query runs under the smallest legal
-// timeout without issue (the statement_timeout parity surface).
+// TestSearchTimeout — the per-query timeout contract on the personal
+// engine, both ways (FIX ROUND 2):
+//  1. a normal query must SUCCEED under a realistic tight timeout: the
+//     measured p99 of this exact query under -race on the reference
+//     sandbox is ~21ms, so 500ms (10x below the 5s production default,
+//     unchanged) leaves ~25x headroom for slower or loaded CI machines.
+//     The previous 100ms assumption killed healthy queries under -race
+//     there (E_QUERY_EXEC: context deadline exceeded) — a fragile test
+//     assumption, not a production defect;
+//  2. a deliberately BLOCKED query (BEGIN EXCLUSIVE held on a reserved
+//     pool connection) must FAIL at its requested 100ms deadline with
+//     the production classification (E_QUERY_EXEC wrapping context
+//     deadline exceeded) — proving the context timeout really bounds
+//     execution (busy_timeout=5000ms must not win).  Closing the holder
+//     connection releases the lock and normal queries recover.
 func TestSearchTimeout(t *testing.T) {
-	_, svc := seedIndex(t)
-	req := search.Query{GQL: `port>0`, Timeout: 100 * time.Millisecond}
-	_, err := svc.Search(context.Background(), req)
-	if err != nil {
-		t.Fatalf("fast query under tiny timeout must still succeed: %v", err)
-	}
+	t.Run("normal query under realistic timeout", func(t *testing.T) {
+		_, svc := seedIndex(t)
+		// warm the pool: the first query pays connection + CGO setup
+		if _, err := svc.Search(context.Background(), search.Query{GQL: `port>0`}); err != nil {
+			t.Fatalf("warmup: %v", err)
+		}
+		req := search.Query{GQL: `port>0`, Timeout: 500 * time.Millisecond}
+		res, err := svc.Search(context.Background(), req)
+		if err != nil {
+			t.Fatalf("fast query under tight timeout must still succeed: %v", err)
+		}
+		if res.Query.TimeoutMs != 500 {
+			t.Errorf("requested timeout must reach the plan verbatim (got %dms)", res.Query.TimeoutMs)
+		}
+	})
+	t.Run("blocked query times out", func(t *testing.T) {
+		_, svc := seedIndex(t)
+		conn, err := svc.DB.Conn(context.Background())
+		if err != nil {
+			t.Fatalf("reserve conn: %v", err)
+		}
+		release := func() {
+			_ = conn.Close() // closing the holder releases the lock
+		}
+		if _, err := conn.ExecContext(context.Background(), "BEGIN EXCLUSIVE"); err != nil {
+			release()
+			t.Fatalf("exclusive: %v", err)
+		}
+		st := time.Now()
+		_, err = svc.Search(context.Background(), search.Query{GQL: `port>0`, Timeout: 100 * time.Millisecond})
+		el := time.Since(st)
+		if err == nil {
+			release()
+			t.Fatal("blocked query must hit the deadline")
+		}
+		var qe *search.QueryError
+		if !errors.As(err, &qe) || qe.Code != "E_QUERY_EXEC" || !strings.Contains(qe.Detail, "context deadline exceeded") {
+			release()
+			t.Fatalf("timeout must surface as E_QUERY_EXEC/context deadline exceeded, got %v", err)
+		}
+		if el >= 2*time.Second {
+			release()
+			t.Fatalf("deadline did not bound execution: busy_timeout won (%v)", el)
+		}
+		release()
+		// lock released: normal queries recover
+		if _, err := svc.Search(context.Background(), search.Query{GQL: `port>0`, Timeout: 500 * time.Millisecond}); err != nil {
+			t.Fatalf("after the holder connection is closed, queries must succeed again: %v", err)
+		}
+	})
 }
 
 // TestInvalidQuerySurfaces — an unknown field surfaces the validator's

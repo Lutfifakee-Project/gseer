@@ -415,8 +415,8 @@ func TestMigrationStatusBranches(t *testing.T) {
 	if st.State != StateUninitialized {
 		t.Errorf("fresh DB state = %s, want UNINITIALIZED", st.State)
 	}
-	if len(st.Pending) != 8 { // 8 up-files (0001–0006 + 0016 + 0017; head is 17 per OD-4's reserved range)
-		t.Errorf("fresh DB pending = %v, want 8 files", st.Pending)
+	if len(st.Pending) != 12 { // 12 up-files (0001–0006 + 0016 + 0017 + 0018 + 0019 + 0020 + 0021; head is 21, the 0007–0015 band stays reserved)
+		t.Errorf("fresh DB pending = %v, want 12 files", st.Pending)
 	}
 
 	// AT_HEAD.
@@ -443,9 +443,10 @@ func TestMigrationStatusBranches(t *testing.T) {
 	if st.State != StateBehind {
 		t.Errorf("behind state = %s, want BEHIND", st.State)
 	}
-	if len(st.Pending) != 7 || st.Pending[0] != "0002_helper_views.up.sql" ||
+	if len(st.Pending) != 10 || st.Pending[0] != "0002_helper_views.up.sql" ||
 		st.Pending[1] != "0003_search_index.up.sql" || st.Pending[2] != "0004_search_indexes.up.sql" ||
-		st.Pending[3] != "0005_suppressions.up.sql" {
+		st.Pending[3] != "0005_suppressions.up.sql" || st.Pending[7] != "0018_active_observation.up.sql" ||
+		st.Pending[8] != "0019_scan_concurrency_leases.up.sql" || st.Pending[9] != "0020_scan_lease_tokens.up.sql" {
 		t.Errorf("behind pending = %v", st.Pending)
 	}
 

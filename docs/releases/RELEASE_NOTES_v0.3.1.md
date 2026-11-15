@@ -3,9 +3,10 @@
 > GSEER — internet-asset search engine
 > Search internet assets. Collect authorized data. Store locally. Search easily.
 
-> **PENDING RELEASE.**  This document ships with the v0.3.1 source tree,
-> but the release is NOT tagged and NOT published yet.  The owner tags
-> the commit and publishes; nothing here claims otherwise.
+> **PUBLISHED.**  The v0.3.1 tag exists and the GitHub release is
+> published (tagged 2026-11-12; source archives, prebuilt platform
+> binaries for linux/darwin/windows amd64+arm64, and a `checksums.txt`
+> SHA-256 manifest).  `go install …/cmd/gseer@latest` resolves v0.3.1.
 
 v0.3.1 is a **correctness release**: real-world acceptance testing on
 Windows found two failures that POSIX CI could not see, the documented
@@ -133,14 +134,12 @@ moved, and no behavior was faked.
 - The module-path fix matters to anyone who installs from source:
   the lowercase path is the one that resolves — use the documented
   `go install` command verbatim.
-- Transitional install note (verified this cycle): until the v0.3.1
-  tag is published, the documented `@latest` command errors out — tag
-  resolution picks the v0.3.0 tag, whose `go.mod` still declares the
-  UPPERCASE module path (the exact mismatch v0.3.1 fixes).  Interim
-  installs that work today: `go install …/cmd/gseer@main` (verified:
-  fresh proxy install, honest "unknown" VCS fields) or a source
-  build.  Once v0.3.1 is the latest tag, `@latest` resolves it by the
-  same resolution rule that today picks v0.3.0.
+- Install note (updated 2026-11-14): v0.3.1 is the latest published
+  tag — the documented `go install …/cmd/gseer@latest` command
+  resolves it directly (the Go module proxy serves v0.3.1).  Pin the
+  exact tag (`@v0.3.1`) when you want reproducibility.  (The
+  transitional `@main` guidance that applied while the tag was pending
+  is historical; see CHANGELOG.md.)
 
 ## Verification
 

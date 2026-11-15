@@ -1,5 +1,11 @@
 # GSEER — Full Self-Hosted Docker Stack
 
+> **Developer internals (historical capability — NOT an official product
+> installation or usage path).**  The official GSEER product is the CLI:
+> INSTALL → SETUP → USE (`gseer setup` provisions personal mode and the
+> official shared index).  This document describes a maintained internal
+> engineering stack; nothing here is required to run GSEER.
+
 The full stack is **two containers**: PostgreSQL 17 and the GSEER
 API + dashboard server.  Nothing else — no collector container (nothing
 collects uninvoked; collection is an explicit command).  The server

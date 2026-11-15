@@ -1,14 +1,19 @@
 # GSEER — Quickstart (v0.3.1)
 
 > Canonical fresh-install workflow.  Every command below was executed
-> against the real binary during the release-readiness rounds.  Two
-> paths:
+> against the real binary during the release-readiness rounds.  The
+> OFFICIAL product path is the CLI only (INSTALL → SETUP → USE →
+> SEARCH):
 >
 > - **Path A — personal mode (default, zero-config):** one embedded
->   SQLite file; no database server, no Docker, no account.
-> - **Path B — self-hosted:** PostgreSQL 16+ with the hardened
->   deployment order.  Credential model and the fail-closed privilege
->   audit: `docs/DEPLOYMENT.md`.
+>   SQLite file; no database server, no Docker, no account.  `gseer
+>   setup` provisions it AND fetches the official signed shared index —
+>   the autonomous GitHub Shared Index is the official data source.
+> - **Path B — developer self-hosting internals (PostgreSQL 16+):** a
+>   maintained internal capability (hardened deployment order, credential
+>   model in `docs/DEPLOYMENT.md`) — NOT an official product
+>   installation or usage path, and never required for the CLI
+>   product (INSTALL → SETUP → USE).
 
 ## Path A — personal mode (zero-config)
 
@@ -18,14 +23,26 @@ Install once, then run:
 > `gseer source add …` — initializes personal mode the same way when no
 > configuration exists yet.  Nothing to provision by hand.
 
+> **The fastest path to real data (v0.3.2):** `gseer setup` provisions
+> personal mode AND downloads the official signed shared index — after
+> it, search returns real indexed internet assets.  Trust chain and
+> freshness: `docs/SHARED-INDEX.md`.
+
 ```bash
-go install -v github.com/Lutfifakee-Project/gseer/cmd/gseer@latest
-gseer
-#   Welcome to GSEER — internet-asset search engine.
+go install github.com/Lutfifakee-Project/gseer/cmd/gseer@latest
+gseer setup
+#   Fresh install — configuring PERSONAL MODE + the official SHARED INDEX.
 #   [ ok  ] personal database: ~/.gseer/gseer.db      (one SQLite file, 0600)
-#   [ ok  ] migrations: schema at head v1 (AT_HEAD)
-#   [ ok  ] new database file created with 0600 permissions
-#   [ ok  ] config written: ~/.gseer/config.yaml (profile=personal)
+#   [ ok  ] shared index: verified + installed sequence 12 (built …, schema v5)
+#   [ ok  ] imported: 183 assets inserted, … observations
+gseer search 'nginx'                # bare keyword over the shared index
+gseer search 'country=="ID" && port=="443"'
+gseer index status                  # how fresh is the index?
+gseer index update                  # fetch → verify → install → import (idempotent)
+gseer doctor
+
+# Offline / local-only alternative — provision WITHOUT any network call:
+gseer setup --personal
 gseer doctor
 #   4 PASS, 0 FAIL — index reported EMPTY (that is honest)
 
@@ -112,7 +129,11 @@ gseer source add my-asn --type ip2asn --seed-mode index --seed-kind ip --enable 
 
 ---
 
-## Path B — self-hosted (PostgreSQL 16+)
+## Path B — developer self-hosting internals (PostgreSQL 16+)
+
+> Historical engineering capability, retained and tested internally; the
+> official product is the CLI in Path A.  Nothing below is required to
+> INSTALL → SETUP → USE → SEARCH GSEER.
 
 ## 0. Prerequisites
 

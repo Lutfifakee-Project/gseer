@@ -149,6 +149,8 @@ var scanBindings = map[string]func(*search.Row) scanCell{
 	"cert_subject_cn": func(r *search.Row) scanCell { return scanCell{raw: &r.TLSCertSubjectCN} },
 	"cert_issuer_cn":  func(r *search.Row) scanCell { return scanCell{raw: &r.TLSCertIssuerCN} },
 	"cert_expiry":     func(*search.Row) scanCell { return scanCell{kind: "cert_expiry"} },
+	"cert_serial":     func(r *search.Row) scanCell { return scanCell{raw: &r.TLSCertSerial} },
+	"cert_sans_dns":   func(r *search.Row) scanCell { return scanCell{raw: &r.TLSCertSansDNS} },
 	"technologies":    func(*search.Row) scanCell { return scanCell{kind: "technologies", raw: new(any)} },
 	"sources":         func(*search.Row) scanCell { return scanCell{kind: "sources", raw: new(any)} },
 	"first_seen":      func(*search.Row) scanCell { return scanCell{kind: "first_seen"} },

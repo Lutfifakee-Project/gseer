@@ -1,0 +1,17 @@
+# pipeline/seeds/domains.txt — the provider pipeline's discovery seeds.
+#
+# This corpus is the OWNER-CURATED, terms-reviewed discovery basis of
+# the shared index (docs/SOURCES.md): every line is a domain the
+# project is authorized to observe passively through the
+# reviewed-enabled connectors (dns, ptr, ip2asn).
+#
+# Rules (docs/SOURCES.md §E):
+#   - one domain per line; '#' starts a comment;
+#   - NO CIDR blocks, NO wildcards, NO third-party domains without a
+#     documented terms review in docs/SOURCES.md;
+#   - active observation (scan) is NOT driven by this file — it runs
+#     only when the owner commits pipeline/scopes.txt.
+#
+# The owner curates this list; growing it requires the same review as
+# enabling a new source.
+lutfifakee.top

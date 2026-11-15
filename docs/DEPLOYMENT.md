@@ -367,15 +367,18 @@ provisioning is safe (everything is idempotent) but unnecessary.
   `sources`/facets.
 - Suppression IDENTITY sequence gaps are cosmetic (migration 0016's
   in-migration refusal probes consume sequence values; register R7).
-- **No published prebuilt channel yet** (still true for v0.3.1,
-  pending tag): the goreleaser pipeline is draft-gated — it produces
-  artifacts only on a tag push and nothing is published automatically;
-  there is no hosted update manifest, no hosted/global dataset, and no
-  public search service (docs/ROADMAP.md). `gseer update` verifies
-  Ed25519-signed manifests, but no hosted channel exists yet — the
-  updater stays honest about an unconfigured/unreachable channel.
-- Binary distribution (reproducible release channel with published
-  checksums) remains the EU-3 roadmap item; `make build` is
+- **No hosted signed-update channel yet** (the updater stays honest
+  about an unconfigured/unreachable channel; `gseer update` verifies
+  Ed25519-signed manifests but there is no hosted update manifest, no
+  hosted/global dataset, and no public search service —
+  docs/ROADMAP.md).  Prebuilt binaries themselves ship per release:
+  the goreleaser pipeline is draft-gated — it produces artifacts only
+  on a tag push and publishes nothing automatically — and the
+  published v0.3.1 release carries prebuilt platform binaries
+  (linux/darwin/windows, amd64 + arm64) plus a `checksums.txt`
+  SHA-256 manifest.
+- Reproducibility carries into the published channel: `make build` is
   reproducible today (two fresh-clone builds produce identical hashes
-  when built with the same toolchain and flags), but nothing prebuilt
-  is published yet.
+  when built with the same toolchain and flags), and the release
+  artifacts are published with a `checksums.txt` manifest — verify any
+  downloaded artifact against it (docs/INSTALL.md).

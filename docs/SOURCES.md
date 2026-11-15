@@ -17,6 +17,7 @@
 | `dns` | operator-configured resolver (system default) | **reviewed-enabled** | standard DNS recursion; the operator names every target; answers are protocol facts |
 | `ip2asn` | Team Cymru IP-to-ASN (DNS interface) | **reviewed-enabled** | explicitly free community service; DNS interface requested "at volume"; conservative rates + caching |
 | `ptr` | operator-configured resolver (system default) | **reviewed-enabled** | standard reverse-DNS (PTR) recursion; same basis as `dns` — operator-named addresses, protocol facts |
+| shared index | the project's signed shared-index channel | **reviewed-enabled** (v0.3.2) | rows produced by the provider pipeline's reviewed-enabled connectors only (`.github/workflows/index.yml` + `pipeline/seeds/`); imported with provenance `shared-index` — `docs/SHARED-INDEX.md` |
 | `rdap` | RIR registration data (ARIN/RIPE NCC et al.) | **disabled** | terms do not grant indexing/redistribution; needs written authorization |
 | `ct` | crt.sh (Sectigo CT aggregation) | **disabled** | no published terms covering automated collection or indexing/reuse |
 

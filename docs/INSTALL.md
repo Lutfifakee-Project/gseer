@@ -5,28 +5,23 @@
 Install Go (latest version), then:
 
 ```bash
-go install -v github.com/Lutfifakee-Project/gseer/cmd/gseer@latest
+go install github.com/Lutfifakee-Project/gseer/cmd/gseer@latest
 ```
 
-> **Until the v0.3.1 tag is published**, that `@latest` form errors out:
-> tag resolution picks the **v0.3.0** tag, whose `go.mod` still declares
-> the UPPERCASE module path — exactly the mismatch v0.3.1 fixes
-> ("module declares its path as `…/GSEER` but was required as `…/gseer`").
-> Interim installs that work today (verified): install the current
-> source with
-> `go install -v github.com/Lutfifakee-Project/gseer/cmd/gseer@main`,
-> or build from source (below).  Once v0.3.1 is the latest tag, `@latest`
-> resolves it — the same resolution rule that today picks v0.3.0 — and
-> the documented command works.
-
 The binary lands in `$(go env GOPATH)/bin` — put that on your `PATH` if
-it is not.  Nothing else is required for personal mode: the first
+it is not.  Verify the installation:
+
+```bash
+gseer version   # expect: gseer v0.3.1
+```
+
+Nothing else is required for personal mode: the first
 `gseer` run creates the single-file database and config automatically
 (and so does the first engine command — `search`, `source add`,
 `collect run` — when no configuration exists yet).
 
 Pin a release instead of `@latest` when you want reproducibility, e.g.
-`go install -v github.com/Lutfifakee-Project/gseer/cmd/gseer@v0.3.1`.
+`go install github.com/Lutfifakee-Project/gseer/cmd/gseer@v0.3.1`.
 Note on `version` output: `go install` builds carry no VCS metadata, so
 `commit`/`built_at` read "unknown" — the version itself is correct.
 
@@ -35,7 +30,7 @@ Note on `version` output: `go install` builds carry no VCS metadata, so
 | Component | Requirement |
 | --- | --- |
 | Go | 1.26+ (per `go.mod`) |
-| PostgreSQL | **16+** only for the self-hosted profile (OD-7 floor enforced by `gseer setup` and `gseer doctor`; verified end-to-end on **16.15 and 17.2**; the compose files ship `postgres:17-alpine`) |
+| PostgreSQL | **16+** ONLY for the developer self-hosting internals (NOT the official product path — the CLI needs nothing but the binary; OD-7 floor enforced by `gseer setup` and `gseer doctor`; verified end-to-end on **16.15 and 17.2**; the compose files ship `postgres:17-alpine`) |
 | OS | Linux / macOS / Windows (the CI matrix builds and tests all three) |
 
 ```bash
@@ -88,3 +83,7 @@ Continue with `docs/QUICKSTART.md` (`gseer setup --self-hosted
 `gseer doctor` → `gseer search 'port==443'`).  The credential model and
 the hardened startup/privilege-audit contract: `docs/DEPLOYMENT.md`.
 Upgrading an existing deployment: `docs/UPDATE.md`.
+
+Personal mode and the signed shared index (the zero-infrastructure
+path): `docs/SHARED-INDEX.md` — `gseer setup` provisions personal mode
+and downloads the official signed index in one command.

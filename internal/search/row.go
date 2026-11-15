@@ -66,6 +66,11 @@ type Row struct {
 	TLSCertSubjectCN *string    `json:"tls_cert_subject_cn,omitempty"`
 	TLSCertIssuerCN  *string    `json:"tls_cert_issuer_cn,omitempty"`
 	TLSCertExpiry    *time.Time `json:"tls_cert_expiry,omitempty"`
+	// v0.3.2 certificate breadth (migration 0021 PG / 0005 personal
+	// SQLite): the serial (hex) and the SAN DNS entries as a
+	// comma-joined string, projected from the TLS observation evidence.
+	TLSCertSerial  *string `json:"tls_cert_serial,omitempty"`
+	TLSCertSansDNS *string `json:"tls_cert_sans_dns,omitempty"`
 
 	Technologies []string `json:"technologies,omitempty"`
 	Sources      []string `json:"sources,omitempty"`
@@ -104,6 +109,8 @@ var stringSortFields = map[string]func(*Row) *string{
 	"tls.version":         func(r *Row) *string { return r.TLSVersion },
 	"tls.cert_subject_cn": func(r *Row) *string { return r.TLSCertSubjectCN },
 	"tls.cert_issuer_cn":  func(r *Row) *string { return r.TLSCertIssuerCN },
+	"tls.cert_serial":     func(r *Row) *string { return r.TLSCertSerial },
+	"tls.cert_sans_dns":   func(r *Row) *string { return r.TLSCertSansDNS },
 }
 
 var intSortFields = map[string]func(*Row) *int{
@@ -182,6 +189,8 @@ var rowScanTargets = map[string]func(*Row) any{
 	"cert_subject_cn": func(r *Row) any { return &r.TLSCertSubjectCN },
 	"cert_issuer_cn":  func(r *Row) any { return &r.TLSCertIssuerCN },
 	"cert_expiry":     func(r *Row) any { return &r.TLSCertExpiry },
+	"cert_serial":     func(r *Row) any { return &r.TLSCertSerial },
+	"cert_sans_dns":   func(r *Row) any { return &r.TLSCertSansDNS },
 	"technologies":    func(r *Row) any { return &r.Technologies },
 	"sources":         func(r *Row) any { return &r.Sources },
 	"first_seen":      func(r *Row) any { return &r.FirstSeen },

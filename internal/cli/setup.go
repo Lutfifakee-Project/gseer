@@ -75,20 +75,31 @@ func registerSetupCmd(root *cobra.Command) {
 	)
 	cmd := &cobra.Command{
 		Use:   "setup",
-		Short: "Configure an endpoint (client) or initialize self-hosted mode",
-		Long: `Configure an endpoint (client) or initialize self-hosted mode.
+		Short: "Prepare the search environment (default: personal mode + the shared index)",
+		Long: `Prepare the search environment (v0.3.2, docs/SHARED-INDEX.md).
+
+Default (fresh machine — no config, no flags):
+  gseer setup provisions PERSONAL mode (one embedded SQLite file) and
+  downloads the official SIGNED shared index through the full trust
+  chain (Ed25519 manifest signature → sequence gate → SHA-256 →
+  integrity/schema/count validation → atomic install → dedup import).
+  After this, ` + "`gseer search 'nginx'`" + ` returns real indexed internet
+  assets.  A network failure during the fetch is a WARN — the engine
+  works offline; a signature failure refuses the index (exit 5).
 
 Two profiles (SPEC-03 §5):
-  - client:        configures a remote endpoint URL (no PostgreSQL needed).
-  - personal:      provisions ONE embedded SQLite database file (SQ-01..06
-                   enforced: 0600 file, WAL, migrations, suppression) —
-                   run: gseer setup --personal [--db-path <file>] [--load-fixtures]
-  - self-hosted:   verifies the database is reachable, checks the
-                   PostgreSQL version (16+, OD-7), and runs the hardened
-                   v0.2.0 deployment order — no manual SQL (QS-3):
+  - client:        gseer setup --server <url> persists client.endpoint
+                   (the profile wizard) and health-checks the endpoint.
+  - personal:      gseer setup --personal [--db-path <file>] [--load-fixtures]
+                   provisions ONE embedded SQLite database file (SQ-01..06:
+                   0600 file, WAL, migrations, suppression) — no network.
+  - self-hosted:   gseer setup --self-hosted verifies the database is
+                   reachable, checks the PostgreSQL version (16+, OD-7),
+                   and runs the hardened v0.2.0 deployment order — no
+                   manual SQL (QS-3):
 
                      1. role bootstrap      gseer_policy_owner + gseer_app + D-47
-                     2. migrations to head  0001…0017
+                     2. migrations to head  0001…0021
                      3. runtime grants      the least-privilege gseer_app matrix
                      4. privilege audit     fail-closed (OD-5); a failure
                                             aborts the deployment
@@ -118,23 +129,24 @@ The fresh-install workflow is documented in docs/QUICKSTART.md
 
 Wired: --self-hosted provisioning (M3), --load-fixtures/--purge-fixtures
 (M4), --with-compose compose + .env generation (M11; --full writes the
-complete db + server stack, M22).
-
---with-compose always writes the files FIRST and stops: on a fresh
-machine the database only exists once compose starts it, so the printed
-next commands (docker compose up / gseer setup --self-hosted) are the
-continuation.  --self-hosted implies the self-hosted profile; an
+complete db + server stack, M22), shared-index default + client wizard
+(v0.3.2).  --with-compose always writes the files FIRST and stops: on a
+fresh machine the database only exists once compose starts it, so the
+printed next commands (docker compose up / gseer setup --self-hosted) are
+the continuation.  --self-hosted implies the self-hosted profile; an
 explicit --profile still wins.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			out := cmd.OutOrStdout()
-
 			if personal {
 				if selfHosted {
 					return fmt.Errorf("E_SETUP_USAGE: --personal and --self-hosted are mutually exclusive in one invocation")
 				}
 				if purgeFixtures {
 					return fmt.Errorf("E_SETUP_USAGE: --purge-fixtures is not a personal setup flag; load fixtures with --load-fixtures")
+				}
+				if flags.server != "" {
+					return fmt.Errorf("E_SETUP_USAGE: --server configures the client profile; --personal provisions the local engine.\n" +
+						"Try: drop one of the two flags, or run: gseer setup  (personal mode + shared index)")
 				}
 				return runSetupPersonal(cmd, personalDBPath, loadFixtures)
 			}
@@ -162,6 +174,37 @@ explicit --profile still wins.`,
 				return runSetupWithCompose(cmd, ".", withFull)
 			}
 
+			// --server configures the CLIENT profile (v0.3.2 wizard):
+			// persist client.endpoint to the config file, then
+			// health-check the endpoint.  This is the M11 wiring the old
+			// print-only branch advertised but never had.
+			if flags.server != "" && !selfHosted {
+				cfg, cerr := config.Load(config.Flags{
+					ConfigPath: flags.configPath,
+					Profile:    string(config.ProfileClient),
+					Endpoint:   flags.server,
+				})
+				if cerr != nil {
+					renderConfigError(cmd, cerr)
+					return nil
+				}
+				return runSetupClientWizard(cmd, cfg)
+			}
+
+			// Fresh machine (no config file, no explicit profile/endpoint
+			// flags or env): the Easy-to-Use default — provision PERSONAL
+			// mode and fetch the official SIGNED shared index (v0.3.2).
+			// --self-hosted keeps its own pinned fresh-machine contract
+			// (reachability refusal, setup_test.go); --load-fixtures on a
+			// fresh machine provisions personal mode + the synthetic
+			// corpus exactly like the root help advertises.
+			if zeroConfigFirstRunApplies() && loadFixtures {
+				return runSetupPersonal(cmd, personalDBPath, true)
+			}
+			if !selfHosted && zeroConfigFirstRunApplies() {
+				return runSetupSharedIndexDefault(cmd)
+			}
+
 			// --self-hosted implies the self-hosted profile: the
 			// flag exists so a new operator does not have to know
 			// about --profile/GSEER_PROFILE first (the
@@ -179,7 +222,10 @@ explicit --profile still wins.`,
 				Endpoint:   flags.server,
 			})
 			if cerr != nil {
-				return cerr
+				// v0.3.2 fix: configuration failures exit 3 (ExitConfig,
+				// SPEC-03 §9) instead of the raw error → exit 1 path.
+				renderConfigError(cmd, cerr)
+				return nil
 			}
 
 			if selfHosted {
@@ -203,15 +249,18 @@ explicit --profile still wins.`,
 				return runSetupPurgeFixtures(cmd, cfg, dbURL)
 			}
 
-			// Client-profile setup: persisting the chosen endpoint to the
-			// config file is M11 wiring (it needs the profile wizard).
-			printf(out, "gseer setup (client profile): endpoint %s\n", cfg.Client.Endpoint)
-			if cfg.Client.Endpoint == "" {
-				printf(out, "no endpoint configured yet.\n")
-				printf(out, "Try: gseer setup --server https://gseer.example.com   (M11 wizard)\n")
-				printf(out, "     or set GSEER_CLIENT_ENDPOINT and --profile client\n")
+			// Profile dispatch (v0.3.2): every configured profile gets an
+			// honest, useful tail — client setups are health-checked,
+			// personal setups refresh the shared index, self-hosted
+			// setups re-run the idempotent hardened core.
+			switch cfg.Profile {
+			case config.ProfileClient:
+				return runSetupClientStatus(cmd, cfg)
+			case config.ProfilePersonal:
+				return runSetupPersonalRefresh(cmd, cfg)
+			default:
+				return runSetupSelfHosted(cmd, cfg, dbURL, false, resetRuntimePassword, runtimePasswordEnv)
 			}
-			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&selfHosted, "self-hosted", false, "initialize self-hosted mode (PostgreSQL + server)")
