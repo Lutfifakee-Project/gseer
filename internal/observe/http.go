@@ -122,6 +122,32 @@ type ScanResult struct {
 	BytesRead int64 `json:"bytes_read"`
 }
 
+// runBudgets resolves the run's byte budget, timeout, and user agent:
+// the scope's limits win, then the observer's configured defaults, then
+// the package defaults (FIX C: the budget returned is the ACCUMULATED
+// run budget — the caller counts every hop against it).
+func (o *HTTPObserver) runBudgets(dec *Decision) (maxBytes int64, timeout time.Duration, ua string) {
+	maxBytes = dec.Limits.MaxTotalBytes
+	if maxBytes <= 0 {
+		maxBytes = o.DefaultMaxBytes
+	}
+	if o.MaxBytesOverride > 0 {
+		maxBytes = o.MaxBytesOverride
+	}
+	if maxBytes <= 0 {
+		maxBytes = DefaultHTTPMaxBytes
+	}
+	timeout = o.Timeout
+	if timeout <= 0 {
+		timeout = DefaultHTTPTimeout
+	}
+	ua = o.UserAgent
+	if ua == "" {
+		ua = DefaultScanUserAgent
+	}
+	return maxBytes, timeout, ua
+}
+
 // Run performs one HTTP observation.  The error return carries only
 // authorization/storage failures that prevented the run entirely;
 // observation-level failures (dial refused, timeout, bad status) are
@@ -164,26 +190,9 @@ func (o *HTTPObserver) Run(ctx context.Context, host string, port int) (*ScanRes
 
 	// maxBytes is the run's ACCUMULATED response-body budget (FIX C):
 	// counted across every redirect hop, never reset on a redirect.
-	maxBytes := dec.Limits.MaxTotalBytes
-	if maxBytes <= 0 {
-		maxBytes = o.DefaultMaxBytes
-	}
-	if o.MaxBytesOverride > 0 {
-		maxBytes = o.MaxBytesOverride
-	}
-	if maxBytes <= 0 {
-		maxBytes = DefaultHTTPMaxBytes
-	}
+	maxBytes, timeout, ua := o.runBudgets(dec)
 	remaining := maxBytes
 	bytesRead := int64(0)
-	timeout := o.Timeout
-	if timeout <= 0 {
-		timeout = DefaultHTTPTimeout
-	}
-	ua := o.UserAgent
-	if ua == "" {
-		ua = DefaultScanUserAgent
-	}
 
 	now := o.GW.now()
 
@@ -314,7 +323,7 @@ func (o *HTTPObserver) Run(ctx context.Context, host string, port int) (*ScanRes
 
 		if isRedirect(status) {
 			loc := resp.Header.Get("Location")
-			next, action, perr := decideRedirect(loc, curHost, curPort, curIP, hop)
+			next, action, perr := decideRedirect(loc, curHost, curPort, hop)
 			switch action {
 			case redirectStopEmptyLoc:
 				res.Redirects = hops
@@ -351,11 +360,11 @@ const (
 
 // decideRedirect resolves one redirect Location into the next hop.
 // Pure: the Run loop owns all state transitions and hop recording.
-func decideRedirect(loc, curHost string, curPort int, curIP netip.Addr, hop int) (redirectTarget, redirectAction, error) {
+func decideRedirect(loc, curHost string, curPort int, hop int) (redirectTarget, redirectAction, error) {
 	if loc == "" {
 		return redirectTarget{}, redirectStopEmptyLoc, nil
 	}
-	next, perr := resolveRedirect(loc, curHost, curPort, curIP)
+	next, perr := resolveRedirect(loc, curHost, curPort)
 	if perr != nil {
 		return redirectTarget{}, redirectStopUnparseable, perr
 	}
@@ -487,7 +496,7 @@ type redirectTarget struct {
 // resolveRedirect resolves one Location header against the current hop.
 // Relative Locations keep speaking to the SAME validated address (the
 // pinned IP is retained; only the Host header name carries over).
-func resolveRedirect(loc, curHost string, curPort int, curIP netip.Addr) (redirectTarget, error) {
+func resolveRedirect(loc, curHost string, curPort int) (redirectTarget, error) {
 	u, err := url.Parse(loc)
 	if err != nil {
 		return redirectTarget{}, err

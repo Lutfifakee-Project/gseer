@@ -224,12 +224,21 @@ func newIndexChannel(t *testing.T, sequence int64) *indexChannel {
 		Counts:        *counts,
 		Artifact:      index.Artifact{SHA256: hex.EncodeToString(sum[:]), Size: int64(len(artifact))},
 	}
-	var srv *httptest.Server
-	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// The artifact URL is derived from the INCOMING request (r.Host) and
+	// the manifest struct is copied per request: httptest.NewServer can
+	// serve before the `srv :=` assignment completes, and two manifest
+	// requests would otherwise race on the captured m (a write racing the
+	// Sign read — the v0.3.2 acceptance data race). m itself stays
+	// immutable, so no captured state is ever written.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/gseer-index-manifest.json":
-			m.Artifact.URL = srv.URL + "/" + artifactName
-			signed, serr := index.Sign(m, testChannelKey)
+			mm := m
+			u := *r.URL
+			u.Scheme, u.Host = "http", r.Host
+			u.Path, u.RawQuery, u.Fragment = "/"+artifactName, "", ""
+			mm.Artifact.URL = u.String()
+			signed, serr := index.Sign(mm, testChannelKey)
 			if serr != nil {
 				http.Error(w, serr.Error(), http.StatusInternalServerError)
 				return

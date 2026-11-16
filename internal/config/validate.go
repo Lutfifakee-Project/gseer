@@ -166,7 +166,7 @@ func validateValues(c *Config) *Error {
 			return errInvalidValue("index.manifest_url", c.Index.ManifestURL,
 				"index.manifest_url must be an absolute https URL (or http:// on a loopback host for local testing)")
 		}
-		if u.Scheme != "https" && !(u.Scheme == "http" && isLoopbackHost(u.Hostname())) {
+		if u.Scheme != "https" && (u.Scheme != "http" || !isLoopbackHost(u.Hostname())) {
 			return errInvalidValue("index.manifest_url", c.Index.ManifestURL,
 				"index.manifest_url must use https; plain http is accepted only for loopback hosts")
 		}

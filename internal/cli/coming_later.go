@@ -54,8 +54,7 @@ func registerComingLaterCmds(root *cobra.Command) {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
 					"E_NOT_IMPLEMENTED: \"gseer %s\" is planned, not in this release.\n",
 					cmd.Name())
-				switch cmd.Name() {
-				case "asset":
+				if cmd.Name() == "asset" {
 					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Asset detail view is planned for a later release — see docs/ROADMAP.md.")
 				}
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Exit code 64.")

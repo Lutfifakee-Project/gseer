@@ -167,7 +167,7 @@ func (o *TLSObserver) Run(ctx context.Context, host string, port int) (*TLSResul
 			// Certificates are CAPTURED here, not evaluated: asset
 			// observation wants what the server actually presented,
 			// including self-signed and name-mismatched certificates.
-			InsecureSkipVerify: true, // docs/SCANNING.md §capture-not-verify
+			InsecureSkipVerify: true, // #nosec G402 -- deliberate capture-not-verify design (docs/SCANNING.md §capture-not-verify): the observation records the presented certificate without evaluating trust
 			MinVersion:         tls.VersionTLS10,
 		}
 		tconn := tls.Client(rawConn, cfg)

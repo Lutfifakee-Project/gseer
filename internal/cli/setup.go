@@ -137,130 +137,18 @@ the continuation.  --self-hosted implies the self-hosted profile; an
 explicit --profile still wins.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if personal {
-				if selfHosted {
-					return fmt.Errorf("E_SETUP_USAGE: --personal and --self-hosted are mutually exclusive in one invocation")
-				}
-				if purgeFixtures {
-					return fmt.Errorf("E_SETUP_USAGE: --purge-fixtures is not a personal setup flag; load fixtures with --load-fixtures")
-				}
-				if flags.server != "" {
-					return fmt.Errorf("E_SETUP_USAGE: --server configures the client profile; --personal provisions the local engine.\n" +
-						"Try: drop one of the two flags, or run: gseer setup  (personal mode + shared index)")
-				}
-				return runSetupPersonal(cmd, personalDBPath, loadFixtures)
-			}
-
-			if loadFixtures && purgeFixtures {
-				return fmt.Errorf("E_SETUP_USAGE: --load-fixtures and --purge-fixtures are mutually exclusive " +
-					"in one invocation.\n" +
-					"Why: loading and purging the same dataset in one run has no meaningful result.\n" +
-					"Try: run them as two separate `gseer setup` invocations")
-			}
-
-			// Compose generation (QS-2) ALWAYS runs first and
-			// terminates the invocation when requested: on a fresh
-			// machine the database cannot be reachable before compose
-			// starts it, so `--with-compose` (with or without
-			// --self-hosted) means "write the files, print the next
-			// commands verbatim".  Provisioning is the operator's
-			// NEXT command (the Next block below prints it) —
-			// attempting it here could only fail with
-			// E_DB_UNREACHABLE on exactly the machine that needs
-			// the bootstrap.  This is the contract the config
-			// layer's own hint names: "run: gseer setup
-			// --self-hosted --with-compose  (to provision one)".
-			if withCompose {
-				return runSetupWithCompose(cmd, ".", withFull)
-			}
-
-			// --server configures the CLIENT profile (v0.3.2 wizard):
-			// persist client.endpoint to the config file, then
-			// health-check the endpoint.  This is the M11 wiring the old
-			// print-only branch advertised but never had.
-			if flags.server != "" && !selfHosted {
-				cfg, cerr := config.Load(config.Flags{
-					ConfigPath: flags.configPath,
-					Profile:    string(config.ProfileClient),
-					Endpoint:   flags.server,
-				})
-				if cerr != nil {
-					renderConfigError(cmd, cerr)
-					return nil
-				}
-				return runSetupClientWizard(cmd, cfg)
-			}
-
-			// Fresh machine (no config file, no explicit profile/endpoint
-			// flags or env): the Easy-to-Use default — provision PERSONAL
-			// mode and fetch the official SIGNED shared index (v0.3.2).
-			// --self-hosted keeps its own pinned fresh-machine contract
-			// (reachability refusal, setup_test.go); --load-fixtures on a
-			// fresh machine provisions personal mode + the synthetic
-			// corpus exactly like the root help advertises.
-			if zeroConfigFirstRunApplies() && loadFixtures {
-				return runSetupPersonal(cmd, personalDBPath, true)
-			}
-			if !selfHosted && zeroConfigFirstRunApplies() {
-				return runSetupSharedIndexDefault(cmd)
-			}
-
-			// --self-hosted implies the self-hosted profile: the
-			// flag exists so a new operator does not have to know
-			// about --profile/GSEER_PROFILE first (the
-			// E_CONFIG_REQUIRED hint itself recommends
-			// `gseer setup --self-hosted`).  An explicit
-			// --profile still wins.
-			profile := flags.profile
-			if selfHosted && profile == "" {
-				profile = string(config.ProfileSelfHosted)
-			}
-
-			cfg, cerr := config.Load(config.Flags{
-				ConfigPath: flags.configPath,
-				Profile:    profile,
-				Endpoint:   flags.server,
+			return runSetupDispatch(cmd, setupOptions{
+				selfHosted:           selfHosted,
+				personal:             personal,
+				personalDBPath:       personalDBPath,
+				withCompose:          withCompose,
+				withFull:             withFull,
+				dbURL:                dbURL,
+				loadFixtures:         loadFixtures,
+				purgeFixtures:        purgeFixtures,
+				resetRuntimePassword: resetRuntimePassword,
+				runtimePasswordEnv:   runtimePasswordEnv,
 			})
-			if cerr != nil {
-				// v0.3.2 fix: configuration failures exit 3 (ExitConfig,
-				// SPEC-03 §9) instead of the raw error → exit 1 path.
-				renderConfigError(cmd, cerr)
-				return nil
-			}
-
-			if selfHosted {
-				if err := runSetupSelfHosted(cmd, cfg, dbURL, loadFixtures || purgeFixtures, resetRuntimePassword, runtimePasswordEnv); err != nil {
-					return err
-				}
-				if loadFixtures || purgeFixtures {
-					// fall through to the fixture action below
-				} else {
-					return nil
-				}
-			}
-
-			// Fixture actions (M4): resolve the DSN exactly like the
-			// self-hosted path (--db-url override wins), then run the
-			// requested action behind the QS-6 gate.
-			if loadFixtures {
-				return runSetupLoadFixtures(cmd, cfg, dbURL)
-			}
-			if purgeFixtures {
-				return runSetupPurgeFixtures(cmd, cfg, dbURL)
-			}
-
-			// Profile dispatch (v0.3.2): every configured profile gets an
-			// honest, useful tail — client setups are health-checked,
-			// personal setups refresh the shared index, self-hosted
-			// setups re-run the idempotent hardened core.
-			switch cfg.Profile {
-			case config.ProfileClient:
-				return runSetupClientStatus(cmd, cfg)
-			case config.ProfilePersonal:
-				return runSetupPersonalRefresh(cmd, cfg)
-			default:
-				return runSetupSelfHosted(cmd, cfg, dbURL, false, resetRuntimePassword, runtimePasswordEnv)
-			}
 		},
 	}
 	cmd.Flags().BoolVar(&selfHosted, "self-hosted", false, "initialize self-hosted mode (PostgreSQL + server)")
@@ -741,5 +629,168 @@ func readFixtureConfirmation(in io.Reader) (confirmed bool, err error) {
 		return true, nil
 	default:
 		return false, nil
+	}
+}
+
+// setupOptions carries the parsed setup flags into the profile helpers
+// (a plain value struct; the dispatch order itself is the documented
+// contract shown in the Long help).
+type setupOptions struct {
+	selfHosted           bool
+	personal             bool
+	personalDBPath       string
+	withCompose          bool
+	withFull             bool
+	dbURL                string
+	loadFixtures         bool
+	purgeFixtures        bool
+	resetRuntimePassword bool
+	runtimePasswordEnv   string
+}
+
+// runSetupDispatch routes one `gseer setup` invocation.
+func runSetupDispatch(cmd *cobra.Command, o setupOptions) error {
+	if o.personal {
+		return runSetupPersonalFlag(cmd, o)
+	}
+	return runSetupProfileDispatch(cmd, o)
+}
+
+// runSetupPersonalFlag implements `gseer setup --personal` and rejects
+// the flags that belong to the other profiles.
+func runSetupPersonalFlag(cmd *cobra.Command, o setupOptions) error {
+	if o.selfHosted {
+		return fmt.Errorf("E_SETUP_USAGE: --personal and --self-hosted are mutually exclusive in one invocation")
+	}
+	if o.purgeFixtures {
+		return fmt.Errorf("E_SETUP_USAGE: --purge-fixtures is not a personal setup flag; load fixtures with --load-fixtures")
+	}
+	if flags.server != "" {
+		return fmt.Errorf("E_SETUP_USAGE: --server configures the client profile; --personal provisions the local engine.\n" +
+			"Try: drop one of the two flags, or run: gseer setup  (personal mode + shared index)")
+	}
+	return runSetupPersonal(cmd, o.personalDBPath, o.loadFixtures)
+}
+
+// runSetupProfileDispatch handles the non-personal invocation: compose
+// generation, the client wizard, the fresh-machine defaults, self-hosted
+// provisioning, and the fixture actions (M4).  The guard order matches
+// the previous inline RunE body exactly.
+func runSetupProfileDispatch(cmd *cobra.Command, o setupOptions) error {
+	if o.loadFixtures && o.purgeFixtures {
+		return fmt.Errorf("E_SETUP_USAGE: --load-fixtures and --purge-fixtures are mutually exclusive " +
+			"in one invocation.\n" +
+			"Why: loading and purging the same dataset in one run has no meaningful result.\n" +
+			"Try: run them as two separate `gseer setup` invocations")
+	}
+
+	// Compose generation (QS-2) ALWAYS runs first and
+	// terminates the invocation when requested: on a fresh
+	// machine the database cannot be reachable before compose
+	// starts it, so `--with-compose` (with or without
+	// --self-hosted) means "write the files, print the next
+	// commands verbatim".  Provisioning is the operator's
+	// NEXT command (the Next block below prints it) —
+	// attempting it here could only fail with
+	// E_DB_UNREACHABLE on exactly the machine that needs
+	// the bootstrap.  This is the contract the config
+	// layer's own hint names: "run: gseer setup
+	// --self-hosted --with-compose  (to provision one)".
+	if o.withCompose {
+		return runSetupWithCompose(cmd, ".", o.withFull)
+	}
+
+	// --server configures the CLIENT profile (v0.3.2 wizard):
+	// persist client.endpoint to the config file, then
+	// health-check the endpoint.  This is the M11 wiring the old
+	// print-only branch advertised but never had.
+	if flags.server != "" && !o.selfHosted {
+		cfg, cerr := config.Load(config.Flags{
+			ConfigPath: flags.configPath,
+			Profile:    string(config.ProfileClient),
+			Endpoint:   flags.server,
+		})
+		if cerr != nil {
+			renderConfigError(cmd, cerr)
+			return nil
+		}
+		return runSetupClientWizard(cmd, cfg)
+	}
+
+	// Fresh machine (no config file, no explicit profile/endpoint
+	// flags or env): the Easy-to-Use default — provision PERSONAL
+	// mode and fetch the official SIGNED shared index (v0.3.2).
+	// --self-hosted keeps its own pinned fresh-machine contract
+	// (reachability refusal, setup_test.go); --load-fixtures on a
+	// fresh machine provisions personal mode + the synthetic
+	// corpus exactly like the root help advertises.
+	if zeroConfigFirstRunApplies() && o.loadFixtures {
+		return runSetupPersonal(cmd, o.personalDBPath, true)
+	}
+	if !o.selfHosted && zeroConfigFirstRunApplies() {
+		return runSetupSharedIndexDefault(cmd)
+	}
+
+	// --self-hosted implies the self-hosted profile: the
+	// flag exists so a new operator does not have to know
+	// about --profile/GSEER_PROFILE first (the
+	// E_CONFIG_REQUIRED hint itself recommends
+	// `gseer setup --self-hosted`).  An explicit
+	// --profile still wins.
+	profile := flags.profile
+	if o.selfHosted && profile == "" {
+		profile = string(config.ProfileSelfHosted)
+	}
+
+	cfg, cerr := config.Load(config.Flags{
+		ConfigPath: flags.configPath,
+		Profile:    profile,
+		Endpoint:   flags.server,
+	})
+	if cerr != nil {
+		// v0.3.2 fix: configuration failures exit 3 (ExitConfig,
+		// SPEC-03 §9) instead of the raw error → exit 1 path.
+		renderConfigError(cmd, cerr)
+		return nil
+	}
+	return runSetupConfiguredProfile(cmd, cfg, o)
+}
+
+// runSetupConfiguredProfile runs the tail of a setup invocation whose
+// config has loaded: self-hosted provisioning, the fixture actions, and
+// the per-profile honest tail (v0.3.2 dispatch).
+func runSetupConfiguredProfile(cmd *cobra.Command, cfg *config.Config, o setupOptions) error {
+	if o.selfHosted {
+		if err := runSetupSelfHosted(cmd, cfg, o.dbURL, o.loadFixtures || o.purgeFixtures, o.resetRuntimePassword, o.runtimePasswordEnv); err != nil {
+			return err
+		}
+		if o.loadFixtures || o.purgeFixtures {
+			// fall through to the fixture action below
+		} else {
+			return nil
+		}
+	}
+
+	// Fixture actions (M4): resolve the DSN exactly like the
+	// self-hosted path (--db-url override wins), then run the
+	// requested action behind the QS-6 gate.
+	if o.loadFixtures {
+		return runSetupLoadFixtures(cmd, cfg, o.dbURL)
+	}
+	if o.purgeFixtures {
+		return runSetupPurgeFixtures(cmd, cfg, o.dbURL)
+	}
+
+	// Profile dispatch (v0.3.2): every configured profile gets an
+	// honest, useful tail — client setups are health-checked,
+	// personal setups refresh the shared index, self-hosted
+	// setups re-run the idempotent hardened core.
+	switch cfg.Profile {
+	case config.ProfileClient:
+		return runSetupClientStatus(cmd, cfg)
+	case config.ProfilePersonal:
+		return runSetupPersonalRefresh(cmd, cfg)
+	default:
+		return runSetupSelfHosted(cmd, cfg, o.dbURL, false, o.resetRuntimePassword, o.runtimePasswordEnv)
 	}
 }

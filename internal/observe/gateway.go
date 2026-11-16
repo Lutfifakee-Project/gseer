@@ -211,7 +211,7 @@ func (g *Gateway) Authorize(ctx context.Context, host string, port int, proto st
 			fmt.Errorf("E_SCOPE_DENIED: scope registry unavailable (fail-closed): %v", serr), aerr)
 	}
 
-	best, reason := matchScope(scopes, now, *dec, isIP, normHost)
+	best, reason := matchScope(scopes, now, *dec, normHost)
 	if best != nil {
 		dec.Scope = best
 		dec.Limits = Limits{
@@ -294,7 +294,7 @@ func (g *Gateway) Revalidate(ctx context.Context, host string, ip netip.Addr, po
 		return dec, auditWrapped(
 			fmt.Errorf("E_SCOPE_DENIED: scope registry unavailable (fail-closed): %v", serr), aerr)
 	}
-	best, reason := matchScope(scopes, now, *dec, false, dec.Host)
+	best, reason := matchScope(scopes, now, *dec, dec.Host)
 	if best != nil {
 		dec.Scope = best
 		dec.Limits = Limits{
@@ -462,7 +462,7 @@ func leaseHolder() string {
 //  3. an INACTIVE matching scope (revoked/expired/deny-mode) → its reason;
 //  4. a restricted address with no covering scope → PRIVATE_UNSCOPED;
 //  5. nothing → NO_SCOPE.
-func matchScope(scopes []storage.Scope, now time.Time, dec Decision, isIP bool, normHost string) (*storage.Scope, string) {
+func matchScope(scopes []storage.Scope, now time.Time, dec Decision, normHost string) (*storage.Scope, string) {
 	var (
 		activeMismatch   *storage.Scope
 		reason           string // reason for the best inactive match

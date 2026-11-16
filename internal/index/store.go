@@ -62,7 +62,7 @@ type LocalState struct {
 
 // LoadState reads state.json (nil when absent — a fresh install).
 func LoadState(dir string) (*LocalState, error) {
-	raw, err := os.ReadFile(filepath.Join(dir, StateName))
+	raw, err := os.ReadFile(filepath.Join(dir, StateName)) // #nosec G304 -- dir is the operator's GSEER index home; the file name is the package constant StateName
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -95,7 +95,7 @@ func SaveState(dir string, st *LocalState) error {
 
 // LoadManifest reads the installed manifest bytes (nil when absent).
 func LoadManifest(dir string) (*Manifest, error) {
-	raw, err := os.ReadFile(filepath.Join(dir, ManifestName))
+	raw, err := os.ReadFile(filepath.Join(dir, ManifestName)) // #nosec G304 -- dir is the operator's GSEER index home; the file name is the package constant ManifestName
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -153,10 +153,7 @@ func InstallSnapshot(dir, staging string, m *Manifest, signedManifest []byte, ma
 		Imported:    false,
 		ManifestURL: manifestURL,
 	}
-	if serr := SaveState(dir, st); serr != nil {
-		return serr
-	}
-	return nil
+	return SaveState(dir, st)
 }
 
 // MarkImported flips the state's Imported flag after a successful (or
@@ -178,7 +175,13 @@ func MarkImported(dir string, imported bool, now time.Time) error {
 // atomic rename; the update package's dirsync does the same for the
 // binary replacement).
 func syncFile(path string) error {
-	f, err := os.OpenFile(path, os.O_RDONLY, 0)
+	// O_RDWR, not O_RDONLY: POSIX fsync accepts a read-only handle, but
+	// Windows FlushFileBuffers requires write access and fails with
+	// ERROR_ACCESS_DENIED on one — the same staging-fsync failure the
+	// update package already fixed by syncing a writable handle.  The
+	// caller syncs only files it just wrote itself (writeFile0600), so
+	// this never widens who can write.
+	f, err := os.OpenFile(path, os.O_RDWR, 0) // #nosec G304 -- the path is a staging/state file this package itself wrote under the operator's GSEER home
 	if err != nil {
 		return err
 	}

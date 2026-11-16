@@ -85,14 +85,8 @@ type scanFlags struct {
 	timeout time.Duration
 }
 
-var (
-	scanHTTPReset = func() {}
-	scanTLSReset  = func() {}
-)
-
 func newScanHTTPCmd() *cobra.Command {
 	f := &scanFlags{}
-	scanHTTPReset = func() { *f = scanFlags{} }
 	cmd := &cobra.Command{
 		Use:   "http",
 		Short: "One HTTP GET against a scoped target (records status/title/server)",
@@ -108,7 +102,6 @@ func newScanHTTPCmd() *cobra.Command {
 
 func newScanTLSCmd() *cobra.Command {
 	f := &scanFlags{}
-	scanTLSReset = func() { *f = scanFlags{} }
 	cmd := &cobra.Command{
 		Use:   "tls",
 		Short: "One TLS handshake against a scoped target (records version + certificate; no HTTP request)",
@@ -145,7 +138,7 @@ func runScanHTTP(cmd *cobra.Command, f *scanFlags) error {
 		return rerr
 	}
 	renderScanResult(cmd, res.Protocol, res.Host, res.IP, res.Port, res.OK,
-		res.Failure, scanHTTPText(res), res.ScopeID, res.Ingested, res.Deduped)
+		scanHTTPText(res), res.ScopeID, res.Ingested, res.Deduped)
 	return nil
 }
 
@@ -170,7 +163,7 @@ func runScanTLS(cmd *cobra.Command, f *scanFlags) error {
 		return rerr
 	}
 	renderScanResult(cmd, res.Protocol, res.Host, res.IP, res.Port, res.OK,
-		res.Failure, scanTLSText(res), res.ScopeID, res.Ingested, res.Deduped)
+		scanTLSText(res), res.ScopeID, res.Ingested, res.Deduped)
 	return nil
 }
 
@@ -240,8 +233,11 @@ func scanTLSText(res *observe.TLSResult) string {
 }
 
 // renderScanResult prints the shared honest shape for both observers.
+// The failure reason itself is carried by the detail line (both text
+// helpers embed it verbatim when the observation failed), so no
+// separate parameter is needed here.
 func renderScanResult(cmd *cobra.Command, protocol, host, ip string, port int,
-	ok bool, failure, detail string, scopeID int64, ingested, deduped int) {
+	ok bool, detail string, scopeID int64, ingested, deduped int) {
 	w := cmd.OutOrStdout()
 	printf(w, "%s %s (%s)\n", protocol, targetText(host, ip), fmt.Sprintf("port %d", port))
 	printf(w, "  %s\n", detail)

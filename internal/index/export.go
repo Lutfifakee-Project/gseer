@@ -43,7 +43,7 @@ import (
 func ExportSnapshot(ctx context.Context, src *sqlite.Store, outPath string) (*Counts, error) {
 	if _, err := os.Stat(outPath); err == nil {
 		return nil, errf(CodeState, "the snapshot output path already exists",
-			fmt.Sprintf("%s", outPath),
+			outPath,
 			"remove it or choose another --out path (a published snapshot is immutable; never overwrite)", nil)
 	}
 	dstRes, err := sqlite.Open(outPath)
@@ -93,7 +93,10 @@ func ExportSnapshot(ctx context.Context, src *sqlite.Store, outPath string) (*Co
 // copyTable copies one table's full column set between the two SQLite
 // databases with ids preserved.
 func copyTable(ctx context.Context, src, dst *sql.DB, table, cols string) error {
-	rows, err := src.QueryContext(ctx, `SELECT `+cols+` FROM `+table)
+	// Table and column identifiers come from copyTable's only callers in
+	// this file — compile-time literals mirroring the migration schema,
+	// never user input — so the identifier interpolation is safe.
+	rows, err := src.QueryContext(ctx, `SELECT `+cols+` FROM `+table) // #nosec G202 -- identifier literals from this file's own callers, not user input
 	if err != nil {
 		return errf(CodeState, "cannot read "+table+" from the source store", err.Error(), "", err)
 	}
@@ -108,7 +111,7 @@ func copyTable(ctx context.Context, src, dst *sql.DB, table, cols string) error 
 	for i := 1; i < ncols; i++ {
 		placeholders += ", ?"
 	}
-	stmt, err := tx.PrepareContext(ctx, `INSERT INTO `+table+` (`+cols+`) VALUES (`+placeholders+`)`)
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO `+table+` (`+cols+`) VALUES (`+placeholders+`)`) // #nosec G202 -- identifier literals from this file's own callers, not user input
 	if err != nil {
 		_ = tx.Rollback()
 		return errf(CodeState, "cannot prepare the "+table+" copy", err.Error(), "", err)

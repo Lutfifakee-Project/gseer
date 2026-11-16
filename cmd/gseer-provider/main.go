@@ -113,7 +113,7 @@ func keygen(args []string) {
 }
 
 func loadPriv(path string) ed25519.PrivateKey {
-	raw, err := os.ReadFile(path) // #nosec G304 -- the key ceremony tool reads the operator-supplied private-key path
+	raw, err := os.ReadFile(path) // #nosec G304,G703 -- the key ceremony tool reads the operator-supplied private-key path (the taint IS the tool's purpose: -key is the operator's own flag)
 	if err != nil {
 		fatal("read key: %v", err)
 	}
@@ -219,7 +219,7 @@ func manifestCmd(args []string) {
 	if err != nil {
 		fatal("manifest: sign: %v", err)
 	}
-	if err := os.WriteFile(*out, signed, 0o600); err != nil { // #nosec G306 -- the manifest carries no secrets (only hashes/URLs); 0600 keeps the local artifact least-privilege
+	if err := os.WriteFile(*out, signed, 0o600); err != nil { // #nosec G306,G703 -- the manifest carries no secrets (only hashes/URLs); 0600 keeps the local artifact least-privilege; -out is the operator's own flag
 		fatal("manifest: write: %v", err)
 	}
 	fmt.Printf("manifest    → %s (sequence %d, schema v%d)\n", *out, m.Sequence, schema)

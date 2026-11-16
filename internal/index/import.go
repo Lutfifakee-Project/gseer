@@ -316,8 +316,13 @@ func nullStr(v sql.NullString) string {
 // to the L2 fact identity).
 func importObservationID(sourceID int64, cursor string) int64 {
 	h := fnv.New64a()
-	fmt.Fprintf(h, "index:%d:%s", sourceID, cursor)
-	return int64(h.Sum64())
+	// The hash writer is an in-memory sink: Fprintf cannot fail, but the
+	// error is discarded explicitly for errcheck.
+	_, _ = fmt.Fprintf(h, "index:%d:%s", sourceID, cursor)
+	// Same scheme as the collect runner's observation id (internal/collect
+	// runner.go): the sign bit is masked so the int64 cast is a positive,
+	// overflow-free BIGINT (gosec G115).
+	return int64(h.Sum64() & 0x7fff_ffff_ffff_ffff)
 }
 
 func nullPtr(v sql.NullString) *string {

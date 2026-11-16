@@ -86,7 +86,7 @@ func (o *Options) now() time.Time {
 // No snapshot is downloaded.
 func Check(ctx context.Context, opts Options) (*Result, error) {
 	res := &Result{CheckedAt: opts.now(), ManifestURL: opts.ManifestURL}
-	m, signed, err := fetchVerifiedManifest(ctx, opts, res)
+	m, signed, err := fetchVerifiedManifest(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +107,7 @@ func Check(ctx context.Context, opts Options) (*Result, error) {
 // Update runs the full chain and (when Options.Store is set) imports.
 func Update(ctx context.Context, opts Options) (*Result, error) {
 	res := &Result{CheckedAt: opts.now(), ManifestURL: opts.ManifestURL}
-	m, signed, err := fetchVerifiedManifest(ctx, opts, res)
+	m, signed, err := fetchVerifiedManifest(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +123,7 @@ func Update(ctx context.Context, opts Options) (*Result, error) {
 	}
 	if m.Sequence <= res.LocalSeq && !opts.Force {
 		res.UpToDate = true
-		if opts.Store != nil && local != nil && !local.Imported && opts.Force == false {
+		if opts.Store != nil && local != nil && !local.Imported && !opts.Force {
 			// Installed but never imported (e.g. the first import
 			// failed): import the installed snapshot now.
 			ires, ierr := importInstalled(ctx, opts, res, local.Sequence)
@@ -221,7 +221,7 @@ func importInstalled(ctx context.Context, opts Options, res *Result, seq int64) 
 
 // fetchVerifiedManifest fetches the manifest and verifies its
 // signature against the trust anchor (steps 1-2 of the trust chain).
-func fetchVerifiedManifest(ctx context.Context, opts Options, res *Result) (*Manifest, []byte, error) {
+func fetchVerifiedManifest(ctx context.Context, opts Options) (*Manifest, []byte, error) {
 	f := &Fetcher{Client: opts.Client}
 	signed, err := f.Fetch(ctx, opts.ManifestURL, MaxManifestBytes)
 	if err != nil {

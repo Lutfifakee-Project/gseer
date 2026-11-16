@@ -70,11 +70,18 @@ builds:
       - -trimpath
       - -buildvcs=false
     ldflags:
+      # INDEX_PUB_B64 (the production trust anchor) is REQUIRED for real
+      # releases: release.yml and index.yml validate it (base64, 32 bytes)
+      # and assert it is embedded in every binary.  Snapshot builds (the
+      # CI release-config job) deliberately run WITHOUT the secret, so
+      # the whole -X flag is omitted when the env var is absent: the
+      # snapshot binary keeps the in-repo bootstrap TEST anchor instead
+      # of an empty (invalid, panic-on-decode) one.
       - -s -w
         -X github.com/Lutfifakee-Project/gseer/internal/version.Version={{ .Version }}
         -X github.com/Lutfifakee-Project/gseer/internal/version.Commit={{ .FullCommit }}
         -X github.com/Lutfifakee-Project/gseer/internal/version.BuiltAt={{ .Date }}
-        -X github.com/Lutfifakee-Project/gseer/internal/index.EmbeddedIndexPublicKeyB64={{ .Env.INDEX_PUB_B64 }}
+        {{ with index .Env "INDEX_PUB_B64" }}-X github.com/Lutfifakee-Project/gseer/internal/index.EmbeddedIndexPublicKeyB64={{ . }}{{ end }}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
 archives:

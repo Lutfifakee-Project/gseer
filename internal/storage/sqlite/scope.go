@@ -55,24 +55,8 @@ func validateScopeForWrite(sc *storage.Scope) error {
 	if sc == nil {
 		return fmt.Errorf("E_DB_USAGE: scope is nil")
 	}
-	var err error
-	switch sc.Kind {
-	case storage.ScopeKindDomain, storage.ScopeKindDomainSuffix:
-		var canonical string
-		canonical, err = suppress.NormalizeDomain(sc.Value)
-		if err == nil && sc.Kind == storage.ScopeKindDomainSuffix && len(canonical) > 2 && canonical[:2] == "*." {
-			canonical = canonical[2:]
-		}
-		sc.Value = canonical
-	case storage.ScopeKindIP:
-		sc.Value, err = suppress.NormalizeIP(sc.Value)
-	case storage.ScopeKindCIDR:
-		sc.Value, err = suppress.NormalizeCIDR(sc.Value)
-	default:
-		return fmt.Errorf("E_DB_USAGE: invalid scope kind %q (want domain | domain_suffix | cidr | ip)", sc.Kind)
-	}
-	if err != nil {
-		return fmt.Errorf("E_DB_USAGE: scope value failed normalization: %w", err)
+	if err := normalizeScopeValue(sc); err != nil {
+		return err
 	}
 	if sc.Value == "" {
 		return fmt.Errorf("E_DB_USAGE: scope value is empty")
@@ -110,6 +94,33 @@ func validateScopeForWrite(sc *storage.Scope) error {
 	}
 	if sc.CreatedAt.IsZero() {
 		sc.CreatedAt = time.Now().UTC()
+	}
+	return nil
+}
+
+// normalizeScopeValue canonicalizes sc.Value in place per kind (the
+// domain-suffix wildcard prefix is stripped; ip/cidr go through the
+// suppression engine's normalizers — the same helper the suppression
+// paths use, so both scopes and suppressions accept identical forms).
+func normalizeScopeValue(sc *storage.Scope) error {
+	var err error
+	switch sc.Kind {
+	case storage.ScopeKindDomain, storage.ScopeKindDomainSuffix:
+		var canonical string
+		canonical, err = suppress.NormalizeDomain(sc.Value)
+		if err == nil && sc.Kind == storage.ScopeKindDomainSuffix && len(canonical) > 2 && canonical[:2] == "*." {
+			canonical = canonical[2:]
+		}
+		sc.Value = canonical
+	case storage.ScopeKindIP:
+		sc.Value, err = suppress.NormalizeIP(sc.Value)
+	case storage.ScopeKindCIDR:
+		sc.Value, err = suppress.NormalizeCIDR(sc.Value)
+	default:
+		return fmt.Errorf("E_DB_USAGE: invalid scope kind %q (want domain | domain_suffix | cidr | ip)", sc.Kind)
+	}
+	if err != nil {
+		return fmt.Errorf("E_DB_USAGE: scope value failed normalization: %w", err)
 	}
 	return nil
 }

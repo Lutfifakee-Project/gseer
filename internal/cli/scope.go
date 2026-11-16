@@ -89,10 +89,6 @@ Examples:
 	root.AddCommand(scope)
 }
 
-// scopeReset is the shared flag-state test seam (same pattern as
-// sourceAddReset).
-var scopeAddReset = func() {}
-
 type scopeAddFlags struct {
 	protocols      []string
 	ports          string
@@ -105,7 +101,6 @@ type scopeAddFlags struct {
 
 func newScopeAddCmd() *cobra.Command {
 	f := &scopeAddFlags{}
-	scopeAddReset = func() { *f = scopeAddFlags{} }
 	cmd := &cobra.Command{
 		Use:   "add <kind> <value>",
 		Short: "Add an authorization scope (you assert the authorization basis)",
