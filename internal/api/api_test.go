@@ -20,7 +20,9 @@ package api
 // routing, the response envelope, auth (token + loopback), rate-limit
 // headers, and the validate/explain paths (pure GQL compilation).
 // DB-backed handlers (search, ready, stats) are covered by the
-// integration suite.
+// integration suite; their nil-pool refusal paths (typed
+// UnavailableError → 503 API_E_DB_UNAVAILABLE, never a recovered panic)
+// are pinned here without a database.
 
 import (
 	"crypto/sha256"
@@ -131,10 +133,47 @@ func TestAuthTokenRequiredAndVerified(t *testing.T) {
 
 func TestAuthNoTokenLoopbackOnly(t *testing.T) {
 	h := testServer("").Handler()
-	// httptest requests originate from 127.0.0.1 → loopback allowed.
-	res, _ := do(t, h, "GET", "/api/v1/search?q=port==443", "", nil)
+
+	// REV 5 CORRECTED: the loopback contract is pinned EXPLICITLY, not
+	// by "any envelope passes" (a non-empty code would also accept the
+	// API_E_INTERNAL fallback, and a bare Recoverer 500 is plain text):
+	// (1) a tokenless loopback request is served, never 401; (2) the
+	// nil-pool search backend answers exactly 503 with exactly
+	// API_E_DB_UNAVAILABLE; (3) the body carries a JSON content type and
+	// no panic stack or internal detail.  A regression to the old
+	// recovered-panic 500 fails every branch below.
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/search?q=port==443", nil)
+	req.RemoteAddr = "127.0.0.1:65535" // httptest defaults to TEST-NET; tokenless servers serve loopback only
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	res := rec.Result()
+	raw, _ := io.ReadAll(res.Body)
+	var body map[string]any
+	_ = json.Unmarshal(raw, &body)
+
 	if res.StatusCode == http.StatusUnauthorized {
 		t.Fatal("loopback request rejected on a tokenless server")
+	}
+	if res.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("nil-pool search: want exactly 503 API_E_DB_UNAVAILABLE, got %d (body %.300s)", res.StatusCode, raw)
+	}
+	errObj, ok := body["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("503 without an error envelope (recovered panic?): %.300s", raw)
+	}
+	if errObj["code"] != "API_E_DB_UNAVAILABLE" {
+		t.Errorf("error code = %v, want exactly API_E_DB_UNAVAILABLE", errObj["code"])
+	}
+	if ct := res.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json (a recovered panic writes plain text)", ct)
+	}
+	lower := strings.ToLower(string(raw))
+	for _, leak := range []string{"panic", "goroutine", "runtime error", "invalid memory address", "pgx"} {
+		if strings.Contains(lower, leak) {
+			t.Errorf("response leaks panic/internal detail (%q): %.300s", leak, raw)
+			break
+		}
 	}
 }
 
@@ -287,5 +326,47 @@ func TestAPIFacetsContract(t *testing.T) {
 	}
 	if code := body["error"].(map[string]any)["code"]; code != "API_E_QUERY" && code != "E_QUERY_EMPTY" {
 		t.Errorf("wrong error code: %v", body["error"])
+	}
+}
+
+// REV 5 CORRECTED: nil-pool regression pins for the DB-backed handlers —
+// each proves the typed UnavailableError path end-to-end (no panic, the
+// exact 503 API_E_DB_UNAVAILABLE envelope) and, for Facets, that input
+// validation still runs BEFORE the pool-touch guard.
+func TestAPIFacetsNilPoolUnavailable(t *testing.T) {
+	tok := "facets-nilpool-token"
+	sum := sha256.Sum256([]byte(tok))
+	h := testServerLimit(hex.EncodeToString(sum[:]), 1000).Handler()
+
+	// A VALID filter reaches the guard: typed unavailable envelope,
+	// never a panic (pre-fix this was a recovered panic → 500).
+	res, body := do(t, h, "GET", "/api/v1/facets?q=port==443", tok, nil)
+	if res.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("nil-pool facets: want 503 API_E_DB_UNAVAILABLE, got %d (%v)", res.StatusCode, body)
+	}
+	if body["error"].(map[string]any)["code"] != "API_E_DB_UNAVAILABLE" {
+		t.Errorf("error code = %v, want exactly API_E_DB_UNAVAILABLE", body["error"])
+	}
+
+	// API-level input validation stays AHEAD of the pool guard on the
+	// same nil-pool server.
+	res, body = do(t, h, "GET", "/api/v1/facets?q=port==443&max_values=abc", tok, nil)
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("validation before guard: want 400, got %d (%v)", res.StatusCode, body)
+	}
+	if body["error"].(map[string]any)["code"] != "API_E_INVALID_MAX_VALUES" {
+		t.Errorf("wrong error code: %v", body["error"])
+	}
+}
+
+func TestAPIStatsNilPoolUnavailable(t *testing.T) {
+	h := testServer("").Handler() // tokenless → loopback requests served
+
+	res, body := do(t, h, "GET", "/api/v1/stats", "", nil)
+	if res.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("nil-pool stats: want 503 API_E_DB_UNAVAILABLE, got %d (%v)", res.StatusCode, body)
+	}
+	if body["error"].(map[string]any)["code"] != "API_E_DB_UNAVAILABLE" {
+		t.Errorf("error code = %v, want exactly API_E_DB_UNAVAILABLE", body["error"])
 	}
 }

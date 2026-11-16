@@ -18,6 +18,7 @@ package search
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -62,6 +63,11 @@ func (m *IndexMeta) Notice() string {
 
 // Stats snapshots the index counts.  One round-trip, read-only.
 func (s *Service) Stats(ctx context.Context) (*IndexMeta, error) {
+	// Same nil-pool contract as Search: refuse execution with the typed
+	// unavailable error instead of a pgxpool nil-pointer panic.
+	if s.pool == nil {
+		return nil, &UnavailableError{Err: errors.New("no search index is attached to this process (compile-only service)")}
+	}
 	m := &IndexMeta{}
 	var lastObs *time.Time
 	err := s.pool.QueryRow(ctx, `

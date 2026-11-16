@@ -224,6 +224,18 @@ func (s *Service) Search(ctx context.Context, q Query) (*Result, error) {
 // exec opens the transaction, applies the timeout, runs the plan, and
 // scans the rows; commit (or rollback on any error).
 func (s *Service) exec(ctx context.Context, plan *planner.Plan) ([]Row, error) {
+	// The nil-pool contract lives at the POOL-TOUCH points, never above
+	// input validation: a compile-only service (search.New(nil), used
+	// by --validate / --explain and test fixtures) must refuse
+	// EXECUTION with the platform's typed unavailable error instead of
+	// panicking inside pgxpool — the API auth surface deliberately
+	// serves loopback requests on a tokenless server, so a nil pool
+	// used to surface as a recovered panic (500 + stack-dump noise)
+	// instead of the clean 503 API_E_DB_UNAVAILABLE envelope.  Bad
+	// input still fails 400 BEFORE this guard is ever reached.
+	if s.pool == nil {
+		return nil, &UnavailableError{Err: errors.New("no search index is attached to this process (compile-only service)")}
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, mapExecError(err)

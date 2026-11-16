@@ -223,6 +223,25 @@ var errRestoreSyncStuck = errors.New("bounded sync wait expired (storage wedged)
 // registration stays and every further restore in this process fails
 // closed.
 func restoreBoundedSync(op string, run func() error) error {
+	return restoreBoundedSyncAfter(op, run, nil)
+}
+
+// restoreBoundedSyncAfter is restoreBoundedSync with an after hook.  The
+// hook runs ON THE JANITOR GOROUTINE, after the wedged operation
+// eventually completes (or never — then the janitor simply never runs)
+// and BEFORE the outstanding-wedge count is decremented, so anything
+// that drains the wedge registry observes the hook's effects.  On the
+// healthy path the hook never runs: the caller's normal flow owns the
+// cleanup.
+//
+// The hook exists for Windows cleanup semantics.  On POSIX the immediate
+// wedge cleanup unlinks files whose handles the still-in-flight
+// operation holds (unlink-while-open); on Windows the same removal fails
+// with a sharing violation until the handle is released.  Retrying the
+// removal once the operation completes closes that gap without touching
+// the fail-closed contract or the explicit leftover note (which stays
+// accurate for a wedge that never resolves).
+func restoreBoundedSyncAfter(op string, run func() error, after func()) error {
 	type syncResult struct{ err error }
 	ch := make(chan syncResult, 1)
 	done := make(chan struct{})
@@ -245,6 +264,9 @@ func restoreBoundedSync(op string, run func() error) error {
 		restoreWedgeOutstanding.Add(1)
 		go func() {
 			<-done // the wedged operation completed (or never will — then this janitor simply never runs)
+			if after != nil {
+				after()
+			}
 			restoreWedgeOutstanding.Add(-1)
 		}()
 		return fmt.Errorf("E_DB_RESTORE_SYNC_STUCK: %w: the %s did not return within %s — the storage layer appears wedged (full journal, NFS server gone, failing disk). The sync itself cannot be cancelled and continues in the background; DURABILITY IS UNCONFIRMED for this operation. Verify with `gseer search` / `gseer doctor` and re-run the restore when storage is healthy", errRestoreSyncStuck, op, restoreSyncTimeout)
@@ -362,8 +384,15 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	// never be followed by an unbounded close.  Same seam-capture rule
 	// as the fsync above.
 	closeFile := restoreCloseFile
-	closeErr := restoreBoundedSync("close of the staged copy", func() error {
+	closeErr := restoreBoundedSyncAfter("close of the staged copy", func() error {
 		return closeFile(out)
+	}, func() {
+		// Windows: the immediate wedge cleanup below cannot remove dst
+		// while this still-in-flight close holds the handle (sharing
+		// violation).  Once the wedged close completes, the janitor
+		// retries the removal — on POSIX the file was already unlinked
+		// and IsNotExist is a no-op.
+		_ = os.Remove(dst)
 	})
 	if copyErr == nil {
 		copyErr = closeErr
@@ -475,8 +504,14 @@ func stageValidatedRestoreCopy(backup, live string) (string, error) {
 		// (quickCheck just ran), so its close-time checkpoint+fsync is
 		// exactly the wedge class the owner hit.  Bounded on every
 		// path now.
-		cerr := restoreBoundedSync("close of the staged copy after a failed integrity check (checkpoint + fsync on close)", func() error {
+		cerr := restoreBoundedSyncAfter("close of the staged copy after a failed integrity check (checkpoint + fsync on close)", func() error {
 			return closeDB(validated.DB)
+		}, func() {
+			// Windows retry: the immediate removal below fails with a
+			// sharing violation while the wedged close still holds the
+			// handles; once the real close has completed, the janitor
+			// removes what is left.  POSIX: already unlinked, no-op.
+			removeStagingArtifacts(staging)
 		})
 		leftover := removeStagingArtifacts(staging)
 		if errors.Is(cerr, errRestoreSyncStuck) {
@@ -491,15 +526,24 @@ func stageValidatedRestoreCopy(backup, live string) (string, error) {
 	// watchdog goroutine never reads the package var); a wedge aborts
 	// the restore with the staging file removed (POSIX unlink is safe
 	// while the leaked goroutine still holds the fd) and the live
-	// database untouched.
-	if cerr := restoreBoundedSync("close of the validated staging copy (checkpoint + fsync on close)", func() error {
+	// database untouched.  On Windows the immediate removal cannot run
+	// while the wedged close holds the handles — the janitor retries it
+	// after the real close completes (restoreBoundedSyncAfter).
+	if cerr := restoreBoundedSyncAfter("close of the validated staging copy (checkpoint + fsync on close)", func() error {
 		return closeDB(validated.DB)
+	}, func() {
+		// Windows retry after the real close: sqlite deleted its own
+		// sidecars, the handles are released, so the staging set comes
+		// down now.  POSIX: already unlinked — IsNotExist is a no-op.
+		removeStagingArtifacts(staging)
 	}); cerr != nil {
 		// The staging file and its sidecars are not installed anywhere:
 		// remove them (POSIX unlink is safe while the leaked goroutine
 		// still holds the fds; sqlite cannot resurrect a deleted WAL by
 		// name during the eventual real close) and say exactly where
-		// anything that survived is, never silently.
+		// anything that survived is, never silently.  On Windows a
+		// removal that still fails is REPORTED here — and retried by
+		// the janitor once the wedged close releases the handles.
 		leftover := removeStagingArtifacts(staging)
 		return "", fmt.Errorf("E_DB_RESTORE: the staged copy could not be closed cleanly (the live database was not touched): %w%s", cerr, stagingLeftoverNote(leftover))
 	}

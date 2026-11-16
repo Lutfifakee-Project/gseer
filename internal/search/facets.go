@@ -18,6 +18,7 @@ package search
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -235,6 +236,13 @@ func (s *Service) Facets(ctx context.Context, q FacetsQuery) (*FacetsResult, err
 		countExpr = `count(DISTINCT (search_index.row_kind, search_index.asset_id))`
 	}
 
+	// Same nil-pool contract as Search.exec: refuse execution with the
+	// typed unavailable error instead of a pgxpool nil-pointer panic —
+	// and only HERE, after input validation, so bad input still fails
+	// 400 first.
+	if s.pool == nil {
+		return nil, &UnavailableError{Err: errors.New("no search index is attached to this process (compile-only service)")}
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, mapExecError(err)

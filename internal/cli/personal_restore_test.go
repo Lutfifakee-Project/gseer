@@ -152,6 +152,27 @@ func assertNoStagingLeft(t *testing.T, dirs ...string) {
 	}
 }
 
+// assertCleanupReportedOrDone pins the platform-honest wedge-cleanup
+// contract for the moment the restore returns with a wedged sync.  On
+// POSIX the staging files were unlinked while the wedged operation still
+// holds them (unlink-while-open) — nothing may be left.  On Windows the
+// removal fails with a sharing violation while the handle is open: the
+// EXPLICIT leftover report in the error is then the contract, and the
+// janitor's after-close retry removes the artifacts once the wedged
+// operation completes (each test's post-drain assertNoStagingLeft pins
+// that).  Asserting err here keeps both halves honest instead of
+// weakening either.
+func assertCleanupReportedOrDone(t *testing.T, dir string, err error) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		if err == nil || !strings.Contains(err.Error(), "restore-staging") {
+			t.Errorf("a wedged cleanup on windows must name the leftover staging artifacts explicitly, got: %v", err)
+		}
+		return
+	}
+	assertNoStagingLeft(t, dir)
+}
+
 // errReadCloser fails the copy after n delivered bytes — a
 // deterministic mid-stream copy failure (disk-full / EIO analogue).
 type errReadCloser struct {
@@ -603,7 +624,7 @@ func TestRestoreStuckStagingCloseReportsExplicitly(t *testing.T) {
 	if after := fileHash(t, live); after != before {
 		t.Errorf("live database changed on a wedged staging close")
 	}
-	assertNoStagingLeft(t, dir)
+	assertCleanupReportedOrDone(t, dir, err)
 
 	// FIX ROUND 4: after the wedge resolves, the deferred close runs
 	// its real checkpoint against the UNLINKED staging inode and its
@@ -662,7 +683,7 @@ func TestRestoreStuckCloseAfterFailedIntegrityCheck(t *testing.T) {
 	if after := fileHash(t, live); after != before {
 		t.Errorf("live database changed on a wedged post-integrity-failure close")
 	}
-	assertNoStagingLeft(t, dir)
+	assertCleanupReportedOrDone(t, dir, err)
 
 	unwedge()
 	drainRestoreWedge(t)
@@ -724,7 +745,12 @@ func TestRestoreStuckStagedCopyCloseReportsExplicitly(t *testing.T) {
 
 	release, unwedge := shrinkSyncTimeout(t)
 	orig := restoreCloseFile
-	restoreCloseFile = func(*os.File) error { <-release; return nil }
+	// The wedge must release the REAL handle once storage recovers
+	// (orig(f) after the barrier): returning nil would leak the open
+	// file handle until GC, which on Windows makes the test's own
+	// TempDir RemoveAll report the file as still in use — the test
+	// must not be its own leak source.
+	restoreCloseFile = func(f *os.File) error { <-release; return orig(f) }
 	t.Cleanup(func() { restoreCloseFile = orig })
 
 	out, err := runRestore(t, live, backup)
@@ -735,7 +761,7 @@ func TestRestoreStuckStagedCopyCloseReportsExplicitly(t *testing.T) {
 	if after := fileHash(t, live); after != before {
 		t.Errorf("live database changed on a wedged staged-copy close")
 	}
-	assertNoStagingLeft(t, dir)
+	assertCleanupReportedOrDone(t, dir, err)
 
 	unwedge()
 	drainRestoreWedge(t)
