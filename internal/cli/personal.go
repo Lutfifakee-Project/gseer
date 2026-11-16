@@ -187,23 +187,21 @@ func configPersonalScratch(dbPath string) *config.Config {
 	}
 }
 
-// defaultConfigPath mirrors the loader's platform default.
+// defaultConfigPath delegates to the config package's platform default —
+// the single source of truth the loader resolves (GSEER_HOME-aware).
+// v0.3.2 fix: this used to be a private duplicate that WAS GSEER_HOME-aware
+// while the loader was not, so `gseer setup --personal` wrote a config the
+// loader could not find and every following workflow command failed with
+// E_CONFIG_REQUIRED (client.endpoint).
 func defaultConfigPath() string {
-	return filepath.Join(configDir(), "config.yaml")
+	return config.DefaultConfigPath()
 }
 
-// configDir resolves the platform config directory (mirrors the config
-// package's default resolution; kept here so the CLI writes where the
-// loader reads).
+// configDir resolves the platform GSEER state directory (delegates to the
+// config package — the same source of truth backs the database file path
+// and the shared-index directory).
 func configDir() string {
-	if v := os.Getenv("GSEER_HOME"); v != "" {
-		return v
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ".gseer"
-	}
-	return filepath.Join(home, ".gseer")
+	return config.DefaultDir()
 }
 
 // writePersonalConfig writes the minimal personal config (hand-rolled

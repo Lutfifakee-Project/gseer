@@ -52,8 +52,18 @@ func ValidateProfile(c *Config) *Error {
 //   - sources may be present (config-only; never collected).
 func validateClient(c *Config) *Error {
 	if c.Client.Endpoint == "" {
-		return errRequired("client.endpoint", string(ProfileClient)).
+		e := errRequired("client.endpoint", string(ProfileClient)).
 			withNext("run: gseer setup --server <endpoint-url>  (client setup — persists client.endpoint)  or: gseer setup  (personal mode + shared index)")
+		// v0.3.2 fix: "client" is also the DEFAULT profile when nothing
+		// is configured.  An env-only resolution means NO config file was
+		// found anywhere — say so explicitly, or the error reads as if
+		// the operator had chosen client and merely forgotten the
+		// endpoint (the exact confusion the personal-setup workflow
+		// failure reported).
+		if c.Source == "env-only" {
+			e = e.withWhy("no config file was found (searched GSEER_CONFIG and " + DefaultConfigPath() + "); with none, the default profile is client — `gseer setup` provisions personal mode and writes it")
+		}
+		return e
 	}
 	if c.Database.DSN != "" || c.Database.Host != "" || c.Database.Password != "" {
 		return errProfileConflict("database.*", string(ProfileClient)).

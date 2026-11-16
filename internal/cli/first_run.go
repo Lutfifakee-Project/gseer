@@ -35,7 +35,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -49,25 +48,26 @@ import (
 // "no configuration anywhere" state the zero-configuration first run
 // covers: no --config/GSEER_CONFIG path override, no explicit profile
 // or endpoint selection (--profile, GSEER_PROFILE, --server,
-// GSEER_CLIENT_ENDPOINT), no platform-default config file, and no
-// GSEER_HOME state directory.  An explicit operator choice is never
-// silently overridden — those paths keep their honest E_CONFIG errors.
+// GSEER_CLIENT_ENDPOINT), and no platform-default config file (resolved
+// GSEER_HOME-aware — a GSEER_HOME install with no config inside it is
+// still fresh).  An explicit operator choice is never silently
+// overridden — those paths keep their honest E_CONFIG errors.
 func zeroConfigFirstRunApplies() bool {
 	if flags.configPath != "" || flags.profile != "" || flags.server != "" {
 		return false
 	}
-	for _, k := range []string{"GSEER_CONFIG", "GSEER_PROFILE", "GSEER_CLIENT_ENDPOINT", "GSEER_HOME"} {
+	for _, k := range []string{"GSEER_CONFIG", "GSEER_PROFILE", "GSEER_CLIENT_ENDPOINT"} {
 		if v, ok := os.LookupEnv(k); ok && v != "" {
 			return false
 		}
 	}
 	// The exact file config.Load resolves as the platform default
-	// (UserHomeDir/.gseer/config.yaml — mirrors loader.go).
-	home, err := os.UserHomeDir()
-	if err == nil && home != "" {
-		if _, serr := os.Stat(filepath.Join(home, ".gseer", "config.yaml")); serr == nil {
-			return false
-		}
+	// (config.DefaultConfigPath: $GSEER_HOME/config.yaml when GSEER_HOME
+	// is set, else UserHomeDir/.gseer/config.yaml — the loader's own
+	// resolution, so the CLI and the loader can no longer disagree about
+	// whether state exists).
+	if _, serr := os.Stat(config.DefaultConfigPath()); serr == nil {
+		return false
 	}
 	return true
 }

@@ -18,6 +18,7 @@ package config
 
 import (
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -383,5 +384,51 @@ func TestDSNHostForms(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestDefaultConfigPathHonorsGSEERHome pins the v0.3.2 write/read
+// symmetry fix: the platform-default config path follows GSEER_HOME when
+// set — the same directory the CLI's setup writes.  Pre-fix the loader
+// ignored GSEER_HOME while the CLI writer honored it, so a portable
+// personal setup wrote a config the loader could not find and every
+// following workflow command failed with the misleading
+// E_CONFIG_REQUIRED client.endpoint error (owner-reported).
+func TestDefaultConfigPathHonorsGSEERHome(t *testing.T) {
+	gh := t.TempDir()
+	t.Setenv("GSEER_HOME", gh)
+	want := filepath.Join(gh, "config.yaml")
+	if got := DefaultConfigPath(); got != want {
+		t.Errorf("DefaultConfigPath with GSEER_HOME = %q, want %q", got, want)
+	}
+}
+
+// TestLoadResolvesGSEERHomeConfig proves the loader FINDS a config
+// written into $GSEER_HOME — the exact journey that used to break
+// (setup succeeds; the next command cannot see the config and falls back
+// to the client default).  A decoy HOME must be ignored while GSEER_HOME
+// is set.
+func TestLoadResolvesGSEERHomeConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GSEER_HOME", home)
+	t.Setenv("HOME", t.TempDir())
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	dbPath := filepath.Join(home, "gseer.db")
+	body := "profile: personal\ndatabase:\n  dsn: '" + dbPath + "'\n"
+	if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, cerr := Load(Flags{})
+	if cerr != nil {
+		t.Fatalf("Load with a GSEER_HOME config: %v", cerr)
+	}
+	wantSrc := filepath.Join(home, "config.yaml")
+	if cfg.Profile != ProfilePersonal || cfg.Source != wantSrc {
+		t.Errorf("profile=%q source=%q, want personal resolved from %q", cfg.Profile, cfg.Source, wantSrc)
+	}
+	if cfg.Database.DSN != dbPath {
+		t.Errorf("dsn=%q, want %q", cfg.Database.DSN, dbPath)
 	}
 }

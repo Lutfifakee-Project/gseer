@@ -130,11 +130,30 @@ func runHost(cmd *cobra.Command, args []string) error {
 		exitWith(ExitConfig)
 	}
 	if cfg.Profile == config.ProfilePersonal {
-		printf(out, "E_PROFILE_UNSUPPORTED: `gseer host` is not wired for personal mode yet\n"+
-			"Why: the host report runs through the PostgreSQL service; personal mode (SQLite) covers search, export, suppression, backup, and collection\n"+
-			"Try: gseer search '%s'   (the same identifiers are searchable in personal mode)\n", identifier)
-		exitWith(ExitConfig)
-		return nil
+		// v0.3.2 fix: personal mode serves the SAME host report through
+		// the embedded SQLite store (host_personal.go) — the old
+		// E_PROFILE_UNSUPPORTED refusal was a dead end in the
+		// Easy-to-Use journey for the provenance surface.
+		res, derr := openPersonal(cfg)
+		if derr != nil {
+			printf(out, "E_DB_UNAVAILABLE: cannot open the personal database\nWhy: %v\nTry: gseer setup --personal\n", derr)
+			exitWith(ExitUnavailable)
+			return nil
+		}
+		defer func() { _ = res.DB.Close() }()
+		rep, found, herr := loadHostReportPersonal(commandContext(cmd), res.DB, identifier)
+		if herr != nil {
+			printf(out, "E_DB: %s\n", herr.Error())
+			exitWith(ExitUnavailable)
+			return nil
+		}
+		if !found {
+			printf(out, "No asset matches %q in the local index.\n"+
+				"Try: gseer search '%s'   (find the exact identifier first; a fresh install has an empty index)\n",
+				identifier, identifier)
+			return nil
+		}
+		return emitHostReport(out, rep)
 	}
 	if cfg.Profile != config.ProfileSelfHosted {
 		printf(out, "E_CLIENT_ONLY: `gseer host` inspects the LOCAL index (self-hosted profile)\n"+
@@ -149,7 +168,7 @@ func runHost(cmd *cobra.Command, args []string) error {
 	}
 	defer pool.Close()
 
-	rep, found, herr := loadHostReport(cmd.Context(), pool, identifier)
+	rep, found, herr := loadHostReport(commandContext(cmd), pool, identifier)
 	if herr != nil {
 		printf(out, "E_DB: %s\n", herr.Error())
 		exitWith(ExitUnavailable)
@@ -162,6 +181,18 @@ func runHost(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	if flags.output == "json" {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(rep)
+	}
+	renderHostText(out, rep)
+	return nil
+}
+
+// emitHostReport is the shared report tail (JSON or text) for both
+// storage engines.
+func emitHostReport(out io.Writer, rep *hostReport) error {
 	if flags.output == "json" {
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")

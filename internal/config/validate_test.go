@@ -17,6 +17,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -309,5 +310,32 @@ func TestIsLoopback(t *testing.T) {
 		if got := isLoopback(tc.listen); got != tc.want {
 			t.Errorf("isLoopback(%q): want %v, got %v", tc.listen, tc.want, got)
 		}
+	}
+}
+
+// TestValidateProfileClientEnvOnlyNamesTheMissingFile pins the v0.3.2
+// honesty fix: "client" is also the DEFAULT profile when nothing is
+// configured anywhere (Source=env-only).  In that state the
+// E_CONFIG_REQUIRED error must say that NO CONFIG FILE WAS FOUND — not
+// read as a forgotten endpoint for a deliberately chosen client profile
+// (the owner-reported personal-setup workflow failure).
+func TestValidateProfileClientEnvOnlyNamesTheMissingFile(t *testing.T) {
+	c := &Config{Profile: ProfileClient, Source: "env-only"}
+	err := ValidateProfile(c)
+	if err == nil || err.Code != CodeConfigRequired {
+		t.Fatalf("env-only client: expected E_CONFIG_REQUIRED, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "no config file was found") {
+		t.Errorf("env-only error must name the missing config file, got: %v", err)
+	}
+	// An explicit client profile (a real config file was read) keeps the
+	// plain endpoint error — no misleading file-missing context.
+	explicit := &Config{Profile: ProfileClient, Source: "/explicit/config.yaml"}
+	err2 := ValidateProfile(explicit)
+	if err2 == nil || err2.Code != CodeConfigRequired {
+		t.Fatalf("explicit client: expected E_CONFIG_REQUIRED, got %v", err2)
+	}
+	if strings.Contains(err2.Error(), "no config file was found") {
+		t.Errorf("explicit-profile error must not claim no config was found: %v", err2)
 	}
 }

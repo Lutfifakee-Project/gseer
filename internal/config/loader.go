@@ -156,10 +156,14 @@ func applyFlags(c *Config, flags Flags) {
 }
 
 // resolveConfigPath determines the config file path in precedence order:
-// --config flag > GSEER_CONFIG env > platform default (~/.gseer/config.yaml
-// or %APPDATA%\gseer\config.yaml on Windows).  Returns "" if no path
-// resolves and no file exists (env-only mode is valid for client profile
-// with GSEER_CLIENT_ENDPOINT set).
+// --config flag > GSEER_CONFIG env > platform default ($GSEER_HOME/config.yaml
+// when GSEER_HOME is set, else ~/.gseer/config.yaml — DefaultConfigPath, the
+// SAME directory `gseer setup` writes; v0.3.2 fix: the loader used to ignore
+// GSEER_HOME, so a portable personal setup wrote a config the loader could
+// not find and every following command failed with the misleading
+// E_CONFIG_REQUIRED client.endpoint error).  Returns "" if no path resolves
+// and no file exists (env-only mode is valid for client profile with
+// GSEER_CLIENT_ENDPOINT set).
 func resolveConfigPath(flags Flags) (string, *Error) {
 	if flags.ConfigPath != "" {
 		if _, err := os.Stat(flags.ConfigPath); err != nil {
@@ -174,7 +178,7 @@ func resolveConfigPath(flags Flags) (string, *Error) {
 		return envPath, nil
 	}
 	// Platform default: only return if the file actually exists.
-	def := defaultConfigPath()
+	def := DefaultConfigPath()
 	if def != "" {
 		if _, err := os.Stat(def); err == nil {
 			return def, nil
@@ -183,14 +187,26 @@ func resolveConfigPath(flags Flags) (string, *Error) {
 	return "", nil // env-only mode
 }
 
-// defaultConfigPath returns the platform-default config file location.
-// ~/.gseer/config.yaml on Unix; %APPDATA%\gseer\config.yaml on Windows.
-func defaultConfigPath() string {
+// DefaultDir resolves the platform GSEER state directory — the single
+// source of truth for where the CLI writes and the loader reads:
+// $GSEER_HOME when set (portable installs), else UserHomeDir/.gseer.
+// internal/cli's configDir delegates here; keeping ONE implementation
+// prevents the write/read divergence this file's history documents.
+func DefaultDir() string {
+	if v := os.Getenv("GSEER_HOME"); v != "" {
+		return v
+	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return ""
+		return ".gseer"
 	}
-	return filepath.Join(home, ".gseer", "config.yaml")
+	return filepath.Join(home, ".gseer")
+}
+
+// DefaultConfigPath returns the platform-default config file location:
+// $GSEER_HOME/config.yaml when GSEER_HOME is set, else ~/.gseer/config.yaml.
+func DefaultConfigPath() string {
+	return filepath.Join(DefaultDir(), "config.yaml")
 }
 
 // extractFieldName parses the yaml.v3 TypeError message to extract the

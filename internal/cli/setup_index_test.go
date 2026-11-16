@@ -78,7 +78,15 @@ func TestMain(m *testing.M) {
 
 	ldflags := "-X github.com/Lutfifakee-Project/gseer/internal/index.EmbeddedIndexPublicKeyB64=" +
 		base64.StdEncoding.EncodeToString(pub)
-	bin := filepath.Join(dir, "gseer")
+	binName := "gseer"
+	if runtime.GOOS == "windows" {
+		// Windows: build and run the conventional .exe name.  An
+		// extension-less PE is fragile to execute via CreateProcess, and
+		// a binary the tests cannot run fails the whole package in ways
+		// the JSON log cannot attribute to a test.
+		binName = "gseer.exe"
+	}
+	bin := filepath.Join(dir, binName)
 	// The test runs with cwd = the package dir; build from the module
 	// root (two levels up).
 	modRoot, merr := filepath.Abs(filepath.Join("..", ".."))
@@ -86,9 +94,22 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "testmain modroot:", merr)
 		os.Exit(1)
 	}
-	build := exec.Command("go", "build", "-ldflags", ldflags, "-o", bin, "./cmd/gseer")
+	goBin, lerr := exec.LookPath("go")
+	if lerr != nil {
+		// Report on BOTH streams: with `go test -json`, TestMain output
+		// on stdout becomes JSON events visible in the job log, while
+		// stderr lands only in the CI stderr file.  A TestMain that dies
+		// before m.Run() produces NO per-test FAIL events (the Windows CI
+		// evidence: internal/cli exit 1 with no failing test named), so
+		// the diagnosis must be on stdout.
+		fmt.Fprintf(os.Stdout, "testmain: go toolchain unavailable: %v\n", lerr)
+		fmt.Fprintln(os.Stderr, "testmain: go toolchain unavailable:", lerr)
+		os.Exit(1)
+	}
+	build := exec.Command(goBin, "build", "-ldflags", ldflags, "-o", bin, "./cmd/gseer")
 	build.Dir = modRoot
 	if out, err := build.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stdout, "testmain go build failed: %v\n%s\n", err, out)
 		fmt.Fprintf(os.Stderr, "testmain go build: %v\n%s", err, out)
 		os.Exit(1)
 	}

@@ -123,3 +123,30 @@ func TestFirstRunVersionFlagConsumed(t *testing.T) {
 		t.Errorf("--version must not run the first-run/status flow:\n%s", out)
 	}
 }
+
+// TestZeroConfigAppliesInsideGSEERHome pins the v0.3.2 write/read
+// symmetry fix: a GSEER_HOME install with NO config inside it still
+// counts as zero-config fresh (the old blanket GSEER_HOME exclusion made
+// bare `gseer setup` fail with the misleading client-profile
+// E_CONFIG_REQUIRED instead of provisioning personal mode), while a
+// config INSIDE GSEER_HOME keeps the later-runs status path.
+func TestZeroConfigAppliesInsideGSEERHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	gh := t.TempDir()
+	t.Setenv("GSEER_HOME", gh)
+
+	if !zeroConfigFirstRunApplies() {
+		t.Fatal("an empty GSEER_HOME must count as zero-config fresh")
+	}
+	if err := os.MkdirAll(gh, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(gh, "config.yaml"), []byte("profile: personal\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if zeroConfigFirstRunApplies() {
+		t.Fatal("a config inside GSEER_HOME must disable the zero-config path")
+	}
+}
