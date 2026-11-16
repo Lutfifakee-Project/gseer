@@ -443,10 +443,11 @@ func TestMigrationStatusBranches(t *testing.T) {
 	if st.State != StateBehind {
 		t.Errorf("behind state = %s, want BEHIND", st.State)
 	}
-	if len(st.Pending) != 10 || st.Pending[0] != "0002_helper_views.up.sql" ||
+	if len(st.Pending) != 11 || st.Pending[0] != "0002_helper_views.up.sql" ||
 		st.Pending[1] != "0003_search_index.up.sql" || st.Pending[2] != "0004_search_indexes.up.sql" ||
 		st.Pending[3] != "0005_suppressions.up.sql" || st.Pending[7] != "0018_active_observation.up.sql" ||
-		st.Pending[8] != "0019_scan_concurrency_leases.up.sql" || st.Pending[9] != "0020_scan_lease_tokens.up.sql" {
+		st.Pending[8] != "0019_scan_concurrency_leases.up.sql" || st.Pending[9] != "0020_scan_lease_tokens.up.sql" ||
+		st.Pending[10] != "0021_cert_projection.up.sql" {
 		t.Errorf("behind pending = %v", st.Pending)
 	}
 

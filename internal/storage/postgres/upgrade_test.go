@@ -98,7 +98,7 @@ func TestV010ToV020UpgradePath(t *testing.T) {
 		t.Fatalf("v0.1.0 ledger = (%d, %v), want (6, false)", st.Version, st.Dirty)
 	}
 	if st.State != StateBehind {
-		t.Fatalf("v0.1.0 stage state = %s, want BEHIND (head is 17 for this binary)", st.State)
+		t.Fatalf("v0.1.0 stage state = %s, want BEHIND (head is 21 for this binary)", st.State)
 	}
 
 	// ---- Stage 2: the v0.2.0 hardened deployment order. ----
@@ -109,8 +109,8 @@ func TestV010ToV020UpgradePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upgrade migrations: %v", err)
 	}
-	if head != 20 || applied != 5 { // exactly 0016+0017+0018+0019+0020 on top of (6, false) — final microfix head
-		t.Fatalf("upgrade applied %d to head %d, want 5 applied to head 20", applied, head)
+	if head != 21 || applied != 6 { // exactly 0016+0017+0018+0019+0020+0021 on top of (6, false) — final microfix head
+		t.Fatalf("upgrade applied %d to head %d, want 6 applied to head 21", applied, head)
 	}
 	if _, err := ApplyRuntimeGrants(ctx, dsn); err != nil {
 		t.Fatalf("runtime grants: %v", err)

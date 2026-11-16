@@ -5,9 +5,19 @@
 -- so the schema matches the post-0020 state (latest_http and
 -- latest_fingerprints are untouched by 0021 and stay as they are).
 --
+-- WHY THE DROPS: 0021.up APPENDED cert_serial / cert_sans_dns to both
+-- views.  CREATE OR REPLACE VIEW can only append columns — it can never
+-- remove them (it would fail with 42P16 "cannot change number of view
+-- columns").  The rollback therefore drops the dependent view first
+-- (search_index reads from latest_tls) and then latest_tls itself, and
+-- recreates both verbatim from the 0017 / 0003 definitions.
+--
 -- NOTE: rolling back removes cert_serial / cert_sans_dns from the
 -- searchable surface; queries naming tls.cert_serial / tls.cert_sans_dns
 -- will fail with GQL_E_FIELD until the migration is re-applied.
+
+DROP VIEW IF EXISTS search_index;
+DROP VIEW IF EXISTS latest_tls;
 
 CREATE OR REPLACE VIEW latest_tls AS
 SELECT DISTINCT ON (o.service_id)
@@ -15,7 +25,7 @@ SELECT DISTINCT ON (o.service_id)
        o.evidence -> 'tls' ->> 'version'        AS tls_version,
        o.evidence -> 'tls' ->> 'cert_subject_cn' AS cert_subject_cn,
        o.evidence -> 'tls' ->> 'cert_issuer_cn'  AS cert_issuer_cn,
-       public.gseer_safe_timestamptz(o.evidence -> 'tls' -> 'cert_expiry') AS cert_expiry,
+       public.gseer_safe_timestamptz(o.evidence -> 'tls' ->> 'cert_expiry') AS cert_expiry,
        o.observed_at
 FROM observations o
 WHERE o.service_id IS NOT NULL

@@ -28,13 +28,13 @@ SELECT DISTINCT ON (o.service_id)
        o.evidence -> 'tls' ->> 'cert_subject_cn'  AS cert_subject_cn,
        o.evidence -> 'tls' ->> 'cert_issuer_cn'   AS cert_issuer_cn,
        public.gseer_safe_timestamptz(o.evidence -> 'tls' ->> 'cert_expiry') AS cert_expiry,
+       o.observed_at,
        o.evidence -> 'tls' ->> 'cert_serial'      AS cert_serial,
        CASE WHEN jsonb_typeof(o.evidence -> 'tls' -> 'cert_sans_dns') = 'array'
-            THEN (SELECT string_agg(x #>> '{}', ',')
+            THEN (SELECT string_agg(x, ',')
                   FROM jsonb_array_elements_text(o.evidence -> 'tls' -> 'cert_sans_dns') AS x)
             ELSE o.evidence -> 'tls' ->> 'cert_sans_dns'
-       END                                        AS cert_sans_dns,
-       o.observed_at
+       END                                        AS cert_sans_dns
 FROM observations o
 WHERE o.service_id IS NOT NULL
   AND o.evidence ? 'tls'
@@ -48,9 +48,9 @@ SELECT s.id AS row_id, 'service' AS row_kind,
        s.port, s.transport, s.protocol, s.name, s.product, s.version,
        h.status AS http_status, h.title AS http_title, h.server AS http_server,
        tls.tls_version, tls.cert_subject_cn, tls.cert_issuer_cn, tls.cert_expiry,
-       tls.cert_serial, tls.cert_sans_dns,
        fp.technologies,
-       a.sources, a.first_seen, s.last_seen, s.stale
+       a.sources, a.first_seen, s.last_seen, s.stale,
+       tls.cert_serial, tls.cert_sans_dns
 FROM services s
 JOIN assets a ON a.id = s.asset_id
 LEFT JOIN latest_http h ON h.service_id = s.id
@@ -62,7 +62,8 @@ SELECT a.id, 'asset-only', a.id, a.kind, a.value,
        a.geo_country, a.geo_region, a.geo_city,
        NULL, NULL, NULL, NULL, NULL, NULL,
        NULL, NULL, NULL,
-       NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-       a.sources, a.first_seen, a.last_seen, false
+       NULL, NULL, NULL, NULL, NULL,
+       a.sources, a.first_seen, a.last_seen, false,
+       NULL, NULL
 FROM assets a
 WHERE NOT EXISTS (SELECT 1 FROM services s WHERE s.asset_id = a.id);
