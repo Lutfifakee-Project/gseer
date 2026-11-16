@@ -218,9 +218,23 @@ func TestLeaseGuardStopsWithoutGoroutineLeak(t *testing.T) {
 		t.Fatalf("acquire: %v", err)
 	}
 	guard := g.StartLeaseRenewal(context.Background(), l)
-	time.Sleep(30 * time.Millisecond)
-	if renewals := fs.renewCalls.Load(); renewals < 2 {
-		t.Fatalf("the heartbeat must renew on its cadence (got %d renewals)", renewals)
+	// The heartbeat must renew repeatedly on its cadence before Stop.
+	// A FIXED wall-clock window cannot guarantee a tick COUNT under a
+	// starved scheduler: the full-suite soup runs ~20 package binaries
+	// at once (windows-latest adds Defender-class stalls), so a 30ms
+	// sleep may only fit ONE renewal when this test and the heartbeat
+	// are descheduled together — the wall clock advances, the ticker
+	// callbacks do not. Poll for the second renewal with a generous
+	// bounded deadline instead — the same settle-window pattern the
+	// leak check below already uses — so the assertion measures the
+	// heartbeat's behavior, not the runner's load. Healthy path: two
+	// renewals land in ~10ms, so the deadline never binds.
+	renewDeadline := time.Now().Add(2 * time.Second)
+	for fs.renewCalls.Load() < 2 {
+		if time.Now().After(renewDeadline) {
+			t.Fatalf("the heartbeat must renew on its cadence (got %d renewals in 2s)", fs.renewCalls.Load())
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	guard.Stop()
 	guard.Stop() // idempotent — must not panic or deadlock
