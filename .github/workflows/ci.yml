@@ -114,8 +114,83 @@ jobs:
         run: go test -count=1 ./internal/update/...
       - name: Updater race detector
         run: go test -race -count=1 ./internal/update/...
+      # The suite runs with -json so a failure can be PINPOINTED from
+      # the run page alone: the follow-up step renders every failing
+      # test (package, test name, last output lines, stderr tail) into
+      # $GITHUB_STEP_SUMMARY, which GitHub shows publicly on the run
+      # page — no log-download permissions are needed for diagnosis.
+      # The step still fails exactly like the plain invocation
+      # (pipefail preserves go test's exit code through tee).
       - name: Full unit suite on Windows
-        run: go test -count=1 ./...
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -count=1 -json ./... 2>"$RUNNER_TEMP/go-test-stderr.log" | tee "$RUNNER_TEMP/go-test.json"
+
+      - name: Surface failing tests in the step summary
+        if: failure()
+        shell: bash
+        run: |
+          python - "$RUNNER_TEMP/go-test.json" "$RUNNER_TEMP/go-test-stderr.log" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, sys
+
+          out_path, err_path = sys.argv[1], sys.argv[2]
+          fail_tests, fail_outputs, build_failures = [], {}, []
+
+          try:
+              with open(out_path, encoding="utf-8", errors="replace") as f:
+                  for line in f:
+                      line = line.strip()
+                      if not line.startswith("{"):
+                          continue
+                      try:
+                          ev = json.loads(line)
+                      except Exception:
+                          continue
+                      pkg, test = ev.get("Package", ""), ev.get("Test", "")
+                      action, output = ev.get("Action"), ev.get("Output", "")
+                      if action == "output" and test and output.strip():
+                          buf = fail_outputs.setdefault((pkg, test), [])
+                          buf.append(output.rstrip())
+                          if len(buf) > 30:
+                              del buf[:-30]
+                      if action == "fail":
+                          if test:
+                              if (pkg, test) not in fail_tests:
+                                  fail_tests.append((pkg, test))
+                          else:
+                              build_failures.append(pkg)
+          except FileNotFoundError:
+              pass
+
+          lines = ["## Windows unit suite - failing tests", ""]
+          if fail_tests:
+              lines += ["| Package | Test |", "| --- | --- |"]
+              for pkg, t in fail_tests:
+                  lines.append("| %s | `%s` |" % (pkg, t))
+              lines.append("")
+              lines += ["### Last output lines per failing test", ""]
+              for pkg, t in fail_tests:
+                  lines += ["**%s - %s**" % (pkg, t), "", "```"]
+                  lines += fail_outputs.get((pkg, t), [])[-12:]
+                  lines += ["```", ""]
+          else:
+              lines += ["_No per-test FAIL events were parsed - a build failure, a fatal panic, or a test-binary crash may have ended the run. See the stderr tail below and the job log._", ""]
+          if build_failures:
+              lines += ["**Packages that failed to build/run:** " + ", ".join(sorted(set(build_failures))), ""]
+
+          try:
+              with open(err_path, encoding="utf-8", errors="replace") as f:
+                  tail = f.read().strip().splitlines()[-15:]
+          except FileNotFoundError:
+              tail = []
+          if tail:
+              lines += ["### stderr tail", "", "```"]
+              lines += tail
+              lines += ["```"]
+
+          print("\n".join(lines))
+          PY
       - name: Vet on Windows
         run: go vet ./...
       - name: Build on Windows

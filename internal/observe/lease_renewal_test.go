@@ -47,9 +47,15 @@ import (
 
 func TestRunOutlivingTTLPersistsThroughRenewal(t *testing.T) {
 	// The response takes longer than the lease TTL; the renewal
-	// heartbeat (TTL/4) must keep the slot held for the WHOLE run —
+	// heartbeat (explicit 80ms cadence) must keep the slot held for the
+	// WHOLE run —
 	// proven by a second, independent store handle (what another
 	// process would see) being refused mid-run — and release it after.
+	// The margins (TTL 300ms, renewal 80ms, mid-run check at 500ms)
+	// are sized for slow CI schedulers: windows-latest can stall a
+	// goroutine for ~100ms under load, so the staleness bound (the
+	// renewal interval) must stay well below the TTL, and the mid-run
+	// check must land comfortably after several renewal rounds.
 	dbPath := filepath.Join(t.TempDir(), "renewal-e2e.db")
 	db, err := sqlite.Open(dbPath)
 	if err != nil {
@@ -77,14 +83,15 @@ func TestRunOutlivingTTLPersistsThroughRenewal(t *testing.T) {
 	}
 	gw := &Gateway{
 		Store:              store,
-		LeaseTTL:           150 * time.Millisecond, // deliberately shorter than the response
-		LeaseRenewInterval: 40 * time.Millisecond,
+		LeaseTTL:           300 * time.Millisecond, // deliberately shorter than the response
+		LeaseRenewInterval: 80 * time.Millisecond,
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Mid-response (≈ 3 TTLs in), the lease must still be held: the
-		// second process is refused.
-		time.Sleep(250 * time.Millisecond)
+		// Mid-response (≈ 1.7 TTLs in — the 500ms sleep against the
+		// 300ms TTL), the lease must still be held: the second process
+		// is refused.
+		time.Sleep(500 * time.Millisecond)
 		if _, aerr := peerStore.AcquireScanLease(context.Background(), sc.ID, 1, 0, "second-process"); aerr == nil {
 			t.Errorf("RENEWAL BROKE: the second process took the slot while the observation was still running")
 			return
@@ -173,9 +180,11 @@ func TestRenewalFailureBlocksTLSConnection(t *testing.T) {
 	fs.renewErr = errors.New("lease storage down")
 	// Deterministic window: the pre-dial re-validation's audit sleeps,
 	// the heartbeat tick fails inside that window, the LAST gate (after
-	// re-validation, before the socket) refuses the connection.
-	fs.auditDelay = 80 * time.Millisecond
-	g := &Gateway{Store: fs, LeaseRenewInterval: 15 * time.Millisecond}
+	// re-validation, before the socket) refuses the connection.  The
+	// window (150ms) is sized for slow CI schedulers — the first failing
+	// tick must land well inside it even when the runner stalls.
+	fs.auditDelay = 150 * time.Millisecond
+	g := &Gateway{Store: fs, LeaseRenewInterval: 20 * time.Millisecond}
 	obs := &TLSObserver{GW: g, Timeout: 3 * time.Second}
 
 	res, err := obs.Run(context.Background(), "127.0.0.1", port)
@@ -192,7 +201,17 @@ func TestLeaseGuardStopsWithoutGoroutineLeak(t *testing.T) {
 		func(sc *storage.Scope) { sc.ID = 53 })}}
 	g := &Gateway{Store: fs, LeaseRenewInterval: 5 * time.Millisecond}
 
-	before := runtime.NumGoroutine()
+	// The leak this test guards against is SPECIFIC: the heartbeat
+	// goroutine surviving Stop.  The check is therefore a targeted
+	// stack-marker count, NOT a raw runtime.NumGoroutine() delta —
+	// process-wide goroutine counts also include unrelated runtime and
+	// transport goroutines that appear and disappear around slow CI
+	// schedulers (observed on windows-latest), so a raw delta cannot
+	// distinguish a leaked heartbeat from background noise and fails
+	// spuriously on exactly the slowest platforms.
+	const heartbeatMarker = "observe.(*LeaseGuard).loop"
+	before := countStacksMatching(heartbeatMarker)
+
 	l, err := g.AcquireLease(context.Background(),
 		&Decision{Allowed: true, Scope: &fs.scopes[0], Limits: Limits{MaxConcurrency: 1, MaxRequests: 1, MaxTotalBytes: 0}})
 	if err != nil {
@@ -210,12 +229,38 @@ func TestLeaseGuardStopsWithoutGoroutineLeak(t *testing.T) {
 	default:
 		t.Fatalf("Stop must wait for the heartbeat goroutine to finish")
 	}
-	time.Sleep(20 * time.Millisecond)
-	if after := runtime.NumGoroutine(); after > before {
-		t.Fatalf("renewal goroutine leaked: before=%d after=%d", before, after)
+	// The heartbeat goroutine must be GONE, not merely signalled: the
+	// OS may schedule the final return slightly after close(done), so
+	// poll with a bounded settle window before failing (and dump the
+	// stacks on failure — actionable evidence).
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		now := countStacksMatching(heartbeatMarker)
+		if now <= before {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("renewal goroutine leaked: %d matching stacks of %q before, %d after\nstacks:\n%s",
+				before, heartbeatMarker, now, allGoroutineStacks())
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	// A guard stopped at rest never latches Lost.
 	if guard.Lost() {
 		t.Fatalf("a healthy stopped guard must not report Lost")
 	}
+}
+
+// allGoroutineStacks dumps every live goroutine's stack (failure
+// evidence for the leak assertion).
+func allGoroutineStacks() string {
+	buf := make([]byte, 1<<20)
+	n := runtime.Stack(buf, true)
+	return string(buf[:n])
+}
+
+// countStacksMatching counts live goroutines whose stack mentions the
+// given function marker.
+func countStacksMatching(marker string) int {
+	return strings.Count(allGoroutineStacks(), marker)
 }
