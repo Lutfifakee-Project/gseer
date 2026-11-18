@@ -51,6 +51,23 @@ func captureSubHelp(t *testing.T, name string) string {
 func executeRoot(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	buf := &bytes.Buffer{}
+	// Clear every child command's pinned writer first: earlier tests in
+	// this package SetOut a private buffer directly on a SUBcommand of the
+	// shared singleton tree (dataset update, search, ...).  cobra's
+	// OutOrStdout prefers a command's own writer over the inherited one,
+	// so a stale child writer swallowed the RunE output and executeRoot
+	// captured an EMPTY buffer while err stayed nil — the "CLI output
+	// empty" failure mode of the facets E2E on CI.  With the children
+	// nilled, output flows to the root's writer set right below.
+	var clearWriters func(c *cobra.Command)
+	clearWriters = func(c *cobra.Command) {
+		c.SetOut(nil)
+		c.SetErr(nil)
+		for _, sub := range c.Commands() {
+			clearWriters(sub)
+		}
+	}
+	clearWriters(RootCmd)
 	RootCmd.SetOut(buf)
 	RootCmd.SetErr(buf)
 	RootCmd.SetArgs(args)

@@ -150,6 +150,7 @@ func TestDatasetUpdateImportsAndSearchFindsIt(t *testing.T) {
 	}
 	searchOut := &bytes.Buffer{}
 	searchCmd.SetOut(searchOut)
+	t.Cleanup(func() { searchCmd.SetOut(nil) }) // never pin the singleton search writer past this test
 	if err := searchCmd.RunE(searchCmd, []string{"port=443"}); err != nil {
 		t.Fatalf("search: %v\n%s", err, searchOut.String())
 	}
@@ -344,6 +345,7 @@ func TestDatasetSetupAutoImports(t *testing.T) {
 	searchCmd, _, _ := RootCmd.Find([]string{"search"})
 	searchOut := &bytes.Buffer{}
 	searchCmd.SetOut(searchOut)
+	t.Cleanup(func() { searchCmd.SetOut(nil) }) // never pin the singleton search writer past this test
 	if err := searchCmd.RunE(searchCmd, []string{"port=443"}); err != nil {
 		t.Fatalf("search: %v\n%s", err, searchOut.String())
 	}
