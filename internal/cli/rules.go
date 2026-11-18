@@ -67,7 +67,6 @@ func rulesDirForLint() string {
 	if cfg, err := config.Load(config.Flags{
 		ConfigPath: flags.configPath,
 		Profile:    flags.profile,
-		Endpoint:   flags.server,
 	}); err == nil {
 		return cfg.Fingerprints.RulesDir
 	}

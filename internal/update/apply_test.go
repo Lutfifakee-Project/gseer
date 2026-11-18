@@ -21,7 +21,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -57,21 +56,11 @@ func writeFileMode(t *testing.T, path, content string, mode os.FileMode) {
 // not representable there, so the Windows check verifies exactly
 // that semantic and nothing more: a requested mode WITH owner-write
 // must end up writable, a mode WITHOUT it must end up read-only.
-// The Unix contract stays exact; the Windows limitation is
-// documented, not silently ignored.
 func assertPerm(t *testing.T, path string, want os.FileMode) {
 	t.Helper()
 	st, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if runtime.GOOS == "windows" {
-		wantWritable := want&0o200 != 0
-		gotWritable := st.Mode().Perm()&0o200 != 0
-		if gotWritable != wantWritable {
-			t.Errorf("%s: writable = %v (perm %v), want writable = %v (requested %v) — Windows preserves only the read-only bit", path, gotWritable, st.Mode().Perm(), wantWritable, want)
-		}
-		return
 	}
 	if st.Mode().Perm() != want {
 		t.Errorf("%s: mode = %v, want %v", path, st.Mode().Perm(), want)

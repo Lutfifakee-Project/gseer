@@ -1,0 +1,73 @@
+# GSEER — Central Dataset seed register (v0.3.2 Rev 11).
+#
+# The project's scheduled pipeline (`.github/workflows/dataset.yml`)
+# collects ONLY over the identifiers listed here — the dataset's honest
+# coverage boundary.  Extending this list is an owner decision: every
+# entry in `domains` becomes a passive DNS-resolution target (queries to
+# public recursive resolvers — no direct contact with the target), and
+# every entry in `tls_hosts` becomes an active TLS :443 observation
+# target (one handshake per target per run, audited pipeline scope).
+#
+# Rev 14: this register is now the BOOTSTRAP boundary, not the whole
+# coverage.  The seed-free `ctlog` connector (docs/SOURCES.md §G) grows
+# the dataset beyond this list from public Certificate Transparency
+# logs — no identifiers from this file are involved.  Everything in this
+# file remains exactly as reviewed: the seeds this pipeline resolves and
+# (for tls_hosts) actively observes.
+#
+# TERMS BASIS (why each active-observation target is permissible):
+#   - example.com / example.net / example.org — IANA documentation
+#     domains (RFC 2606): publicly documented, established in the Rev 8/9
+#     acceptances, safe to resolve and observe.
+#   - httpbin.org — a public test service explicitly provided for HTTP
+#     client testing.
+#   - dns.google / one.one.one.one — public DNS services with published
+#     documentation; one standard HTTPS handshake equals normal client
+#     use.
+#   - wikipedia.org / kernel.org / debian.org / rfc-editor.org — public
+#     web properties; a single audited TLS handshake per target per run
+#     is standard client behavior (equivalent to one page visit),
+#     bounded, and scope-registered.
+#
+# DNS-ONLY entries (no active observation — either no TLS served from
+# the pipeline's vantage, or excluded by deliberate conservatism):
+#   - scanme.nmap.org, scanme.insecure.org — port-scanning test hosts
+#     invited by Nmap's documentation; from the current pipeline vantage
+#     they did not answer TLS on :443, so they are kept as DNS-only
+#     rather than forcing a port that does not serve it (honesty: no
+#     fabricated port facts).
+#   - neverssl.com — plain-HTTP test site (no TLS).
+#   - gnu.org — excluded from active observation by conservatism; DNS
+#     resolution only.
+domains:
+  - example.com
+  - example.net
+  - example.org
+  - scanme.nmap.org
+  - scanme.insecure.org
+  - httpbin.org
+  - neverssl.com
+  - one.one.one.one
+  - dns.google
+  - wikipedia.org
+  - kernel.org
+  - debian.org
+  - gnu.org
+  - rfc-editor.org
+
+# Active TLS :443 observation is restricted to THIS subset (each entry
+# justified above); the pipeline observes www.<host> and <host> — one
+# handshake each, audited scope, default-deny gateway still
+# re-validating every connection.  Passive DNS seeds are NEVER actively
+# probed.
+tls_hosts:
+  - example.com
+  - example.net
+  - example.org
+  - httpbin.org
+  - dns.google
+  - one.one.one.one
+  - wikipedia.org
+  - kernel.org
+  - debian.org
+  - rfc-editor.org

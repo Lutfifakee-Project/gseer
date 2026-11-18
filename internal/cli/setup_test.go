@@ -77,7 +77,7 @@ func resetSetupFlags(t *testing.T) {
 	t.Helper()
 	clear := func() {
 		cmd := findSetup(t)
-		for _, f := range []string{"self-hosted", "with-compose", "full", "load-fixtures", "purge-fixtures"} {
+		for _, f := range []string{"personal", "self-hosted", "with-compose", "full", "load-fixtures", "purge-fixtures"} {
 			if err := cmd.Flags().Set(f, "false"); err != nil {
 				t.Fatalf("reset --%s: %v", f, err)
 			}

@@ -1,9 +1,6 @@
-# Valid self-hosted config for M2 tests.
+# Valid self-hosted config for the M2 tests (CLI-only architecture:
+# server.*/client.*/index.* keys were removed with the API surfaces).
 profile: self-hosted
-
-server:
-  listen: "127.0.0.1:8443"
-  token: "test-token-do-not-use-in-prod"
 
 database:
   host: "127.0.0.1"
@@ -21,9 +18,8 @@ log:
   format: "text"
 
 sources:
-  - name: "ct-test"
-    type: "ct"
-    endpoint: "https://ct.example.com"
+  - name: "dns-test"
+    type: "dns"
     enabled: false
 
 defaults:

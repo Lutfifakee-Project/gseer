@@ -1,0 +1,224 @@
+# GSEER — Central Internet Asset Dataset pipeline (v0.3.2 Rev 13).
+#
+# Purpose: the project's SCHEDULED PASSIVE DISCOVERY — the owner-mandated
+# central distribution the CLI's `gseer setup` / `gseer dataset update`
+# import locally (docs/DATASET.md).
+#
+# What this workflow does (all owner-side; end users never run this):
+#   1. builds gseer + gseer-dataset from the current main;
+#   2. provisions a STAGING personal Local Index;
+#   3. registers the project's seed sources (pipeline/dataset-seeds.yaml —
+#      the seeds register; every connector is terms-reviewed per
+#      docs/SOURCES.md) and runs the passive connectors;
+#   4. observes TLS :443 on the seeds' web hostnames under an explicit,
+#      audited scope (the same P2 regime CLI users run — the honesty
+#      contract reserves PORT facts to explicit observation);
+#   5. exports + validates the dataset (gseer-dataset build + validate —
+#      validation is the publication gate);
+#   6. publishes the artifact as the rolling `central-dataset` release
+#      (NON-latest, stable asset names: gseer-dataset-manifest.json +
+#      gseer-dataset.ndjson.gz) and a run artifact for auditing.
+#
+# Integrity: payload SHA-256 in the manifest + HTTPS transport.  The
+# dataset version is monotonic ON THE CHANNEL: the published manifest is
+# the authority (a run publishes max(run_number, published + 1), so a
+# migrated repository can never publish a version users already consume).
+# The payload is uploaded BEFORE the manifest — the manifest upload is the
+# version commit point; a torn read during the swap (manifest/payload from
+# different versions) is honestly rejected by the CLI's checksum
+# verification (E_DATASET_CHECKSUM) and a retry succeeds.
+# Coverage is the SEED REGISTER — never claimed internet-wide.
+#
+# Least privilege: contents: write is required to create/update the
+# `central-dataset` release; no other scope.
+
+name: dataset
+
+on:
+  schedule:
+    # Every 6 hours: 00:00/06:00/12:00/18:00 UTC.
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dataset-publish
+  cancel-in-progress: false
+
+jobs:
+  build-dataset:
+    name: Scheduled passive discovery → validated dataset
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go mod verify
+        run: go mod verify
+
+      - name: Build gseer + gseer-dataset
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 go build -o gseer ./cmd/gseer
+          CGO_ENABLED=0 go build -o gseer-dataset ./cmd/gseer-dataset
+
+      - name: Provision the staging Local Index
+        run: |
+          set -euo pipefail
+          ./gseer setup --personal --db-path pipeline.db
+
+      - name: Register the seed sources (pipeline/dataset-seeds.yaml)
+        run: |
+          set -euo pipefail
+          python3 - <<'PYSEEDS'
+          import yaml, shlex, sys
+          cfg = yaml.safe_load(open("pipeline/dataset-seeds.yaml"))
+          domains = [d.strip() for d in cfg.get("domains", []) if d.strip()]
+          tls_hosts = [d.strip() for d in cfg.get("tls_hosts", []) if d.strip()]
+          if not domains:
+              sys.exit("ERROR: pipeline/dataset-seeds.yaml has no domains")
+          unknown = [d for d in tls_hosts if d not in domains]
+          if unknown:
+              sys.exit("ERROR: tls_hosts must be a subset of domains: " + shlex.join(unknown))
+          print("SEED_DOMAINS=" + shlex.join(domains))
+          print("SEED_TLS=" + ("1" if tls_hosts else "0"))
+          print("SEED_TLS_HOSTS=" + shlex.join(tls_hosts))
+          open("seeds.env", "w").write(
+              "SEED_DOMAINS=" + shlex.join(domains) + "\n" +
+              "SEED_TLS=" + ("1" if tls_hosts else "0") + "\n" +
+              "SEED_TLS_HOSTS=" + shlex.join(tls_hosts) + "\n")
+          PYSEEDS
+          cat seeds.env >> "$GITHUB_ENV"
+
+      - name: Seed-free passive discovery (public CT logs — docs/SOURCES.md §G)
+        run: |
+          set -euo pipefail
+          # The ONLY step that grows beyond the seed register: the `ctlog`
+          # connector tip-follows a public Certificate Transparency log and
+          # records every DNS name in the freshest certificates.  Terms
+          # basis (docs/SOURCES.md §G): RFC 9162 §5 mandates the public
+          # get-sth/get-entries APIs, the log comes from the official
+          # public log list, certificates are public data — read-only
+          # HTTPS GETs to the LOG only, never to the discovered domains.
+          # Bounded: limit_per_run entries per run, 128-entry requests,
+          # 1 req/s.  Seed-free (--seed-mode none): no operator
+          # identifiers involved.  Best-effort like the enrichment
+          # connectors — an unreachable log must never hang the run
+          # (Rev 13 lesson).
+          ./gseer source add central-ctlog --type ctlog --seed-mode none \
+            --requests-per-second 1 --limit-per-run 2000 --enable --yes
+          timeout 600 ./gseer collect run --source central-ctlog || true
+
+      - name: Passive collection (terms-reviewed connectors)
+        run: |
+          set -euo pipefail
+          # DNS over the project's seed domains (operator-named targets —
+          # docs/SOURCES.md §C; DNS = queries to public resolvers, no
+          # direct contact with the target).
+          ./gseer source add central-dns --type dns --seed-mode config \
+            --seeds "$SEED_DOMAINS" --enable --yes
+          ./gseer collect run --source central-dns
+          # ASN + PTR enrichment over the IPs ALREADY in the index
+          # (seed-mode index — the operator's own corpus only).  BOUNDED:
+          # the enrichment connectors reach third-party services whose
+          # availability is out of the project's control — an unreachable
+          # service must time out in minutes, never hang the whole
+          # pipeline run (observed hanging 14+ min in Rev 13 acceptance).
+          ./gseer source add central-asn --type ip2asn --seed-mode index --seed-kind ip --enable --yes
+          timeout 300 ./gseer collect run --source central-asn || true   # enrichment is best-effort; failures are honest
+          ./gseer source add central-ptr --type ptr --seed-mode index --seed-kind ip --enable --yes
+          timeout 300 ./gseer collect run --source central-ptr || true
+
+      - name: Authorized TLS :443 observation of the terms-cleared hosts (scoped, audited)
+        if: env.SEED_TLS == '1'
+        run: |
+          set -euo pipefail
+          # ACTIVE observation is restricted to tls_hosts (the terms-cleared
+          # subset of the register — see the yaml header for the per-host
+          # terms basis); passive DNS seeds are NEVER probed.  One
+          # domain_suffix scope per host (covers the apex + www form);
+          # every handshake is audited (gseer scope audit) and bounded
+          # (1 request per run).  The default-deny gateway still
+          # re-validates every connection.
+          for d in $SEED_TLS_HOSTS; do
+            ./gseer scope add domain_suffix "$d" --protocols tls --ports 443 \
+              --note "central-dataset pipeline seed register (audited)" || true
+            ./gseer scan tls --target "www.$d" --port 443 || true
+            ./gseer scan tls --target "$d" --port 443 || true
+          done
+
+      - name: Resolve the dataset version (monotonic on the channel)
+        run: |
+          set -euo pipefail
+          # The dataset version is owned by the rolling channel, not by the
+          # run counter: a migrated repository or replayed history must
+          # never publish a version <= the one users already consume.  The
+          # published manifest is the authority; when the channel is fresh
+          # (no assets yet), the run number starts the version line.
+          OFFICIAL="https://github.com/Lutfifakee-Project/gseer/releases/download/central-dataset/gseer-dataset-manifest.json"
+          PUBLISHED=$(curl -fsSL --max-time 30 "$OFFICIAL" \
+            | python3 -c 'import json, sys; print(json.load(sys.stdin)["dataset_version"])' \
+            2>/dev/null || echo 0)
+          if [ "${{ github.run_number }}" -gt "$((PUBLISHED + 1))" ]; then
+            VERSION="${{ github.run_number }}"
+          else
+            VERSION="$((PUBLISHED + 1))"
+          fi
+          echo "DATASET_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "[ ok ] channel version: $PUBLISHED -> publishing dataset v$VERSION"
+
+      - name: Build + validate the dataset (publication gate)
+        run: |
+          set -euo pipefail
+          mkdir -p dist-dataset
+          ./gseer-dataset build -db pipeline.db -out dist-dataset -version "$DATASET_VERSION"
+          ./gseer-dataset validate -dir dist-dataset
+
+      - name: Publish the central-dataset release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release view central-dataset >/dev/null 2>&1 \
+            || gh release create central-dataset --target "$GITHUB_SHA" \
+                 --title "GSEER Central Internet Asset Dataset" \
+                 --notes "Rolling central dataset (docs/DATASET.md). Version = dataset_version in the manifest. Not the latest binary release." \
+                 --latest=false
+          # Upload the PAYLOAD first and the MANIFEST last: the manifest
+          # upload is the version commit point, so consumers see either
+          # the consistent old pair or the consistent new pair as soon as
+          # both assets are updated.  A read that straddles the swap is
+          # honestly rejected by the CLI's checksum verification
+          # (E_DATASET_CHECKSUM) and a retry succeeds.
+          gh release upload central-dataset \
+            dist-dataset/gseer-dataset.ndjson.gz dist-dataset/gseer-dataset-manifest.json --clobber
+
+      - name: Post-publish round-trip verification (invalid assets cannot ship silently)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          rm -rf roundtrip && mkdir -p roundtrip
+          gh release download central-dataset --dir roundtrip \
+            --pattern "gseer-dataset-manifest.json" --pattern "gseer-dataset.ndjson.gz" --clobber
+          ./gseer-dataset validate -dir roundtrip
+          # The published bytes must be EXACTLY the validated bytes.
+          cmp dist-dataset/gseer-dataset-manifest.json roundtrip/gseer-dataset-manifest.json
+          cmp dist-dataset/gseer-dataset.ndjson.gz roundtrip/gseer-dataset.ndjson.gz
+          echo "[ ok ] published assets are byte-identical to the validated artifact"
+
+      - name: Upload the run artifact (audit copy)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: central-dataset-v${{ github.run_number }}
+          path: dist-dataset/
+          retention-days: 90

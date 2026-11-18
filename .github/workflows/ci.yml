@@ -1,4 +1,10 @@
-# GSEER CI (v0.2.0).
+# GSEER CI (v0.3.2, Linux-only / CLI-only architecture).
+#
+# Platform policy (owner architecture decision): Linux AMD64 required,
+# Linux ARM64 best-effort; Windows and macOS are NOT product platforms —
+# there are no Windows/macOS release jobs, packaging, or acceptance
+# requirements (the former update-windows job was removed with the
+# Windows compatibility code in the v0.3.2 CLI-only remediation).
 #
 # AC-1.1: go build ./... under both 1.26.x and 1.27.x.
 # AC-1.2: go vet ./... clean.
@@ -95,107 +101,6 @@ jobs:
         # force-callable invariant visible as its own CI step.
         run: go test -run TestForceNotCallableFromOtherCommands -count=1 ./internal/cli
 
-  # Windows coverage: the updater durability suite (MoveFileExW flags,
-  # rollback, E_UPDATE_DIRSYNC warning, platform-honest permissions via
-  # assertPerm) and the Windows portability fixes (embed.FS path.Join,
-  # export clean-form FromSlash, db_test ToSlash) can only EXECUTE on a
-  # Windows host. The full unit suite also runs here — Windows is a
-  # first-class supported platform, not a compile-only target.
-  update-windows:
-    name: Updater durability + full suite (windows)
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.27.x"
-          cache: true
-      - name: Updater tests (platform-neutral + Windows MoveFileExW coverage)
-        run: go test -count=1 ./internal/update/...
-      - name: Updater race detector
-        run: go test -race -count=1 ./internal/update/...
-      # The suite runs with -json so a failure can be PINPOINTED from
-      # the run page alone: the follow-up step renders every failing
-      # test (package, test name, last output lines, stderr tail) into
-      # $GITHUB_STEP_SUMMARY, which GitHub shows publicly on the run
-      # page — no log-download permissions are needed for diagnosis.
-      # The step still fails exactly like the plain invocation
-      # (pipefail preserves go test's exit code through tee).
-      - name: Full unit suite on Windows
-        shell: bash
-        run: |
-          set -o pipefail
-          go test -count=1 -json ./... 2>"$RUNNER_TEMP/go-test-stderr.log" | tee "$RUNNER_TEMP/go-test.json"
-
-      - name: Surface failing tests in the step summary
-        if: failure()
-        shell: bash
-        run: |
-          python - "$RUNNER_TEMP/go-test.json" "$RUNNER_TEMP/go-test-stderr.log" >> "$GITHUB_STEP_SUMMARY" <<'PY'
-          import json, sys
-
-          out_path, err_path = sys.argv[1], sys.argv[2]
-          fail_tests, fail_outputs, build_failures = [], {}, []
-
-          try:
-              with open(out_path, encoding="utf-8", errors="replace") as f:
-                  for line in f:
-                      line = line.strip()
-                      if not line.startswith("{"):
-                          continue
-                      try:
-                          ev = json.loads(line)
-                      except Exception:
-                          continue
-                      pkg, test = ev.get("Package", ""), ev.get("Test", "")
-                      action, output = ev.get("Action"), ev.get("Output", "")
-                      if action == "output" and test and output.strip():
-                          buf = fail_outputs.setdefault((pkg, test), [])
-                          buf.append(output.rstrip())
-                          if len(buf) > 30:
-                              del buf[:-30]
-                      if action == "fail":
-                          if test:
-                              if (pkg, test) not in fail_tests:
-                                  fail_tests.append((pkg, test))
-                          else:
-                              build_failures.append(pkg)
-          except FileNotFoundError:
-              pass
-
-          lines = ["## Windows unit suite - failing tests", ""]
-          if fail_tests:
-              lines += ["| Package | Test |", "| --- | --- |"]
-              for pkg, t in fail_tests:
-                  lines.append("| %s | `%s` |" % (pkg, t))
-              lines.append("")
-              lines += ["### Last output lines per failing test", ""]
-              for pkg, t in fail_tests:
-                  lines += ["**%s - %s**" % (pkg, t), "", "```"]
-                  lines += fail_outputs.get((pkg, t), [])[-12:]
-                  lines += ["```", ""]
-          else:
-              lines += ["_No per-test FAIL events were parsed - a build failure, a fatal panic, or a test-binary crash may have ended the run. See the stderr tail below and the job log._", ""]
-          if build_failures:
-              lines += ["**Packages that failed to build/run:** " + ", ".join(sorted(set(build_failures))), ""]
-
-          try:
-              with open(err_path, encoding="utf-8", errors="replace") as f:
-                  tail = f.read().strip().splitlines()[-15:]
-          except FileNotFoundError:
-              tail = []
-          if tail:
-              lines += ["### stderr tail", "", "```"]
-              lines += tail
-              lines += ["```"]
-
-          print("\n".join(lines))
-          PY
-      - name: Vet on Windows
-        run: go vet ./...
-      - name: Build on Windows
-        run: go build ./...
-
   lint:
     name: Lint (golangci-lint v2)
     runs-on: ubuntu-latest
@@ -259,10 +164,10 @@ jobs:
           version: v2.20.0
           args: check
       - name: Snapshot build compiles the full matrix (REL-02)
-        # Builds linux/darwin/windows x amd64/arm64 without publishing
-        # anything; proves builds.main (./cmd/gseer) and the ldflags
-        # version metadata resolve for every configured target.  Runs
-        # THROUGH the action (same pinned CLI v2.20.0): the action
+        # Builds linux amd64+arm64 (the product platform policy) without
+        # publishing anything; proves builds.main (./cmd/gseer) and the
+        # ldflags version metadata resolve for every configured target.
+        # Runs THROUGH the action (same pinned CLI v2.20.0): the action
         # invokes the CLI inside its own step and does not leave the
         # binary on PATH for a later bare `run:` step.
         uses: goreleaser/goreleaser-action@v2.9.1
@@ -287,6 +192,8 @@ jobs:
         run: go test -run TestImportGraphSearchNotScan -count=1 ./internal/cli
       - name: AC-7.x active-observation absence
         run: go test -run TestNoCollectorPackageExists -count=1 ./internal/cli
+      - name: CLI-only architecture — removed components stay removed
+        run: go test -run TestRemovedComponentsStayRemoved -count=1 ./internal/cli
 
   # Database integration tests against real PostgreSQL 16 AND 17
   # (matrix). Runs on every push and PR; the unit-only build job above

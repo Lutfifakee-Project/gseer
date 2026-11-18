@@ -34,7 +34,7 @@ import (
 // Error is the update system's structured error (what → why → next).
 // Err carries the wrapped underlying cause: Why renders it for humans
 // while Err keeps it machine-inspectable — errors.Is / errors.As walk
-// the live chain (e.g. MoveFileExW error → *os.LinkError → *Error) and
+// the live chain (e.g. *os.LinkError from the rename → *Error) and
 // the cause is never flattened to a string alone.
 type Error struct {
 	Code string
@@ -306,20 +306,16 @@ func replaceBinary(target string, payload []byte) (err error) {
 // tests swap these one-line variables to inject sync/close/rename
 // failures without fake filesystems or FUSE mounts (not an abstraction).
 // renameFile defaults to the platform replacement primitive:
-// os.Rename on POSIX, MoveFileExW with
-// MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH on Windows (see
-// dirsync_unix.go / dirsync_windows.go — os.Rename itself passes no
-// write-through flag on Windows).
+// os.Rename on POSIX (the supported platform — same-directory,
+// atomic, refuses cross-device instead of copying).
 var (
 	syncFile   = func(f *os.File) error { return f.Sync() }
 	closeFile  = func(f *os.File) error { return f.Close() }
 	renameFile = renameFileDefault
 )
 
-// syncDir runs the post-rename durability step (platform default: a
-// read-only open + fsync of the directory on POSIX; on Windows a no-op,
-// because the replacement primitive itself is write-through —
-// MoveFileExW with MOVEFILE_WRITE_THROUGH, see dirsync_windows.go).  A
+// syncDir runs the post-rename durability step (a read-only open +
+// fsync of the target binary's directory — see dirsync.go).  A
 // package-level variable purely as a test seam — production always
 // uses syncDirDefault.
 var syncDir = syncDirDefault

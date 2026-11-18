@@ -17,6 +17,7 @@
 package cli
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -56,12 +57,12 @@ func TestImportGraphSearchNotScan(t *testing.T) {
 	// Enumerate the deps of every package that participates in search,
 	// server, or CLI surfaces.  Adding a package here is a deliberate
 	// architectural decision recorded in the milestone report.
+	// v0.3.2 CLI-only architecture: internal/api and internal/dashboard
+	// are REMOVED — the surfaces below are the whole product.
 	targets := []string{
 		"./cmd/gseer",
 		"./internal/cli",
 		"./internal/search",
-		"./internal/api",
-		"./internal/dashboard",
 		"./internal/gql/...",
 	}
 
@@ -120,6 +121,33 @@ func TestNoCollectorPackageExists(t *testing.T) {
 	collectorDir := filepath.Join(modroot, "internal", "collector")
 	if _, err := exec.Command("test", "-d", collectorDir).CombinedOutput(); err == nil {
 		t.Errorf("AC-7.x violation: %s exists — internal/collector/ must be ABSENT from v0.0.1", collectorDir)
+	}
+}
+
+// TestRemovedComponentsStayRemoved pins the v0.3.2 CLI-only architecture
+// decision (owner directive §3/§4): the shared-index client, the API
+// server, the dashboard, and the publisher tool are ABSENT from the
+// module.  Reintroducing any of them is a deliberate architecture
+// reversal that must be recorded in a milestone report — not a silent
+// dependency.
+func TestRemovedComponentsStayRemoved(t *testing.T) {
+	modroot := moduleRoot(t)
+	for _, rel := range []string{
+		"internal/api",
+		"internal/dashboard",
+		"internal/index",
+		"cmd/gseer-provider",
+	} {
+		dir := filepath.Join(modroot, filepath.FromSlash(rel))
+		if _, err := os.Stat(dir); err == nil {
+			t.Errorf("CLI-only architecture violation: %s exists — it was removed by the owner's v0.3.2 architecture decision", rel)
+		}
+	}
+	// The workflows too: the shared-index publisher pipeline must stay
+	// gone (journey requirement: no GitHub Actions configuration).
+	wf := filepath.Join(modroot, ".github", "workflows", "index.yml")
+	if _, err := os.Stat(wf); err == nil {
+		t.Errorf("CLI-only architecture violation: %s exists — the shared-index publisher workflow was removed", ".github/workflows/index.yml")
 	}
 }
 

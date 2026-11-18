@@ -210,6 +210,7 @@ func TestBuiltinConnectorVerdicts(t *testing.T) {
 		"dns":    {ReviewEnabled, "docs/SOURCES.md"},
 		"ip2asn": {ReviewEnabled, "docs/SOURCES.md"},
 		"ptr":    {ReviewEnabled, "docs/SOURCES.md"},
+		"ctlog":  {ReviewEnabled, "docs/SOURCES.md"},
 		"rdap":   {ReviewDisabled, "docs/SOURCES.md"},
 		"ct":     {ReviewDisabled, "docs/SOURCES.md"},
 	} {

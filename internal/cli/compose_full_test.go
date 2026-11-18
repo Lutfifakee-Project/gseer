@@ -19,17 +19,17 @@ package cli
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
 )
 
-// compose_full_test.go — the v0.1.0 full-stack compose template
-// (directive §6): exactly db + server, healthchecks, persistent volume,
-// no published DB port, token-mandatory server, and a generated .env
-// holding both secrets at 0600.
+// compose_full_test.go — the v0.3.2 full-stack compose template
+// (CLI-only architecture): exactly db + one-shot provision, healthcheck,
+// persistent volume, NO published DB port, NO server container, and a
+// generated .env holding both secrets at 0600 (no API token — the API
+// server was removed with the CLI-only decision).
 
 func TestSetupWithComposeFull(t *testing.T) {
 	resetSetupFlags(t)
@@ -86,34 +86,30 @@ func TestSetupWithComposeFull(t *testing.T) {
 		t.Fatalf("compose YAML does not parse: %v", err)
 	}
 	if len(doc.Services) != 2 {
-		t.Fatalf("services = %d, want exactly db + server (no unused containers)", len(doc.Services))
+		t.Fatalf("services = %d, want exactly db + provision (no unused containers)", len(doc.Services))
 	}
 	if _, ok := doc.Services["db"]; !ok {
 		t.Error("db service missing")
 	}
-	server, ok := doc.Services["server"]
+	provision, ok := doc.Services["provision"]
 	if !ok {
-		t.Fatal("server service missing")
+		t.Fatal("provision service missing")
 	}
-	if server.Build == nil {
-		t.Error("server must build from the local Dockerfile")
+	if provision.Build == nil {
+		t.Error("provision must build from the local Dockerfile")
 	}
 	// The DB publishes NO host port (compose-internal only).
 	if db := doc.Services["db"]; len(db.Ports) != 0 {
 		t.Errorf("db publishes ports %v — must be compose-internal only", db.Ports)
 	}
-	// The server healthchecks via the binary's /health endpoint.
-	if server.Healthcheck == nil || !strings.Contains(strings.Join(server.Healthcheck.Test, " "), "/health") {
-		t.Error("server healthcheck missing or not hitting /health")
+	// The provision one-shot waits for a HEALTHY db (readiness ordering).
+	if provision.DependsOn["db"].Condition != "service_healthy" {
+		t.Errorf("depends_on condition = %q, want service_healthy", provision.DependsOn["db"].Condition)
 	}
-	// The server waits for a HEALTHY db (readiness ordering).
-	if server.DependsOn["db"].Condition != "service_healthy" {
-		t.Errorf("depends_on condition = %q, want service_healthy", server.DependsOn["db"].Condition)
-	}
-	// The API publishes on host loopback only.
-	for _, p := range server.Ports {
-		if !strings.HasPrefix(p, "127.0.0.1:") {
-			t.Errorf("server port binding %q is not host-loopback", p)
+	// CLI-only architecture: NO serving container, no published ports.
+	for name, svc := range doc.Services {
+		if len(svc.Ports) != 0 {
+			t.Errorf("service %s publishes ports %v — the full stack must not serve anything", name, svc.Ports)
 		}
 	}
 	// Persistent volume for the database.
@@ -121,34 +117,29 @@ func TestSetupWithComposeFull(t *testing.T) {
 		t.Error("persistent volume gseer-db-data missing")
 	}
 
-	// The .env holds both secrets, at 0600, with the non-loopback
-	// contract satisfied (token present).
+	// The .env holds both secrets, at 0600.  No API token exists anymore
+	// (the API server was removed with the CLI-only decision).
 	envStr := string(envBody)
-	if !strings.Contains(envStr, "GSEER_TOKEN=") || !strings.Contains(envStr, "GSEER_DB_PASSWORD=") {
+	if !strings.Contains(envStr, "GSEER_APP_PASSWORD=") || !strings.Contains(envStr, "GSEER_DB_PASSWORD=") {
 		t.Errorf(".env missing secrets:\n%s", envStr)
+	}
+	if strings.Contains(envStr, "GSEER_TOKEN=") {
+		t.Errorf(".env still carries the removed API token:\n%s", envStr)
 	}
 	st, err := os.Stat(filepath.Join(dir, ".env"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 0600 is the POSIX contract.  On Windows os.Chmod can only map
-	// the single owner-write bit to the read-only attribute (Go
-	// reports 0666 for writable files), so the honest Windows check
-	// is "exists and writable"; full POSIX mode preservation is a
-	// Unix property and is not claimed on Windows.
-	if runtime.GOOS == "windows" {
-		if st.Mode().Perm()&0o200 == 0 {
-			t.Errorf(".env unexpectedly read-only on Windows: %v", st.Mode().Perm())
-		}
-	} else if st.Mode().Perm() != 0o600 {
+	// 0600 is the permission contract for the generated .env.
+	if st.Mode().Perm() != 0o600 {
 		t.Errorf(".env mode = %v, want 0600", st.Mode().Perm())
 	}
-	// The generated token is not a placeholder.
+	// The generated runtime password is not a placeholder.
 	for _, line := range strings.Split(envStr, "\n") {
-		if strings.HasPrefix(line, "GSEER_TOKEN=") {
-			tok := strings.TrimPrefix(line, "GSEER_TOKEN=")
-			if len(tok) < 16 || tok == "changeme" {
-				t.Errorf("generated token too weak: %q", tok)
+		if strings.HasPrefix(line, "GSEER_APP_PASSWORD=") {
+			pw := strings.TrimPrefix(line, "GSEER_APP_PASSWORD=")
+			if len(pw) < 16 || pw == "changeme" {
+				t.Errorf("generated runtime password too weak: %q", pw)
 			}
 		}
 	}
@@ -194,10 +185,14 @@ func TestDockerfileContract(t *testing.T) {
 		"USER gseer",
 		"CGO_ENABLED=0",
 		`ENTRYPOINT ["gseer"]`,
-		`CMD ["server", "start"]`,
+		`CMD ["--help"]`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("Dockerfile missing %q", want)
 		}
+	}
+	// CLI-only architecture: the image defaults to the CLI, not a server.
+	if strings.Contains(s, `CMD ["server`) || strings.Contains(s, "EXPOSE") {
+		t.Error("Dockerfile still declares a long-running server contract (removed with the API server)")
 	}
 }

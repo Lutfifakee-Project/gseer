@@ -121,7 +121,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -548,15 +547,12 @@ func stageValidatedRestoreCopy(backup, live string) (string, error) {
 		return "", fmt.Errorf("E_DB_RESTORE: the staged copy could not be closed cleanly (the live database was not touched): %w%s", cerr, stagingLeftoverNote(leftover))
 	}
 
-	// On Windows the POSIX mode bits do not exist (the ACL follows the
-	// parent directory — see the storage package's SQ-04 note), so the
-	// permissive-mode refusal below is POSIX-only by design.
-	if runtime.GOOS != "windows" {
-		if st, serr := os.Stat(staging); serr == nil {
-			if perm := st.Mode().Perm(); perm&0o177 != 0 {
-				_ = os.Remove(staging)
-				return "", fmt.Errorf("E_DB_RESTORE: staged copy has permissive mode %04o, refusing to install it (the live database was not touched)", uint32(perm))
-			}
+	// Permissive-mode refusal: the staged copy must carry the same
+	// restrictive permission policy as the live database file.
+	if st, serr := os.Stat(staging); serr == nil {
+		if perm := st.Mode().Perm(); perm&0o177 != 0 {
+			_ = os.Remove(staging)
+			return "", fmt.Errorf("E_DB_RESTORE: staged copy has permissive mode %04o, refusing to install it (the live database was not touched)", uint32(perm))
 		}
 	}
 	return staging, nil

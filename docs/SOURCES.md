@@ -17,7 +17,9 @@
 | `dns` | operator-configured resolver (system default) | **reviewed-enabled** | standard DNS recursion; the operator names every target; answers are protocol facts |
 | `ip2asn` | Team Cymru IP-to-ASN (DNS interface) | **reviewed-enabled** | explicitly free community service; DNS interface requested "at volume"; conservative rates + caching |
 | `ptr` | operator-configured resolver (system default) | **reviewed-enabled** | standard reverse-DNS (PTR) recursion; same basis as `dns` — operator-named addresses, protocol facts |
-| shared index | the project's signed shared-index channel | **reviewed-enabled** (v0.3.2) | rows produced by the provider pipeline's reviewed-enabled connectors only (`.github/workflows/index.yml` + `pipeline/seeds/`); imported with provenance `shared-index` — `docs/SHARED-INDEX.md` |
+| `ctlog` | public CT logs from the official log list (default: Cloudflare Nimbus2026) | **reviewed-enabled** (§G, Rev 14) | RFC 9162 mandates public `get-sth`/`get-entries`; seed-free tip-following read of a bounded window; certificates are public data; the log is the only endpoint touched |
+| `egress-echo` | api.ipify.org (public HTTPS echo, bootstrap context probe only) | **reviewed-enabled** (§F) | one bounded request at setup; returns the caller's own public IP; free service without per-use terms restrictions; provenance `egress-echo` |
+| central dataset | the project's scheduled pipeline over the reviewed-enabled connectors above (§C/§D/§E + scoped TLS observation of the seeds register) | **reviewed-enabled** (Rev 9) | rows produced ONLY by reviewed-enabled connectors; validated before publication (gseer-dataset validate) and re-validated at import; provenance preserved per record — `docs/DATASET.md` |
 | `rdap` | RIR registration data (ARIN/RIPE NCC et al.) | **disabled** | terms do not grant indexing/redistribution; needs written authorization |
 | `ct` | crt.sh (Sectigo CT aggregation) | **disabled** | no published terms covering automated collection or indexing/reuse |
 
@@ -292,6 +294,79 @@ factual reasons below are what matters for any future re-review:
   requires signup and hourly query caps; commercial API terms.  A
   viable fallback if the owner accepts account-based access; not
   actioned.
+
+
+## §F Egress context echo — api.ipify.org (bootstrap context probe)
+
+- **Provider / endpoint:** `https://api.ipify.org` (public HTTPS echo).
+- **What it returns:** the caller's own public IP address — nothing else.
+- **Why the bootstrap needs it:** with the shared-index channel removed
+  (v0.3.2 CLI-only architecture), `gseer setup` seeds local passive
+  discovery from the operator's own egress context.  The echo supplies
+  the IP; PTR (§E) names it; the public-suffix list derives the
+  registrable domain that seeds `dns` (§C).
+- **Verdict basis:** a single bounded HTTPS GET at setup time (15 s
+  budget), no account, no API key, no per-use restriction in the
+  provider's published terms; the data retrieved is the operator's own
+  address, so indexing it raises no third-party-terms concern.  The
+  response is recorded with provenance `egress-echo` in the setup
+  output, never as an index fact on its own.
+- **Failure mode:** offline or unreachable echo ⇒ an honest `[skip]`
+  and a manual `gseer source add` pointer.  Nothing is guessed.
+- **Re-review triggers:** any change to the provider's terms, any move
+  of the echo endpoint, or any expansion of what the bootstrap queries
+  from it.
+
+## §G CT log walking — public Certificate Transparency logs (connector `ctlog`, Rev 14)
+
+- **Provider / endpoint:** any log from the official public log list
+  (`https://www.gstatic.com/ct/log_list/v3/log_list.json`); the connector
+  defaults to Cloudflare's Nimbus 2026 log
+  (`https://ct.cloudflare.com/logs/nimbus2026/`).  Operators select a
+  different list entry with `gseer source add --endpoint`.
+- **What it does:** speaks the RFC 6962/9162 protocol DIRECTLY to the log —
+  `get-sth` for the tree size, `get-entries` for a bounded window of the
+  FRESHEST entries per run — and records every DNS name the contained
+  X.509 certificates cover (SANs; wildcard `*.name` collapses to its base
+  name).  No operator seeds are involved: this is the project's first
+  SEED-FREE discovery source, and the only pipeline step whose coverage
+  grows beyond the seed register by itself.
+- **Terms basis (why this is `reviewed-enabled` where §A is not):** the
+  permission is the protocol itself, not a provider licence page.
+  RFC 9162 §5 requires every log to serve `get-entries`/`get-sth`
+  publicly — public audit access is the log's designed purpose; the log
+  list is a published public directory; the underlying certificates are
+  public artifacts (they travel inside every TLS handshake to any
+  client).  Read-only HTTPS GETs, bounded (default 128 entries per
+  request — far under the RFC's 1000 cap — and `limit_per_run` entries
+  per run), rate-limited by the shared passive client (1 req/s default).
+- **What it never does:** no contact with a discovered domain (discovery ≠
+  observation — port/service facts stay reserved to explicit, scoped
+  `gseer scan` runs); no account, no API key, no query patterns tied to
+  any target list; no crt.sh aggregation (§A stays disabled).
+- **Provenance per fact:** the log URL, the absolute entry index, the
+  SHA-256 of the raw log leaf (cryptographic evidence), the CT log's own
+  timestamp, the certificate issuer and validity window; `observed_at` is
+  the honest fetch time.  `confidence: high`.
+- **Freshness / growth:** each run tip-follows the log (start =
+  max(cursor+1, tip − limit)); consecutive runs never gap and overlaps
+  dedupe at the delivery identity (L1), so the dataset grows with the
+  freshest certificates instead of re-walking a static list.
+- **Known limitations:** CT only covers publicly-trusted certificates; no
+  IP/service data (names only — DNS resolution of discovered names is the
+  `dns` connector's separate, terms-reviewed job); pre-certificates and
+  RFC 9162 v2 leaves are skipped honestly (counted in the run stats);
+  names are sightings, not liveness.
+- **Verdict: `reviewed-enabled`** (Rev 14, owner-scoped).  Re-review
+  triggers: any log operator's terms change that restricts public read
+  access, a move off the official log list, or any attempt to raise the
+  read volume beyond the bounded window.
+- **Watch-list note:** the "account-based certificate-transparency APIs"
+  fallback below remains unnecessary for seed-free discovery — direct
+  log walking (this section) needs no account.  It stays recorded for
+  identity-scoped CT search if the owner ever wants it.
+
+
 
 ## How verdicts are enforced (architecture cross-reference)
 

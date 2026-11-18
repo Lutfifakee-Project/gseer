@@ -23,13 +23,12 @@ import (
 // env_test.go — tests for the environment-variable overlay.
 
 // TestApplyEnv verifies each env var maps to the right field.
+// (v0.3.2 CLI-only architecture: the client/listen/token env overlays
+// were removed with the API surfaces.)
 func TestApplyEnv(t *testing.T) {
 	c := &Config{}
 	envVars := map[string]string{
 		"GSEER_PROFILE":                    "self-hosted",
-		"GSEER_CLIENT_ENDPOINT":            "https://env.example.com",
-		"GSEER_LISTEN":                     "127.0.0.1:9999",
-		"GSEER_TOKEN":                      "env-token",
 		"GSEER_DB_DSN":                     "postgres://u:p@h:5432/d",
 		"GSEER_DB_HOST":                    "dbhost",
 		"GSEER_DB_PORT":                    "6543",
@@ -48,15 +47,6 @@ func TestApplyEnv(t *testing.T) {
 
 	if c.Profile != ProfileSelfHosted {
 		t.Errorf("Profile: want self-hosted, got %q", c.Profile)
-	}
-	if c.Client.Endpoint != "https://env.example.com" {
-		t.Errorf("Client.Endpoint: got %q", c.Client.Endpoint)
-	}
-	if c.Server.Listen != "127.0.0.1:9999" {
-		t.Errorf("Server.Listen: got %q", c.Server.Listen)
-	}
-	if c.Server.Token != "env-token" {
-		t.Errorf("Server.Token: got %q", c.Server.Token)
 	}
 	if c.Database.DSN != "postgres://u:p@h:5432/d" {
 		t.Errorf("Database.DSN: got %q", c.Database.DSN)
@@ -94,17 +84,17 @@ func TestApplyEnv(t *testing.T) {
 // (don't overwrite YAML values).
 func TestApplyEnvEmpty(t *testing.T) {
 	c := &Config{
-		Profile: ProfileSelfHosted,
-		Server:  ServerConfig{Listen: "127.0.0.1:8443"},
+		Profile:  ProfileSelfHosted,
+		Database: DatabaseConfig{DSN: "postgres://u:p@h:5432/d"},
 	}
 	t.Setenv("GSEER_PROFILE", "")
-	t.Setenv("GSEER_LISTEN", "")
+	t.Setenv("GSEER_DB_DSN", "")
 	applyEnv(c)
 	if c.Profile != ProfileSelfHosted {
 		t.Errorf("Profile: want self-hosted (empty env should not override), got %q", c.Profile)
 	}
-	if c.Server.Listen != "127.0.0.1:8443" {
-		t.Errorf("Listen: want 127.0.0.1:8443 (empty env should not override), got %q", c.Server.Listen)
+	if c.Database.DSN != "postgres://u:p@h:5432/d" {
+		t.Errorf("DSN: want the YAML value (empty env should not override), got %q", c.Database.DSN)
 	}
 }
 

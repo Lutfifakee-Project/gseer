@@ -59,15 +59,14 @@ func loadSelfHostedConfig() (*config.Config, error) {
 	cfg, cerr := config.Load(config.Flags{
 		ConfigPath: flags.configPath,
 		Profile:    flags.profile,
-		Endpoint:   flags.server,
 	})
 	if cerr != nil {
 		return nil, cerr
 	}
 	if cfg.Profile != config.ProfileSelfHosted {
-		return nil, fmt.Errorf("E_CLIENT_ONLY: the database is only configured for the self-hosted profile (current: %s).\n"+
-			"Why: the %s profile has no PostgreSQL settings to check.\n"+
-			"Try: run with --profile self-hosted, or add database settings to the config", cfg.Profile, cfg.Profile)
+		return nil, fmt.Errorf("E_USAGE: `gseer db` manages the PostgreSQL backend (self-hosted profile; current: %s).\n"+
+			"Why: the personal profile is a single SQLite file — its database commands are: gseer db backup / db restore.\n"+
+			"Try: run with --profile self-hosted, or add database settings to the config", cfg.Profile)
 	}
 	return cfg, nil
 }

@@ -15,13 +15,13 @@ URL looks (owner directive §5).
 | 3 | Manifest carries an artifact for the exact running GOOS/GOARCH | `E_UPDATE_PLATFORM` |
 | 4 | Downloaded payload SHA-256 and size match the manifest | `E_UPDATE_CHECKSUM` |
 | 5 | Atomic rename over the running binary, mode preserved, previous binary kept as `<binary>.bak`; any failure restores the backup | `E_UPDATE_REPLACE` (with automatic rollback) |
-| 6 | Post-rename durability barrier: directory fsync on POSIX; the replacement itself is write-through on Windows | `E_UPDATE_DIRSYNC` (warning — see below) |
+| 6 | Post-rename durability barrier: directory fsync (dirsync.go) | `E_UPDATE_DIRSYNC` warning (replaced ≠ rolled back) |
 
 The download is capped (512 MiB), HTTP(S)-only, timeout-bounded, and
 credential-redacting (userinfo URLs are never echoed into errors).
 Everything the updater writes lives next to the target binary; nothing
-runs automatically afterwards — `gseer server stop` + `server start`
-picks up the new build.
+runs automatically afterwards — the next CLI invocation picks up the
+new build.
 
 If the rename itself succeeded but the directory fsync failed, the
 updater reports `E_UPDATE_DIRSYNC`: the binary WAS replaced and nothing
@@ -29,15 +29,9 @@ was rolled back — `gseer update --apply` prints the success line plus a
 `[warn]` with the fsync error and exits successfully.  The new binary's
 data was already fsynced before the rename; only the directory entry is
 in doubt, so after a crash or power loss the previous binary may
-reappear.  Re-running the update makes the change durable again.  On
-Windows the durability barrier is built into the replacement itself:
-the updater replaces the binary via `MoveFileExW` with
-`MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH`, which does not
-return until the moved file is actually on disk (Go's own `os.Rename`
-calls plain `MoveFileW` with NO flags — never write-through — so the
-updater performs the replace itself and does not use `os.Rename`).
-Windows has no directory-handle flush; the `E_UPDATE_DIRSYNC` warning
-therefore cannot occur there.
+reappear.  Re-running the update makes the change durable again.
+(The Windows MoveFileExW barrier was removed with the Windows
+platform — Linux is the supported product platform.)
 
 ## 2. Commands
 
@@ -64,13 +58,10 @@ intentional: GSEER never downloads or applies updates from an unconfigured,
 unverified source.
 
 Recovery: the previous binary is always kept at `<binary>.bak`.  If a
-new build misbehaves, stop the server, move the old file back, start
-again:
+new build misbehaves, move the old file back:
 
 ```bash
-gseer server stop
 mv gseer.bak gseer
-gseer server start
 ```
 
 ## 3. Manifest format
@@ -133,13 +124,11 @@ anchor rotation can never strand an installation mid-update.
 - The embedded anchor constant must decode to a valid Ed25519 public
   key (`TestBase64AnchorDecodes`) — a broken constant is a build error,
   not a runtime surprise.
-- `internal/update/apply_test.go` + `apply_windows_test.go` — the
-  durability contract: backup copy/sync/close error precedence, backup
-  permission preservation, no temp-file leftovers, rollback (including
-  failed-rollback reporting) and the dir-sync warning contract
-  (replaced ≠ rolled back).  The Windows suite pins the replacement
-  flags (`MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH`) and runs
-  on the `update-windows` CI job (windows-latest).
+- `internal/update/apply_test.go` — the durability contract: backup
+  copy/sync/close error precedence, backup permission preservation, no
+  temp-file leftovers, rollback (including failed-rollback reporting)
+  and the dir-sync warning contract (replaced ≠ rolled back).
+  (The Windows durability suite was removed with the Windows platform.)
 - `gseer update` on an un-injected `dev` build refuses to act
   (`E_UPDATE_VERSION`): a binary that cannot prove its version cannot
   prove an update is an upgrade.  Release builds stamp the version via
@@ -171,11 +160,11 @@ is idempotent — re-running is always safe):
    fails, the output names every failure — repair the deployment
    (`docs/DEPLOYMENT.md` §3.4), never the check.
 4. **Export the runtime credential** — the DSN printed in step 3
-   (`GSEER_DB_RUNTIME_DSN`).  The v0.2.0 server refuses to start
-   without it and refuses to serve as anything other than `gseer_app`.
-5. **Restart under v0.2.0** — stop the v0.1.0 process, start the v0.2.0
-   binary (`gseer server start`), verify `gseer doctor`
-   (`6 PASS, 0 FAIL`) and the health endpoint.
+   (`GSEER_DB_RUNTIME_DSN`); the data-plane commands prefer the
+   least-privilege `gseer_app` identity.
+5. **Run under v0.2.0** — replace the binary, verify `gseer doctor`
+   (`6 PASS, 0 FAIL`).  (Server start/stop steps are historical —
+   removed with the API server.)
 
 **Rollback** = restore the backup + run the v0.1.0 binary on the
 unchanged `GSEER_DB_*` configuration (the v0.1.0 binary is unaffected

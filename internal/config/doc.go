@@ -22,21 +22,24 @@
 // config file > owner-approved defaults (PD-1…PD-9).
 //
 // Load order (corrected per owner M2 review):
-// YAML → env → flags → defaults (profile-dependent) → hash token → validate.
+// YAML → env → flags → defaults (profile-dependent) → validate.
 // Defaults are applied AFTER env+flags so profile-dependent defaults
 // (database components) use the FINAL resolved profile.
 //
-// # Profiles (SPEC-03 §5)
+// # Profiles (SPEC-03 §5, as amended by the v0.3.2 CLI-only decision)
 //
 // Two profiles are supported:
 //
-//   - client      — CLI-only; queries a configured remote endpoint.
-//     No PostgreSQL, no local server.
-//   - self-hosted — runs the local API + dashboard server backed by
-//     PostgreSQL.  Migrations run on `setup --self-hosted`
-//     and `server start` (M3).
+//   - personal     — the full engine against ONE embedded SQLite file
+//     (the Local Index).  Zero-configuration default; provisioned by
+//     `gseer setup`.
+//   - self-hosted  — the same CLI engine headless over PostgreSQL
+//     (operator-provisioned).  Migrations run on `setup --self-hosted`.
 //
-// Neither profile ships data.  v0.0.1 has no public endpoint.
+// Neither profile ships data and neither serves a network API: GSEER
+// is a CLI-only product (the client profile, server.* settings, and
+// the shared-index channel were removed with the API/dashboard
+// surfaces).
 //
 // # Strict schema (AC-7.x)
 //
@@ -50,51 +53,28 @@
 //
 // # Credential handling (honest terminology)
 //
-// The package distinguishes four credential surfaces:
+// The remaining credential surfaces:
 //
-//  1. In-memory token digest — ServerConfig.TokenHash (SHA-256 hex).
-//     Computed during Load; the plaintext ServerConfig.Token field is
-//     cleared immediately after hashing.  The in-memory Config never
-//     retains the plaintext token beyond the Load call.
+//  1. Database password (DatabaseConfig.Password) — needed for the
+//     PostgreSQL connection DSN.  Passed to pgx (M3) as part of the
+//     connection string.  The password is percent-encoded in the DSN
+//     via net/url (Finding 4), but the plaintext is required for the
+//     connection.  This field must NEVER appear in logs or diagnostic
+//     output.
 //
-//  2. Plaintext token in the YAML config file — the operator's input.
-//     The config file is the operator's responsibility; this package
-//     does NOT hash the file contents on disk.  "Hashed at rest" would
-//     be a false claim if the file still contains the plaintext.
+//  2. The personal profile has NO database credential at all: the
+//     single SQLite file's 0600 filesystem permission IS the credential
+//     boundary (database.runtime_dsn is rejected in personal mode).
 //
-//  3. Plaintext token in GSEER_TOKEN env var — the operator's input.
-//     Same as above: the env var retains the plaintext; only the
-//     in-memory Config has the hash.
+// # Logging restrictions (M3)
 //
-//  4. Database password (DatabaseConfig.Password) — needed for the
-//     PostgreSQL connection DSN.  NOT hashed; passed to pgx (M3) as
-//     part of the connection string.  The password is percent-encoded
-//     in the DSN via net/url (Finding 4), but the plaintext is required
-//     for the connection.  This field must NEVER appear in logs or
-//     diagnostic output.
-//
-// # M10 API auth requirements (recorded for the future API layer)
-//
-// The API layer (M10) must:
-//
-//   - Verify Bearer tokens using crypto/subtle.ConstantTimeCompare
-//     against TokenHash (never ==, never strings.Equal).
-//   - Require high-entropy tokens (≥ 256 bits / 32 bytes; the
-//     .env.example documents `openssl rand -hex 32`).
-//   - Never log or return the token hash in any response or error.
-//
-// # Logging restrictions (M3/M10)
-//
-// Until a SEC-6 slog redaction handler lands (M10), the following are
+// Until a SEC-6 slog redaction handler lands, the following are
 // PENDING and must be enforced by discipline in M3:
 //
 //   - DatabaseConfig.Password must not appear in any log line, error
 //     message, or doctor output.
 //   - The effective DSN (which embeds the password) must not be logged
 //     directly; M3 must log a redacted form (host:port/db, no userinfo).
-//   - ServerConfig.TokenHash may appear in diagnostics (it's a hash,
-//     not plaintext), but the plaintext Token (if transiently present
-//     during Load) must never be logged.
 //
 // The `yaml:"password,omitempty"` struct tag only controls YAML
 // marshaling (omit when empty); it does NOT provide logging redaction.

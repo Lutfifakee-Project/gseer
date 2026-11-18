@@ -53,7 +53,6 @@ const (
 type rootFlags struct {
 	configPath string
 	profile    string
-	server     string
 	output     string
 	verbose    bool
 	quiet      bool
@@ -70,7 +69,7 @@ var RootCmd = &cobra.Command{
 Search internet assets. Collect authorized data. Store locally. Search easily.
 
 Quick start:
-  gseer setup                     provision personal mode + download the shared index
+  gseer setup                     provision personal mode + bootstrap passive discovery
   gseer search 'port==443'        query the index
   gseer                           first run initializes personal mode automatically
   gseer setup --load-fixtures     load the labeled synthetic evaluation corpus
@@ -109,8 +108,7 @@ var flags rootFlags
 // the file layout matches the SPEC-02 §2 package map.
 func init() {
 	RootCmd.PersistentFlags().StringVar(&flags.configPath, "config", "", "path to config file (default: $GSEER_CONFIG or platform default)")
-	RootCmd.PersistentFlags().StringVar(&flags.profile, "profile", "", "configuration profile (client | self-hosted | personal)")
-	RootCmd.PersistentFlags().StringVar(&flags.server, "server", "", "endpoint URL for client profile")
+	RootCmd.PersistentFlags().StringVar(&flags.profile, "profile", "", "configuration profile (personal | self-hosted)")
 	RootCmd.PersistentFlags().StringVarP(&flags.output, "output", "o", "", "output format: table|json|yaml|csv|ndjson")
 	RootCmd.PersistentFlags().BoolVar(&flags.verbose, "verbose", false, "verbose output (include stack traces on error)")
 	RootCmd.PersistentFlags().BoolVar(&flags.quiet, "quiet", false, "quiet output (suppress tips and banners)")
@@ -123,15 +121,14 @@ func init() {
 	registerSetupCmd(RootCmd)
 	registerDoctorCmd(RootCmd)
 	registerStatusCmd(RootCmd)
-	registerServerCmd(RootCmd)
 	registerSourceCmd(RootCmd)
 	registerCollectCmd(RootCmd)
 	registerScopeCmd(RootCmd)
 	registerScanCmd(RootCmd)
 	registerSuppressCmd(RootCmd)
 	registerExportCmd(RootCmd)
-	registerIndexCmd(RootCmd)
 	registerUpdateCmd(RootCmd)
+	registerDatasetCmd(RootCmd)
 	registerRulesCmd(RootCmd)
 	registerDBCmd(RootCmd)
 	registerComingLaterCmds(RootCmd)

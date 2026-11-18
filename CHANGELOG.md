@@ -10,6 +10,279 @@ first.  Versions follow semver (three-component).
 > shipped with; pending sections and all active documentation follow
 > the register-only policy.
 
+## [Unreleased] — Rev 13: final production release package (distribution chain closed)
+
+No architecture, product, or scope changes; owner constraints unchanged
+(CLI-only, Linux-only, Local Index, central versioned dataset, no
+shared-index service/dashboard/website/API server; search never
+triggers discovery).  Rev 12 accepted as baseline; not repeated.
+
+### Fixed (workflow finalization — the two real gaps)
+
+- `.github/workflows/dataset.yml`: the dataset version is now monotonic
+  ON THE CHANNEL, not on the run counter — the run fetches the published
+  official manifest first and publishes `max(run_number, published + 1)`
+  (fresh channel = the run number starts the line).  A migrated
+  repository or replayed history can no longer publish a version users
+  already consume (which would make every installed index NEWER than the
+  channel and silently pin `gseer dataset update` on the version gate).
+- Upload ordering: the PAYLOAD is uploaded before the MANIFEST — the
+  manifest upload is the version commit point.  A read that straddles
+  the asset swap (manifest and payload from different versions) is
+  honestly rejected by the CLI's checksum verification
+  (`E_DATASET_CHECKSUM`) and a retry succeeds.
+
+### Docs
+
+- Harness J03 assertions made dataset-agnostic: the acceptance requires
+  a minimum count of REAL `:443/tcp` evidence rows, never specific IPs
+  from one build (fresh discovery from a different vantage honestly
+  shifted which seed hosts answer TLS — dns.google/one.one.one.one were
+  unanswered in the Rev 13 run's vantage; absence recorded, not
+  fabricated).
+
+- `docs/INSTALL.md`: documents that `gseer setup` auto-imports the
+  central dataset (checksum-verified, atomic; no seeds, no manual DB)
+  and the `gseer dataset check/status/update` channel commands, with the
+  honest behavior while owner assets are not yet published.
+
+### Pipeline evidence (Rev 13 acceptance)
+
+The ENTIRE chain was exercised end-to-end locally at production
+fidelity, mirroring the workflow command-for-command: scheduled-style
+passive discovery over the seed register (DNS + audited TLS :443) →
+evidence validation → versioned dataset build (v105 = accepted v104 + 1
+under the continuity rule) → publication gate (validate) → local
+production-fidelity release channel → CLI auto-import + `dataset update`
+(version-gated, checksum-verified, atomic) → Local Index → local search
+with real results.  See TEST-EVIDENCE.txt.  Production GitHub Release
+consumption remains PENDING (official URL 404 at acceptance time) — NOT
+claimed.
+
+## [Unreleased] — Rev 12: acceptance harness finalization (targeted; no product changes)
+
+No architecture, product, or scope changes; owner constraints unchanged.
+Rev 11 engineering accepted as baseline; not repeated.
+
+### Added
+
+- `pipeline/acceptance-journey.sh` + `pipeline/acceptance-https-channel.py`
+  — the product-acceptance harness as a repo artifact.  Fixes the Rev 11
+  harness defects found in its journey logs:
+  - domain/hostname GQL corrected and baked in (`domain=="host"`,
+    `hostname CONTAINS "term"`); a bare term is invalid per the GQL field
+    registry and is no longer used.
+  - every command runs raw (no masking pipes, `set -o pipefail`); a
+    failed search now surfaces its REAL nonzero exit and fails the
+    acceptance result.
+  - every step asserts on output CONTENT (result counts, expected rows,
+    required error classes), so a CLI exit 0 with an embedded failure
+    (e.g. setup's loud dataset warning) can never pass unnoticed.
+  - the offline step kills channels by port (`fuser -k`), never by a
+    pattern that could match the harness's own command line (the Rev 11
+    `pkill -f` self-kill that truncated journey-2.log).
+  - the final step records the official production URL state honestly:
+    `pending` = typed HTTP 404 from the real channel (publication NOT
+    claimed) or `live` = actual public GitHub Release consumption — and
+    fails on anything else.
+
+### Packaging note
+
+The Rev 11 working tree was restored from the Rev 11 backup after a
+sandbox recycle (sources verified byte-identical via the cumulative
+patch; owner baseline 390079e reconstructed by reverse-applying it).
+
+## [Unreleased] — Rev 11: real coverage expansion, production-fidelity distribution validation, real user journey
+
+No architecture, product, or scope changes; owner constraints unchanged
+(CLI-only, Linux-only, Local Index, central versioned dataset; search
+never triggers discovery).
+
+### Fixed
+
+- `gseer source add --seeds` now accepts comma- OR whitespace-separated
+  seed lists (`normalizeSeedArgs`).  Found by the Rev 11 workflow
+  dry-run: the pipeline passes `shlex.join` output (space-separated) as
+  a single argument and pflag's StringSliceVar only splits commas, so
+  the DNS connector received ONE nonsense "domain".  Regression tests
+  added (internal/cli/source_test.go).
+
+### Changed
+
+- Seed register expanded to 14 DNS-only seed domains with a documented
+  per-host terms basis; ACTIVE TLS :443 observation is now restricted to
+  an explicit `tls_hosts` subset (10 hosts), each justified in the
+  register header — passive DNS seeds are never probed.  The workflow's
+  seed parser emits SEED_TLS_HOSTS, validates that tls_hosts is a subset
+  of domains, and the scan step iterates only the terms-cleared hosts.
+
+### Evidence (Rev 11 acceptance)
+
+- Dataset v104: 156 REAL records (central-dns 109, central-ptr 11,
+  scan-tls 36), 138 assets, 18 service-bearing records — built,
+  validated, and reconciled 5/5 against the staging store.
+- Clean-install journey over a production-fidelity HTTPS channel (GitHub
+  release path layout, test CA injected via SSL_CERT_FILE): setup
+  auto-imports v104, `search "port=443"` returns 12 REAL results,
+  domain/hostname searches work, provenance + freshness reported,
+  offline search identical with the channel dead.  TLS verification is
+  PROVEN enforced (without the CA the handshake fails: x509 unknown
+  authority) and a tampered payload is refused (E_DATASET_CHECKSUM,
+  database untouched).
+- Real internet: the official channel URL answers HTTP 404 today — the
+  CLI reports it honestly (exit 4) and documents that the owner runs the
+  pipeline; a real GitHub release asset is followed through GitHub's CDN
+  redirect and then honestly rejected as non-dataset content.
+- Production publication itself requires the owner's git write (push the
+  included workflow) — explicitly NOT claimed here.
+
+## [Unreleased] — Rev 10: targeted remediation of the Rev 9 acceptance (owner directive)
+
+No architecture, product, or scope changes — Rev 9's accepted results stand.
+
+### Fixed / hardened
+
+- Recovery-forced acceptance failure (RECOVERY_EXIT=127) root-caused to the TEST
+  HARNESS (shell composition backgrounded the binary-path assignment — bash ran a
+  bare `dataset` command word → 127), NOT the implementation; evidence recorded in
+  the incident analysis, the accidental HOME artifact cleaned up, and the test
+  re-run with a correct harness: recovery restores the snapshot, removes an
+  orphan half-import row, dedupes, exits 0.
+- docs/DATASET.md: "Row-count semantics" section — rows.services counts
+  SERVICE-BEARING RECORDS (one TLS scan = two records: asset-level + service);
+  imported service rows collapse onto the (asset, port, transport) identity, so
+  the index may hold fewer service rows than rows.services (6 records → 5 rows
+  for example.org apex+www sharing one IP).
+- Workflow hardening: post-publish round-trip verification (download the released
+  assets back, re-validate, byte-`cmp` against the validated artifacts — an
+  invalid/silently-corrupted asset now fails the job) and `if: always()` on the
+  per-run audit artifact (evidence preserved on publish failure).
+- New tests pinning the PRODUCTION channel contract:
+  TestOfficialChannelMatchesGitHubReleaseLayout (the default URL matches the
+  GitHub release layout: tag `central-dataset` + the two stable asset names;
+  payload resolution stays inside that layout) and
+  TestReleaseLayoutChannelServesTheJourney (a release-path-shaped loopback
+  fixture serves the full journey: manifest → payload → atomic import → port=443
+  row).
+
+## [Unreleased] — Central Internet Asset Dataset pipeline (Rev 9, owner mandate)
+
+The central dataset distribution is now a FIRST-CLASS product channel:
+the project's scheduled GitHub Actions pipeline collects passive
+discovery evidence over the terms-reviewed connectors, validates it, and
+publishes a versioned, checksummed artifact that every fresh install
+downloads, verifies, and imports atomically.  The Rev 8 architecture
+decisions stand unchanged: CLI-only, Linux-only, no dashboard/website/API
+server, no shared-index query service — the dataset only FEEDS the Local
+Index, and search stays local (never triggers discovery or scanning).
+
+### Added
+
+- `internal/dataset` — the dataset channel: manifest (version, payload
+  checksum + record counts, per-source provenance, observed_at bounds,
+  freshness metadata), capped/timeout-bounded https fetcher (http only
+  on loopback), and the ATOMIC import (pre-import 0600 snapshot via
+  VACUUM INTO → stream through the standard ingestion path — suppression
+  gate, delivery-identity dedupe, provenance preserved → count
+  verification → rollback on ANY failure → interrupted-import recovery
+  with stale `-wal`/`-shm` sidecar removal → install-state recording).
+- `cmd/gseer-dataset` — the maintainer-side builder/validator: exports
+  the staging Local Index as the dataset payload + manifest (fixture
+  rows and import bookkeeping excluded; every record validated — one
+  invalid record fails the build) and re-verifies published artifacts
+  (checksum + count + per-record validation; the publication gate).
+- `gseer dataset update|check|status` — the CLI channel: update downloads
+  the manifest, verifies the payload checksum, and imports atomically
+  (version gate; `--force` re-imports; `--manifest-url` override);
+  `gseer setup` auto-imports after the local bootstrap (an unreachable
+  channel degrades to an honest `[warn]` — setup still exits 0).
+- `dataset.manifest_url` config section + `GSEER_DATASET_MANIFEST_URL`
+  env (https always; plain http only for loopback hosts).
+- `.github/workflows/dataset.yml` + `pipeline/dataset-seeds.yaml` — the
+  scheduled pipeline (staging index → seed-register collection → scoped
+  TLS :443 observation → build + validate → rolling `central-dataset`
+  release publication).
+- `docs/DATASET.md` — the channel contract.
+
+### Tests (new, all passing)
+
+- manifest schema/validation matrix; URL transport rule; fetcher
+  checksum-mismatch + unreachable; import happy path + idempotency
+  (same-version re-import dedupes), bad-record rollback (database
+  byte-state preserved), interrupted-import recovery (orphan rows
+  removed); CLI update happy path (search finds the imported rows),
+  checksum failure leaves the DB untouched, unreachable honesty, setup
+  auto-import journey (setup → import → `search port=443` returns the
+  dataset row).
+
+## [Unreleased] — CLI-only / Linux-only architecture remediation (owner architecture decision)
+
+Owner architecture decision implemented: **GSEER is a Linux-only,
+CLI-only, fully self-hosted product** with NO shared-index dependency.
+Every change below is a removal of a non-product surface or the
+replacement of the removed data path with a local one; no FIX5/FIX7
+security boundary was weakened.
+
+### Removed — shared-index (was the mandatory data source)
+
+- `internal/index/` (the signed shared-index client: ed25519 trust
+  anchor, signed manifest, fetcher, snapshot install/update, export),
+  `cmd/gseer-provider/` (snapshot builder/publisher), the `gseer index`
+  command, the `setup` shared-index step, the `index.*` config section
+  (`GSEER_INDEX_MANIFEST_URL`), the `INDEX_PUB_B64` release key
+  ceremony, and `.github/workflows/index.yml` (the publisher pipeline).
+- The architecture now runs WITHOUT any shared index: `gseer setup`
+  bootstraps LOCAL passive discovery instead (see Added).
+
+### Removed — API server, dashboard, client profile (CLI-only)
+
+- `internal/api/` (REST API), `internal/dashboard/` (dashboard UI), the
+  `gseer server` command (start/stop/status daemon with PID
+  management), the `client` profile and `client.*`/`server.*` config
+  sections (`GSEER_CLIENT_ENDPOINT`, `GSEER_LISTEN`, `GSEER_TOKEN`,
+  `GSEER_SERVER_TRUSTED_PROXIES`), and the `go-chi/chi` dependency.
+- The compose "full stack" template no longer runs a server container:
+  `--full` = db + one-shot hardened `provision` container; the
+  Dockerfile default is `gseer --help`.
+
+### Removed — platform and compatibility code
+
+- Windows and macOS are no longer product platforms: the CI
+  `update-windows` job, the GoReleaser darwin/windows targets, and the
+  Windows release packaging are gone.  `.goreleaser.yaml` builds Linux
+  amd64 + arm64 only.
+- Windows-only code removed after dependency mapping:
+  `restorefs_windows.go`, `update/dirsync_windows.go`,
+  `apply_windows_test.go`, `personal_restore_windows_test.go`,
+  `filename_windows_test.go`, the Windows branches in the updater and
+  restore permission assertions, and the `USERPROFILE`/`gseer.exe`
+  test shims.  POSIX behavior is unchanged.
+
+### Added — local passive discovery bootstrap (the journey)
+
+- `gseer setup` (fresh machine) now bootstraps discovery from the
+  operator's egress context: public-IP echo (provenance `egress-echo`,
+  `docs/SOURCES.md` §F) → PTR → registrable domain → bounded collect
+  passes over the terms-approved connectors (`ptr`, `dns`, `ip2asn`)
+  into the Local Index → at most 3 TLS `:443` handshakes under an
+  auto-created, audited, revocable `domain_suffix` scope.
+- `gseer search "port=443"` therefore returns REAL, verifiable evidence
+  right after `gseer setup`; search itself never triggers discovery or
+  scanning (unchanged Search ≠ Scan contract).
+- `gseer status` and `gseer doctor` report LOCAL discovery freshness
+  (registered sources + last successful collection run) in place of
+  the shared-index block.
+
+### Changed
+
+- The default profile (no config anywhere) is `personal`; the two
+  profiles are `personal` and `self-hosted` (headless CLI over
+  PostgreSQL — the hardened deployment order, credential separation,
+  and fail-closed privilege audit are unchanged).
+- `gseer setup` self-hosted tails and `docs/QUICKSTART.md` /
+  `docs/INSTALL.md` / `README.md` rewritten for the CLI-only,
+  Linux-only product; `docs/SHARED-INDEX.md` deleted.
+
 ## [Unreleased] — Final remediation round (implementation complete; release pending)
 
 Final remediation mandate on the `GSEER-v032-GLM-BASELINE-20261115`

@@ -20,8 +20,7 @@ package cli
 // `gseer scan` (v0.3.2).  Mirrors registry.go:
 //
 //   - personal     → sqlite.Store (one embedded file, no server);
-//   - self-hosted  → postgres.Store (the hardened deployment);
-//   - client       → refused (no local engine — E_CLIENT_ONLY).
+//   - self-hosted  → postgres.Store (the hardened deployment).
 
 import (
 	"fmt"
@@ -64,8 +63,8 @@ func openObserveStore(cmd *cobra.Command) (observeBackend, func(), error) {
 		}
 		return postgres.NewStore(pool), func() { pool.Close() }, nil
 	default:
-		return nil, nil, fmt.Errorf("E_CLIENT_ONLY: `gseer scope` and `gseer scan` manage the LOCAL registry\n"+
-			"Why: the client profile has no local database (current profile: %s)\n"+
-			"Try: gseer setup --personal  (single-file personal mode) or gseer setup --self-hosted", cfg.Profile)
+		return nil, nil, fmt.Errorf("E_CONFIG: `gseer scope` and `gseer scan` manage the LOCAL registry\n"+
+			"Why: the current profile (%s) has no local engine (validation should have rejected it)\n"+
+			"Try: gseer setup  (single-file personal mode) or gseer setup --self-hosted", cfg.Profile)
 	}
 }

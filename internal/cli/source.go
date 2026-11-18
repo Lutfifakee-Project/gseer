@@ -51,8 +51,14 @@ Review verdicts live with the connectors:
   dns      reviewed-enabled  (operator-domain resolution)
   ip2asn   reviewed-enabled  (public IP-to-ASN community service, DNS interface)
   ptr      reviewed-enabled  (reverse DNS via the operator's resolver)
+  ctlog    reviewed-enabled  (SEED-FREE discovery: public CT logs, RFC 9162 — docs/SOURCES.md §G)
   rdap     disabled          (RIR terms do not grant indexing/redistribution)
-  ct       disabled          (provider publishes no terms covering indexing/reuse)`,
+  ct       disabled          (provider publishes no terms covering indexing/reuse)
+
+Seed modes: "config" (--seeds), "index" (assets already in your index),
+or "none" for the seed-free connectors — ctlog needs NO identifiers at
+all: every run reads the freshest window of the log and discovers every
+DNS name the contained certificates cover.`,
 	}
 	source.AddCommand(newSourceListCmd(), newSourceAddCmd(), newSourceEnableCmd(true), newSourceEnableCmd(false))
 	root.AddCommand(source)
@@ -96,11 +102,11 @@ func newSourceAddCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE:  func(cmd *cobra.Command, args []string) error { return runSourceAdd(cmd, args[0], f) },
 	}
-	cmd.Flags().StringVar(&f.flagType, "type", "", "connector kind: dns | ip2asn | ptr (reviewed-enabled), rdap | ct (disabled)")
+	cmd.Flags().StringVar(&f.flagType, "type", "", "connector kind: dns | ip2asn | ptr | ctlog (reviewed-enabled), rdap | ct (disabled)")
 	_ = cmd.MarkFlagRequired("type")
 	cmd.Flags().StringVar(&f.endpoint, "endpoint", "", "provider API base URL (HTTP connectors)")
-	cmd.Flags().StringVar(&f.seedMode, "seed-mode", "config", "where queries target: config (--seeds) or index (assets already in your index)")
-	cmd.Flags().StringSliceVar(&f.seeds, "seeds", nil, "comma-separated seed identifiers (seed-mode=config)")
+	cmd.Flags().StringVar(&f.seedMode, "seed-mode", "config", "where queries target: config (--seeds), index (assets already in your index), or none (seed-free connectors, e.g. ctlog)")
+	cmd.Flags().StringSliceVar(&f.seeds, "seeds", nil, "comma- or whitespace-separated seed identifiers (seed-mode=config)")
 	cmd.Flags().StringVar(&f.seedKind, "seed-kind", "ip", "asset kind index seeds are drawn from (seed-mode=index)")
 	cmd.Flags().StringVar(&f.resolver, "resolver", "", "DNS server host:port for dns/ip2asn (default: system resolver)")
 	cmd.Flags().Float64Var(&f.rps, "requests-per-second", 0, "override the connector's default request rate")
@@ -175,14 +181,15 @@ func runSourceAdd(cmd *cobra.Command, name string, f *sourceAddFlags) error {
 	out := cmd.OutOrStdout()
 	picked, ok := collect.Registry()[f.typeOf()]
 	if !ok {
-		return fmt.Errorf("E_SOURCE_CONNECTOR: unknown connector type %q\nWhy: registered kinds are dns, ip2asn, ptr (reviewed-enabled), rdap, ct (disabled)\nTry: gseer source add <name> --type dns", f.typeOf())
+		return fmt.Errorf("E_SOURCE_CONNECTOR: unknown connector type %q\nWhy: registered kinds are dns, ip2asn, ptr, ctlog (reviewed-enabled), rdap, ct (disabled)\nTry: gseer source add <name> --type dns", f.typeOf())
 	}
 
-	if f.seedMode != "config" && f.seedMode != "index" {
-		return fmt.Errorf("E_USAGE: --seed-mode must be config or index")
+	if f.seedMode != "config" && f.seedMode != "index" && f.seedMode != "none" {
+		return fmt.Errorf("E_USAGE: --seed-mode must be config, index or none")
 	}
+	f.seeds = normalizeSeedArgs(f.seeds)
 	if f.seedMode == "config" && len(f.seeds) == 0 {
-		return fmt.Errorf("E_USAGE: --seed-mode config needs --seeds (comma-separated identifiers)\nTry: gseer source add my-dns --type dns --seeds example.net,example.org")
+		return fmt.Errorf("E_USAGE: --seed-mode config needs --seeds (comma- or whitespace-separated identifiers)\nTry: gseer source add my-dns --type dns --seeds example.net,example.org")
 	}
 
 	cfg := map[string]any{
@@ -280,6 +287,27 @@ func runSourceEnable(cmd *cobra.Command, name string, enable bool) error {
 	}
 	printf(out, "Source %q %s.\n", name, state)
 	return nil
+}
+
+// normalizeSeedArgs accepts seed identifiers as one or more arguments,
+// each comma- OR whitespace-separated — the CI pipeline passes
+// `shlex.join` output (space-separated) as a single argument, while
+// humans type commas; pflag's StringSliceVar only splits commas, so the
+// whitespace inside one argument must be split here too.  Order is
+// preserved; duplicates collapse.
+func normalizeSeedArgs(raw []string) []string {
+	out := make([]string, 0, len(raw))
+	seen := make(map[string]bool, len(raw))
+	for _, chunk := range raw {
+		for _, s := range strings.Fields(strings.ReplaceAll(chunk, ",", " ")) {
+			if s == "" || seen[s] {
+				continue
+			}
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func truncate(s string, n int) string {

@@ -73,13 +73,23 @@ type SourceConfig struct {
 	Endpoint string `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
 	// Seeds are operator-configured identifiers (seed_mode "config").
 	Seeds []string `json:"seeds,omitempty" yaml:"seeds,omitempty"`
-	// SeedMode: "config" (use Seeds) or "index" (use identifiers already
+	// SeedMode: "config" (use Seeds), "index" (use identifiers already
 	// in the GSEER index — the connector enriches the operator's own
-	// corpus; it never consults a third-party target list).
+	// corpus; it never consults a third-party target list), or "none"
+	// (seed-free connectors such as `ctlog`, which read public
+	// infrastructure and need no operator identifiers at all).
 	SeedMode string `json:"seed_mode,omitempty" yaml:"seed_mode,omitempty"`
 	// SeedKind is the asset kind index seeds are drawn from
 	// ("ip" for rdap/asn enrichment; unused for "config" mode).
 	SeedKind string `json:"seed_kind,omitempty" yaml:"seed_kind,omitempty"`
+	// StartIndex is an absolute CT log entry index (connector "ctlog"):
+	// when set, runs resume from it instead of tip-following the log's
+	// freshest window.  The checkpoint overrides it after the first run.
+	StartIndex uint64 `json:"start_index,omitempty" yaml:"start_index,omitempty"`
+	// Chunk is the entries-per-request count (connector "ctlog";
+	// 0 = the connector default, capped by the RFC 6962 get-entries
+	// answer limit).
+	Chunk int `json:"chunk,omitempty" yaml:"chunk,omitempty"`
 	// Resolver is an optional DNS server address ("host:port") for the
 	// dns/asn connectors; empty = the system resolver.
 	Resolver string `json:"resolver,omitempty" yaml:"resolver,omitempty"`

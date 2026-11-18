@@ -3,7 +3,6 @@ module github.com/Lutfifakee-Project/gseer
 go 1.26.0
 
 require (
-	github.com/go-chi/chi/v5 v5.5.0
 	github.com/golang-migrate/migrate/v4 v4.20.1
 	github.com/jackc/pgerrcode v0.0.0-20220416144525-469b46aa5efa
 	github.com/jackc/pgx/v5 v5.12.0

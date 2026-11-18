@@ -60,21 +60,6 @@ jobs:
       - name: go mod verify
         run: go mod verify
 
-      - name: Validate production index public key
-        env:
-          INDEX_PUB_B64: ${{ secrets.INDEX_PUB_B64 }}
-        run: |
-          set -euo pipefail
-          python3 - "$INDEX_PUB_B64" <<'PYKEY'
-          import base64, sys
-          try:
-              key = base64.b64decode(sys.argv[1], validate=True)
-          except Exception:
-              sys.exit("ERROR: INDEX_PUB_B64 is not valid base64")
-          if len(key) != 32:
-              sys.exit("ERROR: INDEX_PUB_B64 must decode to 32 bytes")
-          PYKEY
-
       - name: Run GoReleaser (draft release)
         uses: goreleaser/goreleaser-action@v2.9.1
         with:
@@ -83,31 +68,12 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          INDEX_PUB_B64: ${{ secrets.INDEX_PUB_B64 }}
 
-      # Trust-anchor consistency (remediation §3): every produced release
-      # binary MUST embed the configured PRODUCTION public key.  The
-      # in-repo bootstrap anchor is a TEST anchor — a release that
-      # silently shipped it would verify the shared index against the
-      # wrong root.  The key value is only compared (grep -a), never
-      # echoed.
-      - name: Verify the embedded production anchor in every release binary
-        env:
-          INDEX_PUB_B64: ${{ secrets.INDEX_PUB_B64 }}
-        run: |
-          set -euo pipefail
-          n=0
-          while IFS= read -r -d '' f; do
-            if grep -aqF -- "$INDEX_PUB_B64" "$f"; then
-              echo "[ ok ] production anchor embedded: $f"
-              n=$((n+1))
-            else
-              echo "FATAL: production trust anchor MISSING from $f" >&2
-              exit 1
-            fi
-          done < <(find dist -type f \( -name 'gseer' -o -name 'gseer.exe' \) -print0)
-          [ "$n" -ge 1 ] || { echo "FATAL: no release binaries found under dist/" >&2; exit 1; }
-          echo "[ ok ] $n release binary(ies) embed the production trust anchor"
+      # v0.3.2 CLI-only architecture: the shared-index trust anchor and
+      # its key ceremony (INDEX_PUB_B64 validation + embedded-anchor
+      # verification) were removed with the shared-index channel.  The
+      # release builds Linux amd64+arm64 binaries only (platform policy)
+      # and carries no shared-index key material.
 
       - name: Artifact summary
         run: |

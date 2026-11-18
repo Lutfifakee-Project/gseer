@@ -77,10 +77,6 @@ const DefaultPostgresImage = "postgres:17-alpine"
 // v0.0.1-specific defaults (not PD-numbered, but normative per SPEC-03 §5).
 
 const (
-	// DefaultListen is the loopback bind for the self-hosted server.
-	// Non-loopback binding requires explicit operator action and auth.
-	DefaultListen = "127.0.0.1:8443"
-
 	// DefaultLogLevel is the slog level for v0.0.1.
 	DefaultLogLevel = "info"
 

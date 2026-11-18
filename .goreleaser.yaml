@@ -59,10 +59,12 @@ builds:
     binary: gseer
     env:
       - CGO_ENABLED=0
+    # Platform policy (owner v0.3.2 architecture decision): Linux ONLY.
+    # Linux AMD64 is the required product platform; Linux ARM64 ships
+    # best-effort (same policy as CI).  Windows and macOS are NOT
+    # product platforms — no release artifacts are built for them.
     goos:
       - linux
-      - darwin
-      - windows
     goarch:
       - amd64
       - arm64
@@ -70,31 +72,24 @@ builds:
       - -trimpath
       - -buildvcs=false
     ldflags:
-      # INDEX_PUB_B64 (the production trust anchor) is REQUIRED for real
-      # releases: release.yml and index.yml validate it (base64, 32 bytes)
-      # and assert it is embedded in every binary.  Snapshot builds (the
-      # CI release-config job) deliberately run WITHOUT the secret, so
-      # the whole -X flag is omitted when the env var is absent: the
-      # snapshot binary keeps the in-repo bootstrap TEST anchor instead
-      # of an empty (invalid, panic-on-decode) one.
+      # Version metadata is injected so `gseer version` reports the
+      # tag, full commit, and build date of the release binary — never
+      # an unsubstantiated value.  (The shared-index trust anchor was
+      # removed with the shared-index channel; there is no key
+      # ceremony in the release anymore.)
       - -s -w
         -X github.com/Lutfifakee-Project/gseer/internal/version.Version={{ .Version }}
         -X github.com/Lutfifakee-Project/gseer/internal/version.Commit={{ .FullCommit }}
         -X github.com/Lutfifakee-Project/gseer/internal/version.BuiltAt={{ .Date }}
-        {{ with index .Env "INDEX_PUB_B64" }}-X github.com/Lutfifakee-Project/gseer/internal/index.EmbeddedIndexPublicKeyB64={{ . }}{{ end }}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
 archives:
   - id: gseer
-    # Final artifact names: gseer_<version>_<os>_<arch>[.<fmt>]
+    # Final artifact names: gseer_<version>_<os>_<arch>.tar.gz
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
     formats:
       - tar.gz
-    format_overrides:
-      - goos: windows
-        formats:
-          - zip
     files:
       # License and docs travel with every archive; nothing else —
       # keep the artifact surface minimal and auditable.

@@ -75,24 +75,33 @@ func registerSetupCmd(root *cobra.Command) {
 	)
 	cmd := &cobra.Command{
 		Use:   "setup",
-		Short: "Prepare the search environment (default: personal mode + the shared index)",
-		Long: `Prepare the search environment (v0.3.2, docs/SHARED-INDEX.md).
+		Short: "Prepare the search environment (personal mode: local bootstrap + central dataset import)",
+		Long: `Prepare the search environment (v0.3.2, docs/DATASET.md).
 
 Default (fresh machine — no config, no flags):
   gseer setup provisions PERSONAL mode (one embedded SQLite file) and
-  downloads the official SIGNED shared index through the full trust
-  chain (Ed25519 manifest signature → sequence gate → SHA-256 →
-  integrity/schema/count validation → atomic install → dedup import).
-  After this, ` + "`gseer search 'nginx'`" + ` returns real indexed internet
-  assets.  A network failure during the fetch is a WARN — the engine
-  works offline; a signature failure refuses the index (exit 5).
+  bootstraps LOCAL passive discovery from YOUR egress context, then
+  imports the official CENTRAL DATASET from the versioned GitHub
+  Release 'central-dataset' (manifest + payload downloaded, payload
+  SHA-256 verified against the manifest, atomic import with rollback
+  into the Personal Local Index).
+  After this, ` + "`gseer search 'nginx'`" + ` returns real evidence from YOUR
+  Local Index.  A network failure during the dataset fetch is a WARN —
+  local discovery already ran, the engine works offline, and setup
+  still exits 0; retry any time with 'gseer dataset update'.
 
-Two profiles (SPEC-03 §5):
-  - client:        gseer setup --server <url> persists client.endpoint
-                   (the profile wizard) and health-checks the endpoint.
-  - personal:      gseer setup --personal [--db-path <file>] [--load-fixtures]
-                   provisions ONE embedded SQLite database file (SQ-01..06:
-                   0600 file, WAL, migrations, suppression) — no network.
+Dataset lifecycle (the ONLY remote data channel; CLI-only, Linux-only):
+  gseer dataset update    fetch + checksum-verify + atomically import
+                          the latest central dataset (version gate:
+                          refuses versions <= the installed one)
+  gseer dataset check     provenance + freshness of the configured channel
+  gseer dataset status    installed version + freshness of the Local Index
+
+Two profiles:
+  - personal (default): ONE embedded SQLite database file (SQ-01..06:
+    0600 file, WAL, migrations, suppression; --db-path overrides the
+    path).  Search runs strictly LOCAL against this index and NEVER
+    triggers discovery.
   - self-hosted:   gseer setup --self-hosted verifies the database is
                    reachable, checks the PostgreSQL version (16+, OD-7),
                    and runs the hardened v0.2.0 deployment order — no
@@ -110,6 +119,10 @@ Two profiles (SPEC-03 §5):
                    it; docs/DEPLOYMENT.md).  --reset-runtime-password
                    rotates the gseer_app password on an existing role.
 
+  There is NO shared-index query service, NO hosted index, and NO client
+  profile anywhere in v0.3.2 — all removed with the CLI-only
+  architecture decision.  Every search reads only the local index.
+
 Fixture dataset (QS-6, labeled synthetic evaluation data):
   --load-fixtures    ingest the embedded synthetic corpus (Assets A–D,
                      Services s1–s6, seven observations).  Idempotent:
@@ -125,16 +138,21 @@ Fixture dataset (QS-6, labeled synthetic evaluation data):
     fixture dataset — synthetic observations for evaluation; NOT real internet data
 
 The fresh-install workflow is documented in docs/QUICKSTART.md
-(canonical) and pinned by the quickstart-linux CI job (AC-5.11).
+(canonical) and verified END-TO-END on Linux AMD64 by the acceptance
+journey harness (pipeline/acceptance-journey.sh): fresh install, setup
+with central-dataset import, port/domain/hostname search, provenance,
+x509 + tamper rejection, offline search, and the honest production-URL
+state — the ALL_STEPS_PASSED verdict and raw step logs ship inside this
+package (acceptance13/journey-final/).
 
 Wired: --self-hosted provisioning (M3), --load-fixtures/--purge-fixtures
 (M4), --with-compose compose + .env generation (M11; --full writes the
-complete db + server stack, M22), shared-index default + client wizard
-(v0.3.2).  --with-compose always writes the files FIRST and stops: on a
-fresh machine the database only exists once compose starts it, so the
-printed next commands (docker compose up / gseer setup --self-hosted) are
-the continuation.  --self-hosted implies the self-hosted profile; an
-explicit --profile still wins.`,
+complete db + server stack, M22), personal default bootstrap + central
+dataset auto-import (v0.3.2).  --with-compose always writes the files
+FIRST and stops: on a fresh machine the database only exists once compose
+starts it, so the printed next commands (docker compose up / gseer setup
+--self-hosted) are the continuation.  --self-hosted implies the
+self-hosted profile; an explicit --profile still wins.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runSetupDispatch(cmd, setupOptions{
@@ -665,16 +683,12 @@ func runSetupPersonalFlag(cmd *cobra.Command, o setupOptions) error {
 	if o.purgeFixtures {
 		return fmt.Errorf("E_SETUP_USAGE: --purge-fixtures is not a personal setup flag; load fixtures with --load-fixtures")
 	}
-	if flags.server != "" {
-		return fmt.Errorf("E_SETUP_USAGE: --server configures the client profile; --personal provisions the local engine.\n" +
-			"Try: drop one of the two flags, or run: gseer setup  (personal mode + shared index)")
-	}
 	return runSetupPersonal(cmd, o.personalDBPath, o.loadFixtures)
 }
 
 // runSetupProfileDispatch handles the non-personal invocation: compose
-// generation, the client wizard, the fresh-machine defaults, self-hosted
-// provisioning, and the fixture actions (M4).  The guard order matches
+// generation, the fresh-machine defaults, self-hosted provisioning, and
+// the fixture actions (M4).  The guard order matches
 // the previous inline RunE body exactly.
 func runSetupProfileDispatch(cmd *cobra.Command, o setupOptions) error {
 	if o.loadFixtures && o.purgeFixtures {
@@ -700,35 +714,19 @@ func runSetupProfileDispatch(cmd *cobra.Command, o setupOptions) error {
 		return runSetupWithCompose(cmd, ".", o.withFull)
 	}
 
-	// --server configures the CLIENT profile (v0.3.2 wizard):
-	// persist client.endpoint to the config file, then
-	// health-check the endpoint.  This is the M11 wiring the old
-	// print-only branch advertised but never had.
-	if flags.server != "" && !o.selfHosted {
-		cfg, cerr := config.Load(config.Flags{
-			ConfigPath: flags.configPath,
-			Profile:    string(config.ProfileClient),
-			Endpoint:   flags.server,
-		})
-		if cerr != nil {
-			renderConfigError(cmd, cerr)
-			return nil
-		}
-		return runSetupClientWizard(cmd, cfg)
-	}
-
-	// Fresh machine (no config file, no explicit profile/endpoint
+	// Fresh machine (no config file, no explicit profile
 	// flags or env): the Easy-to-Use default — provision PERSONAL
-	// mode and fetch the official SIGNED shared index (v0.3.2).
-	// --self-hosted keeps its own pinned fresh-machine contract
-	// (reachability refusal, setup_test.go); --load-fixtures on a
-	// fresh machine provisions personal mode + the synthetic
-	// corpus exactly like the root help advertises.
+	// mode and bootstrap passive discovery into the Local Index
+	// (v0.3.2 CLI-only architecture).  --self-hosted keeps its own
+	// pinned fresh-machine contract (reachability refusal,
+	// setup_test.go); --load-fixtures on a fresh machine provisions
+	// personal mode + the synthetic corpus exactly like the root
+	// help advertises.
 	if zeroConfigFirstRunApplies() && o.loadFixtures {
 		return runSetupPersonal(cmd, o.personalDBPath, true)
 	}
 	if !o.selfHosted && zeroConfigFirstRunApplies() {
-		return runSetupSharedIndexDefault(cmd)
+		return runSetupBootstrapDefault(cmd)
 	}
 
 	// --self-hosted implies the self-hosted profile: the
@@ -745,7 +743,6 @@ func runSetupProfileDispatch(cmd *cobra.Command, o setupOptions) error {
 	cfg, cerr := config.Load(config.Flags{
 		ConfigPath: flags.configPath,
 		Profile:    profile,
-		Endpoint:   flags.server,
 	})
 	if cerr != nil {
 		// v0.3.2 fix: configuration failures exit 3 (ExitConfig,
@@ -782,12 +779,10 @@ func runSetupConfiguredProfile(cmd *cobra.Command, cfg *config.Config, o setupOp
 	}
 
 	// Profile dispatch (v0.3.2): every configured profile gets an
-	// honest, useful tail — client setups are health-checked,
-	// personal setups refresh the shared index, self-hosted
-	// setups re-run the idempotent hardened core.
+	// honest, useful tail — personal setups refresh the local passive
+	// discovery bootstrap, self-hosted setups re-run the idempotent
+	// hardened core.
 	switch cfg.Profile {
-	case config.ProfileClient:
-		return runSetupClientStatus(cmd, cfg)
 	case config.ProfilePersonal:
 		return runSetupPersonalRefresh(cmd, cfg)
 	default:

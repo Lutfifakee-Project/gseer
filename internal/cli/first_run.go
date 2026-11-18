@@ -29,6 +29,10 @@ package cli
 //
 // The goal is the Fresh Install path: `go install … && gseer` ends
 // with a working engine and a user who knows what to do next.
+//
+// v0.3.2 CLI-only architecture: the shared-index download path and the
+// client profile are gone — the real-data path is the local passive
+// discovery bootstrap (`gseer setup`).
 
 import (
 	"context"
@@ -40,23 +44,22 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Lutfifakee-Project/gseer/internal/config"
-	"github.com/Lutfifakee-Project/gseer/internal/index"
+	"github.com/Lutfifakee-Project/gseer/internal/storage/sqlite"
 	"github.com/Lutfifakee-Project/gseer/internal/version"
 )
 
 // zeroConfigFirstRunApplies reports whether this invocation is in the
 // "no configuration anywhere" state the zero-configuration first run
 // covers: no --config/GSEER_CONFIG path override, no explicit profile
-// or endpoint selection (--profile, GSEER_PROFILE, --server,
-// GSEER_CLIENT_ENDPOINT), and no platform-default config file (resolved
-// GSEER_HOME-aware — a GSEER_HOME install with no config inside it is
-// still fresh).  An explicit operator choice is never silently
-// overridden — those paths keep their honest E_CONFIG errors.
+// selection (--profile, GSEER_PROFILE), and no platform-default config
+// file (resolved GSEER_HOME-aware — a GSEER_HOME install with no config
+// inside it is still fresh).  An explicit operator choice is never
+// silently overridden — those paths keep their honest E_CONFIG errors.
 func zeroConfigFirstRunApplies() bool {
-	if flags.configPath != "" || flags.profile != "" || flags.server != "" {
+	if flags.configPath != "" || flags.profile != "" {
 		return false
 	}
-	for _, k := range []string{"GSEER_CONFIG", "GSEER_PROFILE", "GSEER_CLIENT_ENDPOINT"} {
+	for _, k := range []string{"GSEER_CONFIG", "GSEER_PROFILE"} {
 		if v, ok := os.LookupEnv(k); ok && v != "" {
 			return false
 		}
@@ -103,7 +106,6 @@ func engineConfigOrInit(cmd *cobra.Command) (*config.Config, error) {
 	cfg, cerr := config.Load(config.Flags{
 		ConfigPath: flags.configPath,
 		Profile:    flags.profile,
-		Endpoint:   flags.server,
 	})
 	if cerr != nil {
 		return nil, fmt.Errorf("E_CONFIG: %s", cerr.Error())
@@ -142,9 +144,9 @@ func runFirstRun(cmd *cobra.Command) error {
 	}
 	if !flags.quiet {
 		printf(out, "\nWhere does the data come from? GSEER stores only what YOU collect or import.\n")
-		printf(out, "  try it now:  gseer setup --load-fixtures   (labeled synthetic corpus — NOT real internet data)\n")
-		printf(out, "  real data:   gseer source add my-dns --type dns --seeds <domains> --enable --yes\n")
-		printf(out, "               gseer collect run --source my-dns\n")
+		printf(out, "  try it now:  gseer setup                 (bootstrap passive discovery into the Local Index)\n")
+		printf(out, "  synthetic:   gseer setup --load-fixtures (labeled evaluation corpus — NOT real internet data)\n")
+		printf(out, "  manual:      gseer source add my-dns --type dns --seeds <domains> --enable --yes && gseer collect run\n")
 		printf(out, "  full check:  gseer doctor\n")
 	}
 	return nil
@@ -161,7 +163,6 @@ func runStatus(cmd *cobra.Command) error {
 	cfg, err := config.Load(config.Flags{
 		ConfigPath: flags.configPath,
 		Profile:    flags.profile,
-		Endpoint:   flags.server,
 	})
 	if err != nil {
 		return fmt.Errorf("E_CONFIG: %s\nTry: gseer doctor", err.Error())
@@ -171,14 +172,11 @@ func runStatus(cmd *cobra.Command) error {
 	case config.ProfilePersonal:
 		printf(out, "profile: personal (database: %s)\n", cfg.Database.DSN)
 		printPersonalIndex(cmd, cfg)
-	case config.ProfileSelfHosted:
+	default:
 		printf(out, "profile: self-hosted (PostgreSQL)\n")
 		printf(out, "  checks:    gseer doctor\n")
 		printf(out, "  search:    gseer search 'port==443'\n")
 		printf(out, "  collect:   gseer collect run --all\n")
-	default:
-		printf(out, "profile: client (server: %s)\n", cfg.Client.Endpoint)
-		printf(out, "  search:    gseer search 'port==443'\n")
 	}
 	printf(out, "  all commands: gseer --help\n")
 	return nil
@@ -205,42 +203,64 @@ func printPersonalIndex(cmd *cobra.Command, cfg *config.Config) {
 	switch {
 	case meta.Empty:
 		printf(out, "  index:    EMPTY — nothing collected yet\n")
-		printf(out, "  fastest:  gseer setup   (downloads the official shared index — real internet assets)\n")
+		printf(out, "  fastest:  gseer setup   (bootstrap passive discovery — real internet assets into the Local Index)\n")
 		printf(out, "  try it:   gseer setup --load-fixtures   (labeled synthetic evaluation corpus)\n")
-		printf(out, "  real:     gseer source add my-dns --type dns --seeds <domains> --enable --yes\n")
+		printf(out, "  manual:   gseer source add my-dns --type dns --seeds <domains> --enable --yes\n")
 		printf(out, "            gseer collect run --source my-dns\n")
 	case meta.FixtureOnly:
 		printf(out, "  index:    %d assets, %d services, %d observations (SYNTHETIC fixture data — not real internet data)\n",
 			meta.Assets, meta.Services, meta.Observations)
-		printf(out, "  real:     gseer setup   (downloads the official shared index)  or  gseer source add my-dns --type dns --seeds <domains> --enable --yes\n")
+		printf(out, "  real:     gseer setup   (bootstrap passive discovery)  or  gseer source add my-dns --type dns --seeds <domains> --enable --yes\n")
 	default:
 		printf(out, "  index:    %d assets, %d services, %d observations\n",
 			meta.Assets, meta.Services, meta.Observations)
 	}
-	printSharedIndexStatus(cmd)
+	printDiscoveryFreshness(cmd)
 }
 
-// printSharedIndexStatus reports the installed shared index (read-only;
-// an absent or unreadable index directory is an honest hint, never a
-// panic).  v0.3.2: the status panel must surface index freshness —
-// Easy-to-Use includes knowing HOW FRESH the data is.
-func printSharedIndexStatus(cmd *cobra.Command) {
+// printDiscoveryFreshness reports the local discovery state (read-only;
+// an absent or unreadable database is an honest hint, never a panic).
+// v0.3.2: the status panel surfaces LOCAL discovery freshness —
+// Easy-to-Use includes knowing HOW FRESH the evidence is.
+func printDiscoveryFreshness(cmd *cobra.Command) {
 	out := cmd.OutOrStdout()
-	st, err := index.LoadState(sharedIndexDir())
-	if err != nil || st == nil {
-		if err != nil {
-			printf(out, "  shared:   not readable (%v)\n", err)
-		}
+	cfg, err := config.Load(config.Flags{
+		ConfigPath: flags.configPath,
+		Profile:    flags.profile,
+	})
+	if err != nil || cfg.Profile != config.ProfilePersonal {
 		return
 	}
-	age := time.Since(st.BuiltAt).Round(time.Second)
-	imported := "yes"
-	if !st.Imported {
-		imported = "NO — run: gseer index update"
+	res, derr := openPersonal(cfg)
+	if derr != nil {
+		return // the index block above already reported the DB problem
 	}
-	printf(out, "  shared:   sequence %d, built %s (age %s), imported: %s\n",
-		st.Sequence, st.BuiltAt.UTC().Format("2006-01-02 15:04 UTC"), age, imported)
-	if age > 14*24*time.Hour {
-		printf(out, "            [warn] older than two weeks — refresh with: gseer index update\n")
+	defer func() { _ = res.DB.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	store := sqlite.NewStore(res.DB)
+	sources, serr := store.ListSources(ctx)
+	if serr != nil {
+		return
 	}
+	enabled := 0
+	for _, s := range sources {
+		if s.Enabled {
+			enabled++
+		}
+	}
+	if len(sources) == 0 {
+		printf(out, "  sources:  none registered yet — run: gseer setup\n")
+		return
+	}
+	var lastRun time.Time
+	_ = res.DB.QueryRowContext(ctx,
+		"SELECT MAX(COALESCE(finished_at, started_at)) FROM collection_jobs WHERE status = 'success'").Scan(&lastRun)
+	if lastRun.IsZero() {
+		printf(out, "  sources:  %d registered (%d enabled) — no successful collect run yet\n", len(sources), enabled)
+		return
+	}
+	printf(out, "  sources:  %d registered (%d enabled); last successful collect %s (%s ago)\n",
+		len(sources), enabled,
+		lastRun.UTC().Format("2006-01-02 15:04 UTC"), time.Since(lastRun).Round(time.Second))
 }

@@ -15,20 +15,26 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 // status.go — `gseer status`: ONE informational view of the product
-// state (binary, profile/config, database, shared index).  Doctor
+// state (binary, profile/config, database, local discovery).  Doctor
 // remains the PASS/FAIL surface; status is informational and always
-// exits 0, reporting honest "not provisioned"/"not installed" states
-// instead of guessing.  Output: table (default) or -o json|yaml.
+// exits 0, reporting honest "not provisioned"/"nothing collected"
+// states instead of guessing.  Output: table (default) or -o json|yaml.
+//
+// v0.3.2 CLI-only architecture: the shared-index section is gone —
+// status reports the LOCAL discovery registry + last successful
+// collection run instead (the freshness contract of the Local Index).
 package cli
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
 	"time"
 
 	"github.com/Lutfifakee-Project/gseer/internal/config"
-	"github.com/Lutfifakee-Project/gseer/internal/index"
+	"github.com/Lutfifakee-Project/gseer/internal/storage/sqlite"
 	"github.com/Lutfifakee-Project/gseer/internal/version"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -36,12 +42,12 @@ import (
 
 // statusView is the render model for `gseer status`.  Pointer-ish
 // fields are nil when the state is honestly absent (no config, no
-// database, no shared index installed).
+// database, nothing collected yet).
 type statusView struct {
-	Binary      statusBinary     `json:"binary"`
-	Profile     statusProfile    `json:"profile"`
-	Database    *statusDatabase  `json:"database"`
-	SharedIndex *statusSharedIdx `json:"shared_index"`
+	Binary    statusBinary     `json:"binary"`
+	Profile   statusProfile    `json:"profile"`
+	Database  *statusDatabase  `json:"database"`
+	Discovery *statusDiscovery `json:"discovery"`
 }
 
 type statusBinary struct {
@@ -62,18 +68,19 @@ type statusDatabase struct {
 	SizeBytes int64  `json:"size_bytes"`
 }
 
-type statusSharedIdx struct {
-	Sequence    int64  `json:"sequence"`
-	BuiltAt     string `json:"built_at"`
-	ArtifactSHA string `json:"artifact_sha256"`
-	Channel     string `json:"channel"`
-	Imported    bool   `json:"imported"`
+// statusDiscovery is the Local Index evidence-freshness section: the
+// registered source registry state and the age of the last successful
+// passive collection run.
+type statusDiscovery struct {
+	Sources       int    `json:"sources"`
+	Enabled       int    `json:"enabled"`
+	LastSuccessAt string `json:"last_success_at,omitempty"`
 }
 
 func registerStatusCmd(root *cobra.Command) {
 	cmd := &cobra.Command{
 		Use:   "status",
-		Short: "One informational view of the product state (binary, profile, database, shared index)",
+		Short: "One informational view of the product state (binary, profile, database, discovery)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cmd.OutOrStdout()
@@ -106,7 +113,7 @@ func registerStatusCmd(root *cobra.Command) {
 }
 
 // collectStatusView gathers every section independently; a failure in
-// one section degrades to an honest "not provisioned/not installed"
+// one section degrades to an honest "not provisioned/not collected"
 // state, never an error.
 func collectStatusView() statusView {
 	v := statusView{}
@@ -125,31 +132,26 @@ func collectStatusView() statusView {
 	if cfgPath == "" {
 		cfgPath = defaultConfigPath()
 	}
+	var cfg *config.Config
 	if _, err := os.Stat(cfgPath); err != nil {
 		v.Profile = statusProfile{Name: "not provisioned", NotedAs: "no config yet — run: gseer setup"}
 	} else {
-		cfg, err := config.Load(config.Flags{
+		loaded, err := config.Load(config.Flags{
 			ConfigPath: flags.configPath,
 			Profile:    flags.profile,
-			Endpoint:   flags.server,
 		})
 		if err != nil {
 			v.Profile = statusProfile{Name: "invalid config", ConfigPath: cfgPath, NotedAs: "gseer doctor explains the exact failure"}
 		} else {
-			v.Profile = statusProfile{Name: string(cfg.Profile), ConfigPath: cfgPath}
+			v.Profile = statusProfile{Name: string(loaded.Profile), ConfigPath: cfgPath}
+			cfg = loaded
 		}
 	}
 
 	// Database (personal mode): the file may legitimately not exist yet.
 	dbPath := ""
-	if _, err := os.Stat(cfgPath); err == nil {
-		if cfg, err := config.Load(config.Flags{
-			ConfigPath: flags.configPath,
-			Profile:    flags.profile,
-			Endpoint:   flags.server,
-		}); err == nil && cfg.Profile == config.ProfilePersonal {
-			dbPath = cfg.Database.DSN
-		}
+	if cfg != nil && cfg.Profile == config.ProfilePersonal {
+		dbPath = cfg.Database.DSN
 	}
 	if dbPath == "" {
 		dbPath = defaultPersonalDBPath()
@@ -160,15 +162,43 @@ func collectStatusView() statusView {
 		v.Database = &statusDatabase{Path: dbPath, SizeBytes: -1} // -1 = not provisioned
 	}
 
-	// Shared index: installed state is honest about absence.
-	st, err := index.LoadState(sharedIndexDir())
-	if err == nil && st != nil {
-		v.SharedIndex = &statusSharedIdx{
-			Sequence:    st.Sequence,
-			BuiltAt:     fmtTime(st.BuiltAt),
-			ArtifactSHA: st.ArtifactSHA,
-			Channel:     st.ManifestURL,
-			Imported:    st.Imported,
+	// Local discovery: registry + last successful passive collection run.
+	// Read-only: only consulted when the database file already exists
+	// (sqlite.Open would otherwise create it — status never provisions).
+	if v.Database != nil && v.Database.SizeBytes >= 0 {
+		if res, err := sqlite.Open(dbPath); err == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			store := sqlite.NewStore(res.DB)
+			sources, serr := store.ListSources(ctx)
+			enabled := 0
+			for _, s := range sources {
+				if s.Enabled {
+					enabled++
+				}
+			}
+			var lastRun time.Time
+			if serr == nil {
+				// SQLite stores timestamps as TEXT — parse via the storage
+				// layer's canonical format (a direct *time.Time scan fails
+				// on driver.Value string).
+				var lastRunRaw sql.NullString
+				if err := res.DB.QueryRowContext(ctx,
+					"SELECT MAX(COALESCE(finished_at, started_at)) FROM collection_jobs WHERE status = 'success'").Scan(&lastRunRaw); err == nil &&
+					lastRunRaw.Valid && lastRunRaw.String != "" {
+					if t, perr := sqlite.ParseTS(lastRunRaw.String); perr == nil {
+						lastRun = t
+					}
+				}
+			}
+			_ = res.DB.Close()
+			cancel()
+			if serr == nil {
+				d := statusDiscovery{Sources: len(sources), Enabled: enabled}
+				if !lastRun.IsZero() {
+					d.LastSuccessAt = lastRun.UTC().Format(time.RFC3339)
+				}
+				v.Discovery = &d
+			}
 		}
 	}
 	return v
@@ -191,18 +221,19 @@ func renderStatusTable(out interface{ Write([]byte) (int, error) }, v statusView
 	default:
 		printf(out, "  database     : %s (%d bytes)\n", v.Database.Path, v.Database.SizeBytes)
 	}
-	if v.SharedIndex == nil {
-		printf(out, "  shared index : not installed — Try: gseer setup  (personal mode + shared index) or gseer index update\n")
+	if v.Discovery == nil {
+		printf(out, "  discovery    : no local registry yet — Try: gseer setup  (bootstrap passive discovery)\n")
 	} else {
-		age := ""
-		if t, err := time.Parse(time.RFC3339, v.SharedIndex.BuiltAt); err == nil && !t.IsZero() {
-			age = fmt.Sprintf(", age %s", time.Since(t).Round(time.Second))
-		}
-		printf(out, "  shared index : verified + installed sequence %d (built %s%s)\n",
-			v.SharedIndex.Sequence, v.SharedIndex.BuiltAt, age)
-		printf(out, "                 channel %s, imported into store: %v\n", v.SharedIndex.Channel, v.SharedIndex.Imported)
-		if !v.SharedIndex.Imported {
-			printf(out, "                 Try: gseer index update  (re-runs the import; idempotent)\n")
+		printf(out, "  discovery    : %d source(s) registered, %d enabled", v.Discovery.Sources, v.Discovery.Enabled)
+		if v.Discovery.LastSuccessAt == "" {
+			printf(out, " — no successful collect run yet\n")
+			printf(out, "                 Try: gseer collect run --all\n")
+		} else {
+			age := ""
+			if t, err := time.Parse(time.RFC3339, v.Discovery.LastSuccessAt); err == nil && !t.IsZero() {
+				age = fmt.Sprintf(" (%s ago)", time.Since(t).Round(time.Second))
+			}
+			printf(out, " — last successful collect %s%s\n", v.Discovery.LastSuccessAt, age)
 		}
 	}
 }

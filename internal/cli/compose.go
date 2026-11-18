@@ -33,14 +33,14 @@ import (
 // verbatim.  Generation never overwrites an existing .env silently and
 // never weakens the loopback-only port binding.
 //
-// --full writes the complete self-hosted stack (db + API/dashboard
-// server, healthchecks, persistent volume, generated API token + the
-// v0.2.0 hardened credential pair): the server container provisions
-// itself with the hardened deployment order (bootstrap → migrate →
-// grants → audit) and then serves under the least-privilege gseer_app
-// credential.  The full stack deliberately has NO collector container —
-// nothing collects uninvoked; collection is
-// `docker compose exec server gseer collect run ...` by explicit
+// --full writes the complete self-hosted stack for the CLI-only
+// architecture (v0.3.2): the same PostgreSQL database PLUS a one-shot
+// `provision` container that runs the hardened deployment order
+// (bootstrap → migrate → grants → audit) and exits — there is NO API/
+// dashboard server to run anymore; the headless CLI is the product.
+// The full stack deliberately has NO collector container — nothing
+// collects uninvoked; collection is
+// `docker compose run --rm provision gseer collect run ...` by explicit
 // operator action.  Container deployments upgrade by rebuilding the
 // image, not via `gseer update` (the image binary is root-owned).
 
@@ -79,37 +79,38 @@ volumes:
     name: gseer-db-data
 `
 
-// fullComposeTemplate is the v0.2.0 complete self-hosted stack: db +
-// server.  Security posture:
+// fullComposeTemplate is the v0.3.2 complete self-hosted stack: db +
+// one-shot hardened provisioning.  Security posture:
 //   - the DB publishes NO host port (compose-internal network only —
 //     strictly stronger than the db-only template's loopback bind);
-//   - the server publishes the API on the HOST loopback only;
-//   - the server binds 0.0.0.0 INSIDE the container (compose network),
-//     which requires an API token (the E_CONFIG_INSECURE gate) — the
-//     generated .env carries a random one;
-//   - the server container provisions with the hardened deployment
-//     order (bootstrap → migrate → grants → audit) and serves ONLY as
-//     the least-privilege gseer_app credential (the audit and the
-//     runtime-identity gate refuse anything else, exit 5).
-const fullComposeTemplate = `# GSEER v0.2.0 docker-compose — full self-hosted stack (db + server).
+//   - the provision container runs the hardened deployment order
+//     (bootstrap → migrate → grants → audit) under the operator
+//     credential, sets the least-privilege gseer_app runtime password,
+//     and EXITS — there is no serving process to keep alive (CLI-only
+//     architecture: the API/dashboard server was removed);
+//   - the fail-closed privilege audit refuses an unsafe deployment
+//     with exit 5 — there is no bypass.
+const fullComposeTemplate = `# GSEER v0.3.2 docker-compose — full self-hosted stack (db + one-shot provision).
 #
 # Written by: gseer setup --with-compose --full
 #
 # Services:
-#   db      PostgreSQL 17 (compose-internal; NO host port published)
-#   server  the GSEER API + dashboard (host loopback :8443, token-authed)
+#   db         PostgreSQL 17 (compose-internal; NO host port published)
+#   provision  one-shot hardened deployment order (bootstrap → migrate →
+#              grants → audit), then exits — CLI-only architecture: there
+#              is no API/dashboard server container anymore; run the CLI
+#              from the host over the published loopback port or with
+#              ` + "`docker compose run --rm provision gseer …`" + `.
 #
-# Hardened credential model (v0.2.0, docs/DEPLOYMENT.md): the server
-# container provisions itself with the hardened deployment order
-# (bootstrap → migrate → grants → audit) and serves under the
-# least-privilege gseer_app credential ONLY (GSEER_DB_RUNTIME_DSN);
-# the operator credential is used by the provisioning step, never by
-# the serving process.  The audit refuses an unsafe deployment with
+# Hardened credential model (docs/DEPLOYMENT.md): data-plane commands
+# prefer the least-privilege gseer_app runtime credential
+# (GSEER_DB_RUNTIME_DSN, derived from GSEER_APP_PASSWORD); the operator
+# credential provisions.  The audit refuses an unsafe deployment with
 # exit 5 — there is no bypass.
 #
-# Deliberately absent: a collector container.  Nothing collects
-# uninvoked — run
-#   docker compose exec server gseer collect run --source <name>
+# Deliberately absent: a collector container and a serving container.
+# Nothing collects uninvoked — run
+#   docker compose run --rm provision gseer collect run --source <name>
 # explicitly, and only for sources whose terms you have reviewed
 # (docs/SOURCES.md).  Container deployments upgrade by rebuilding the
 # image, not via gseer update (docs/UPDATE.md §1).
@@ -124,7 +125,7 @@ services:
       POSTGRES_DB: ${GSEER_DB_NAME:-gseer}
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C.UTF-8"
     # No ports section: the database is reachable ONLY from the compose
-    # network (the server service).  Host-side admin/backup:
+    # network (the provision service).  Host-side admin/backup:
     #   docker compose exec db pg_dump ...
     volumes:
       - gseer-db-data:/var/lib/postgresql/data
@@ -135,41 +136,26 @@ services:
       retries: 12
       start_period: 10s
 
-  server:
+  provision:
     build:
       context: .
       args:
-        VERSION: ${GSEER_VERSION:-v0.2.0}
+        VERSION: ${GSEER_VERSION:-v0.3.2}
         COMMIT: ${GSEER_COMMIT:-unknown}
     image: gseer:local
-    restart: unless-stopped
+    restart: "no"
     depends_on:
       db:
         condition: service_healthy
-    # Provision first (hardened order; idempotent on restarts), then
-    # serve.  The audit gate refuses an unsafe deployment before bind.
-    command: ["sh", "-c", "gseer setup --self-hosted --runtime-password-env GSEER_APP_PASSWORD && exec gseer server start"]
+    # Provision once (hardened order; idempotent on re-runs), then exit.
+    # The audit gate refuses an unsafe deployment before completing.
+    command: ["sh", "-c", "gseer setup --self-hosted --runtime-password-env GSEER_APP_PASSWORD"]
     environment:
       GSEER_PROFILE: self-hosted
-      # Operator credential (provisioning only — never serving).
+      # Operator credential (provisioning).
       GSEER_DB_DSN: postgres://${GSEER_DB_USER:-gseer}:${GSEER_DB_PASSWORD:?set GSEER_DB_PASSWORD in .env}@db:5432/${GSEER_DB_NAME:-gseer}?sslmode=disable
-      # Runtime credential (the ONLY identity the server serves as).
+      # Runtime credential (the least-privilege data-plane identity).
       GSEER_DB_RUNTIME_DSN: postgres://gseer_app:${GSEER_APP_PASSWORD:?set GSEER_APP_PASSWORD in .env}@db:5432/${GSEER_DB_NAME:-gseer}?sslmode=disable
-      # Non-loopback bind inside the container network — the API token
-      # (the E_CONFIG_INSECURE gate) is mandatory and generated in .env.
-      GSEER_LISTEN: 0.0.0.0:8443
-      GSEER_TOKEN: ${GSEER_TOKEN:?set GSEER_TOKEN in .env}
-    ports:
-      # Host loopback only; expose to a LAN deliberately and keep the
-      # token (the server refuses tokenless non-loopback binds).
-      - "127.0.0.1:8443:8443"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:8443/health || exit 1"]
-      interval: 10s
-      timeout: 3s
-      retries: 12
-      start_period: 15s
-    stop_grace_period: 30s
 
 volumes:
   gseer-db-data:
@@ -177,22 +163,23 @@ volumes:
 `
 
 // fullEnvTemplateFmt is the generated .env for the full stack: database
-// credential + API token (both random).  GSEER_DSN is the HOST-side
-// convenience DSN for bare-metal CLI access over the published loopback
-// port; the container itself uses the compose-internal `db` hostname.
+// credential + the gseer_app runtime password (both random).  GSEER_DSN
+// is the HOST-side convenience DSN for bare-metal CLI access over the
+// published loopback port (the db-only compose publishes 127.0.0.1:5432);
+// the containers themselves use the compose-internal `db` hostname.
+// (The API token is gone with the API server — CLI-only architecture.)
 const fullEnvTemplateFmt = `# GSEER .env — generated by: gseer setup --with-compose --full
-# All three secrets below were randomly generated at write time.
-# Keep this file private (chmod 600): it holds the database password,
-# the runtime (gseer_app) password, AND the API token.
+# Both secrets below were randomly generated at write time.
+# Keep this file private (chmod 600): it holds the database password
+# AND the runtime (gseer_app) password.
 GSEER_DB_USER=gseer
 GSEER_DB_PASSWORD=%s
 GSEER_APP_PASSWORD=%s
 GSEER_DB_NAME=gseer
-GSEER_TOKEN=%s
-GSEER_VERSION=v0.2.0
-# Host-side DSN for CLI tools running OUTSIDE compose (the server
-# container uses db:5432 over the compose network).  The runtime DSN
-# inside compose is derived from GSEER_APP_PASSWORD (docker-compose.full.yml).
+GSEER_VERSION=v0.3.2
+# Host-side DSN for CLI tools running OUTSIDE compose.  The runtime DSN
+# is derived from GSEER_APP_PASSWORD (docker-compose.full.yml); export
+# GSEER_DB_RUNTIME_DSN with it for the least-privilege data plane.
 GSEER_DSN=postgres://gseer:%s@127.0.0.1:5432/gseer?sslmode=disable
 `
 
@@ -260,7 +247,7 @@ func randomPassword() (string, error) {
 // runSetupWithCompose generates the compose + .env pair and prints the
 // next commands verbatim (QS-2).  Runs after a successful --self-hosted
 // provisioning OR standalone with --self-hosted.  full=true selects the
-// v0.1.0 complete stack (db + server).
+// v0.3.2 complete stack (db + one-shot hardened provisioning).
 func runSetupWithCompose(cmd *cobra.Command, dir string, full bool) error {
 	out := cmd.OutOrStdout()
 	var wrote []string
@@ -285,11 +272,13 @@ func runSetupWithCompose(cmd *cobra.Command, dir string, full bool) error {
 		return nil
 	}
 	printf(out, "\nNext (full stack, docs/DOCKER.md):\n")
-	printf(out, "  docker compose -f docker-compose.full.yml up -d --build   # db + server (hardened provisioning runs before serve)\n")
-	printf(out, "  docker compose -f docker-compose.full.yml ps              # expect: db healthy, server healthy\n")
-	printf(out, "  curl -s http://127.0.0.1:8443/api/v1/health               # expect: {\"status\":\"ok\"}\n")
-	printf(out, "  curl -s -H \"Authorization: Bearer $(grep '^GSEER_TOKEN=' .env | cut -d= -f2-)\" \\\n        'http://127.0.0.1:8443/api/v1/search?q=port%%3D%%3D443'\n\n")
-	printf(out, "Posture: the DB publishes NO host port (compose-internal); the API publishes on host loopback only and requires the generated token; the server serves only as the least-privilege gseer_app credential after the fail-closed privilege audit passes.  The .env holds all secrets (chmod 600).\n")
+	printf(out, "  docker compose -f docker-compose.full.yml up -d --build   # db (healthcheck-gated) + one-shot hardened provision\n")
+	printf(out, "  docker compose -f docker-compose.full.yml ps              # expect: db healthy; provision exits 0 when done\n")
+	printf(out, "  export GSEER_PROFILE=self-hosted\n")
+	printf(out, "  export GSEER_DB_DSN=\"$(grep '^GSEER_DSN=' .env | cut -d= -f2-)\"\n")
+	printf(out, "  export GSEER_DB_RUNTIME_DSN=\"postgres://gseer_app:$(grep '^GSEER_APP_PASSWORD=' .env | cut -d= -f2-)@127.0.0.1:5432/gseer?sslmode=disable\"\n")
+	printf(out, "  gseer doctor                                              # expect the fail-closed audit PASS under gseer_app\n\n")
+	printf(out, "Posture: the DB publishes NO host port in the full template (compose-internal); the provision container runs the hardened deployment order and exits — there is no API/dashboard server (CLI-only architecture).  The .env holds the secrets (chmod 600).\n")
 	printf(out, "Lifecycle (startup/upgrade/backup/recovery): docs/DOCKER.md.\n")
 	return nil
 }
@@ -320,7 +309,7 @@ func writeFullComposeFiles(dir string) (wrote []string, err error) {
 	if _, serr := os.Stat(envPath); serr == nil {
 		return nil, fmt.Errorf("E_ENV_EXISTS: %s already exists\n"+
 			"Why: --with-compose never overwrites an .env (it may hold live credentials)\n"+
-			"Try: reuse the existing .env (GSEER_DB_PASSWORD and GSEER_TOKEN must be set) or remove it first", envPath)
+			"Try: reuse the existing .env (GSEER_DB_PASSWORD and GSEER_APP_PASSWORD must be set) or remove it first", envPath)
 	}
 	password, perr := randomPassword()
 	if perr != nil {
@@ -330,11 +319,7 @@ func writeFullComposeFiles(dir string) (wrote []string, err error) {
 	if perr != nil {
 		return nil, fmt.Errorf("E_COMPOSE_RANDOM: %w", perr)
 	}
-	token, perr := randomPassword()
-	if perr != nil {
-		return nil, fmt.Errorf("E_COMPOSE_RANDOM: %w", perr)
-	}
-	envBody := fmt.Sprintf(fullEnvTemplateFmt, password, appPassword, token, password) // #nosec G101 -- template placeholders filled with runtime-generated secrets, not hardcoded credentials
+	envBody := fmt.Sprintf(fullEnvTemplateFmt, password, appPassword, password) // #nosec G101 -- template placeholders filled with runtime-generated secrets, not hardcoded credentials
 	if werr := os.WriteFile(envPath, []byte(envBody), 0o600); werr != nil {
 		return nil, fmt.Errorf("E_COMPOSE_WRITE: cannot write %s: %w", envPath, werr)
 	}

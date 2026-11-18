@@ -102,12 +102,6 @@ const (
 	// E_CONFIG_FILE_NOT_FOUND — the --config path or default config
 	// file does not exist.
 	CodeConfigFileNotFound = "E_CONFIG_FILE_NOT_FOUND"
-
-	// E_CLIENT_ONLY — a server command was invoked under a client
-	// profile (SPEC-03 §5, §7).  Raised by the CLI layer when the
-	// profile is consulted; the code is defined here so the config
-	// layer can reference it in profile-validation hints.
-	CodeClientOnly = "E_CLIENT_ONLY"
 )
 
 // newError constructs an *Error with the given code and detail.  Optional

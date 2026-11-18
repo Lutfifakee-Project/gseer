@@ -40,14 +40,14 @@ func TestRootHelpListsCommands(t *testing.T) {
 	help := buf.String()
 
 	// Every command listed in the root help's "Commands:" section must appear.
-	// Cobra renders commands as single words (e.g. "search", "server", "source")
-	// rather than the old static format ("search <query>", "server start", etc.).
+	// Cobra renders commands as single words (e.g. "search", "source").
+	// v0.3.2 CLI-only architecture: `server` (API+dashboard daemon) and
+	// `index` (shared-index lifecycle) are removed.
 	want := []string{
 		"search",
 		"setup",
 		"doctor",
 		"version",
-		"server",
 		"db",
 		"source",
 		"rules",
@@ -58,6 +58,11 @@ func TestRootHelpListsCommands(t *testing.T) {
 	for _, w := range want {
 		if !strings.Contains(help, w) {
 			t.Errorf("help missing %q\n--- help output ---\n%s", w, help)
+		}
+	}
+	for _, gone := range []string{"\n  server ", "\n  index "} {
+		if strings.Contains(help, gone) {
+			t.Errorf("help still lists removed command %q\n--- help output ---\n%s", gone, help)
 		}
 	}
 

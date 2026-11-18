@@ -31,56 +31,15 @@ import (
 // describing the first violation.
 func ValidateProfile(c *Config) *Error {
 	switch c.Profile {
-	case ProfileClient:
-		return validateClient(c)
 	case ProfileSelfHosted:
 		return validateSelfHosted(c)
 	case ProfilePersonal:
 		return validatePersonal(c)
 	default:
 		return errInvalidValue("profile", string(c.Profile),
-			"profile must be 'client', 'self-hosted' or 'personal'").
+			"profile must be 'personal' or 'self-hosted'").
 			withNext("run: gseer setup  (to choose a profile)")
 	}
-}
-
-// validateClient enforces the client-profile schema:
-//   - client.endpoint is required (the remote server to query).
-//   - database.* is rejected (no PostgreSQL in client profile).
-//   - server.listen/token are rejected (no local server in client profile).
-//   - index.* is rejected (the shared-index import runs on a local profile).
-//   - sources may be present (config-only; never collected).
-func validateClient(c *Config) *Error {
-	if c.Client.Endpoint == "" {
-		e := errRequired("client.endpoint", string(ProfileClient)).
-			withNext("run: gseer setup --server <endpoint-url>  (client setup — persists client.endpoint)  or: gseer setup  (personal mode + shared index)")
-		// v0.3.2 fix: "client" is also the DEFAULT profile when nothing
-		// is configured.  An env-only resolution means NO config file was
-		// found anywhere — say so explicitly, or the error reads as if
-		// the operator had chosen client and merely forgotten the
-		// endpoint (the exact confusion the personal-setup workflow
-		// failure reported).
-		if c.Source == "env-only" {
-			e = e.withWhy("no config file was found (searched GSEER_CONFIG and " + DefaultConfigPath() + "); with none, the default profile is client — `gseer setup` provisions personal mode and writes it")
-		}
-		return e
-	}
-	if c.Database.DSN != "" || c.Database.Host != "" || c.Database.Password != "" {
-		return errProfileConflict("database.*", string(ProfileClient)).
-			withWhy("the client profile queries a remote endpoint; PostgreSQL is not used.").
-			withNext("switch profile: gseer setup --self-hosted  or remove the database.* keys")
-	}
-	if c.Server.Listen != "" || c.Server.Token != "" || c.Server.TokenHash != "" {
-		return errProfileConflict("server.*", string(ProfileClient)).
-			withWhy("the client profile does not run a local server; `gseer server …` errors with E_CLIENT_ONLY.").
-			withNext("switch profile: gseer setup --self-hosted  or remove the server.* keys")
-	}
-	if c.Index.ManifestURL != "" {
-		return errProfileConflict("index.*", string(ProfileClient)).
-			withWhy("the client profile queries a remote endpoint; the shared-index download/import runs on the personal profile.").
-			withNext("remove the index.* keys, or switch profile: gseer setup  (personal + shared index)")
-	}
-	return nil
 }
 
 // validateSelfHosted enforces the self-hosted profile schema:
@@ -90,11 +49,8 @@ func validateClient(c *Config) *Error {
 //     path carried over from a personal config used to pass validation
 //     and fail deep inside the PG driver as a confusing
 //     E_DB_UNREACHABLE).
-//   - server.listen defaults to loopback (DefaultListen) if unset.
-//   - server.token is strongly recommended; warn (not error) if unset.
-//   - client.endpoint is rejected (no remote endpoint in self-hosted).
-//   - index.* is rejected (the shared-index import runs on the
-//     personal profile; PostgreSQL import is not a v0.3.2 surface).
+//   - client.endpoint / server.* / index.* were removed with the
+//     API-server and shared-index surfaces (CLI-only architecture).
 func validateSelfHosted(c *Config) *Error {
 	if c.Database.DSN == "" && c.Database.Host == "" {
 		return errRequired("database.dsn (or database.host+port+user+password+name)", string(ProfileSelfHosted)).
@@ -107,63 +63,23 @@ func validateSelfHosted(c *Config) *Error {
 			"the self-hosted profile requires a postgres:// connection string in database.dsn — a bare filesystem path is the personal-profile SQLite form").
 			withNext("fix database.dsn (postgres://user:pass@host:port/db?sslmode=…), or run: gseer setup --personal  (SQLite file)")
 	}
-	if c.Client.Endpoint != "" {
-		return errProfileConflict("client.endpoint", string(ProfileSelfHosted)).
-			withWhy("the self-hosted profile queries the local server, not a remote endpoint.").
-			withNext("remove client.endpoint  or switch profile: gseer setup --server <url>  (client)")
-	}
-	if c.Index.ManifestURL != "" {
-		return errProfileConflict("index.*", string(ProfileSelfHosted)).
-			withWhy("the self-hosted profile queries PostgreSQL; the shared-index download/import targets the personal store.").
-			withNext("remove the index.* keys, or switch profile: gseer setup  (personal + shared index)")
-	}
-	// server.listen defaults to loopback; non-loopback is allowed but
-	// requires auth (server.token).  We don't error on empty listen —
-	// the default is applied in applyDefaults.
-	if c.Server.Listen != "" && !isLoopback(c.Server.Listen) && c.Server.Token == "" {
-		return errInvalidValue("server.listen", c.Server.Listen,
-			"non-loopback binding requires an API token (server.token) for auth.").
-			withNext("set server.token  or bind loopback: 127.0.0.1:8443")
-	}
 	return nil
-}
-
-// isLoopback reports whether the listen address binds to a loopback
-// interface (127.0.0.0/8 or [::1]).  Non-loopback bindings require auth.
-func isLoopback(listen string) bool {
-	host := listen
-	if idx := strings.LastIndex(listen, ":"); idx >= 0 {
-		host = listen[:idx]
-	}
-	host = strings.Trim(host, "[]")
-	switch host {
-	case "localhost", "127.0.0.1", "::1", "":
-		return true
-	}
-	return strings.HasPrefix(host, "127.")
 }
 
 // validatePersonal enforces the personal-profile schema:
 //   - database.dsn is REQUIRED and must be the database FILE path
 //     (postgres:// URLs are rejected — wrong engine, wrong profile);
-//   - client.endpoint is rejected (no remote endpoint in personal mode);
-//   - server.* is allowed (a personal server can serve the local API);
 //   - sources may be present (config-only; the collect runner gates on
 //     enabled=false by default).
 func validatePersonal(c *Config) *Error {
 	if c.Database.DSN == "" {
 		return errRequired("database.dsn", string(ProfilePersonal)).
-			withNext("run: gseer setup --personal  (provisions the database file and writes the config)")
+			withNext("run: gseer setup  (provisions the database file and writes the config)")
 	}
 	if strings.HasPrefix(strings.TrimSpace(c.Database.DSN), "postgres://") {
 		return errInvalidValue("database.dsn", "[redacted]",
 			"the personal profile stores the SQLite database FILE path in database.dsn, not a postgres:// URL").
 			withNext("run: gseer setup --personal  (writes the correct config), or switch: gseer setup --self-hosted")
-	}
-	if c.Client.Endpoint != "" {
-		return errProfileConflict("client.endpoint", string(ProfilePersonal)).
-			withWhy("the personal profile runs the engine locally; there is no remote endpoint.").
-			withNext("remove client.* keys, or switch profile: gseer setup --server <url> --profile client")
 	}
 	if c.Database.RuntimeDSN != "" {
 		return errProfileConflict("database.runtime_dsn", string(ProfilePersonal)).

@@ -1,0 +1,9 @@
+# Minimal valid personal config (CLI-only architecture): one SQLite
+# Local Index file path, no server/client/index sections.
+profile: personal
+
+database:
+  dsn: "/tmp/personal-minimal/gseer.db"
+
+log:
+  level: "info"

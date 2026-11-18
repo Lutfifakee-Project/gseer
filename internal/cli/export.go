@@ -88,10 +88,6 @@ func runExport(cmd *cobra.Command, args []string) error {
 		printf(out, "%s\nTry: gseer setup --help\n", cerr.Error())
 		exitWith(ExitConfig)
 	}
-	if cfg.Profile == config.ProfileClient {
-		printf(out, "E_USAGE: export runs against the LOCAL index (self-hosted profile).\nWhy: the client profile holds no data; query the server's /api/v1/export endpoint instead.\nTry: gseer --profile self-hosted export ... or the REST API\n")
-		exitWith(ExitUsagePlanned)
-	}
 
 	// Resolve the output BEFORE any query work: a bad path must fail
 	// fast, before the database is touched.

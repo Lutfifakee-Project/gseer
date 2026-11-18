@@ -41,8 +41,7 @@ COPY --from=build /out/gseer /usr/local/bin/gseer
 USER gseer
 
 # The API + dashboard listen address (GSEER_LISTEN overrides).
-EXPOSE 8443
 
-# Foreground server (graceful SIGTERM shutdown; migrations run on start).
+# CLI-only image: no long-running server — the binary is the product.
 ENTRYPOINT ["gseer"]
-CMD ["server", "start"]
+CMD ["--help"]

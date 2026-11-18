@@ -40,7 +40,9 @@ func loadFixture(t *testing.T, name string) (*Config, *Error) {
 }
 
 // TestLoadValidSelfHosted verifies the happy path: a valid self-hosted
-// config loads, defaults are applied, the token is hashed and cleared.
+// config loads and the owner-approved defaults are applied.  (v0.3.2
+// CLI-only architecture: server.*/token hashing was removed with the
+// API-server surface — the config schema no longer carries them.)
 func TestLoadValidSelfHosted(t *testing.T) {
 	c, e := loadFixture(t, "valid-selfhosted.yaml")
 	if e != nil {
@@ -49,18 +51,11 @@ func TestLoadValidSelfHosted(t *testing.T) {
 	if c.Profile != ProfileSelfHosted {
 		t.Errorf("Profile: want %q, got %q", ProfileSelfHosted, c.Profile)
 	}
-	if c.Server.Listen != "127.0.0.1:8443" {
-		t.Errorf("Listen: want 127.0.0.1:8443, got %q", c.Server.Listen)
+	if c.Database.EffectiveDSN() == "" {
+		t.Error("EffectiveDSN must resolve from the database components")
 	}
-	// Token must be hashed and the plaintext cleared.
-	if c.Server.Token != "" {
-		t.Errorf("Token plaintext must be cleared after hashing; got %q", c.Server.Token)
-	}
-	if c.Server.TokenHash == "" {
-		t.Error("TokenHash must be set after Load")
-	}
-	if c.Server.TokenHash != HashToken("test-token-do-not-use-in-prod") {
-		t.Errorf("TokenHash mismatch: expected hash of the plaintext token")
+	if c.Database.Port != 5432 {
+		t.Errorf("Database.Port: want 5432, got %d", c.Database.Port)
 	}
 	// Defaults populated.
 	if c.Defaults.SearchMode != DefaultSearchMode {
@@ -68,20 +63,6 @@ func TestLoadValidSelfHosted(t *testing.T) {
 	}
 	if c.Defaults.PostgresMajor != DefaultPostgresMajor {
 		t.Errorf("Defaults.PostgresMajor: want %d, got %d", DefaultPostgresMajor, c.Defaults.PostgresMajor)
-	}
-}
-
-// TestLoadValidClient verifies the client profile happy path.
-func TestLoadValidClient(t *testing.T) {
-	c, e := loadFixture(t, "valid-client.yaml")
-	if e != nil {
-		t.Fatalf("expected success, got error: %v", e)
-	}
-	if c.Profile != ProfileClient {
-		t.Errorf("Profile: want %q, got %q", ProfileClient, c.Profile)
-	}
-	if c.Client.Endpoint != "https://gseer.example.com" {
-		t.Errorf("Endpoint: want https://gseer.example.com, got %q", c.Client.Endpoint)
 	}
 }
 
@@ -152,13 +133,14 @@ func TestLoadFileNotFound(t *testing.T) {
 }
 
 // TestLoadEnvOnly verifies that with no config file, env vars alone
-// produce a valid client config (Source = "env-only").
+// produce a valid personal config (Source = "env-only") — the
+// zero-configuration default profile is personal.
 func TestLoadEnvOnly(t *testing.T) {
 	for _, k := range []string{"GSEER_CONFIG"} {
 		t.Setenv(k, "")
 	}
-	t.Setenv("GSEER_PROFILE", "client")
-	t.Setenv("GSEER_CLIENT_ENDPOINT", "https://env-only.example.com")
+	t.Setenv("GSEER_PROFILE", "personal")
+	t.Setenv("GSEER_DB_DSN", "/tmp/env-only-personal/gseer.db")
 	c, e := Load(Flags{})
 	if e != nil {
 		t.Fatalf("env-only load failed: %v", e)
@@ -166,8 +148,11 @@ func TestLoadEnvOnly(t *testing.T) {
 	if c.Source != "env-only" {
 		t.Errorf("Source: want 'env-only', got %q", c.Source)
 	}
-	if c.Client.Endpoint != "https://env-only.example.com" {
-		t.Errorf("Endpoint from env: want https://env-only.example.com, got %q", c.Client.Endpoint)
+	if c.Profile != ProfilePersonal {
+		t.Errorf("Profile: want %q, got %q", ProfilePersonal, c.Profile)
+	}
+	if c.Database.DSN != "/tmp/env-only-personal/gseer.db" {
+		t.Errorf("DSN from env: want the env-provided file path, got %q", c.Database.DSN)
 	}
 }
 
@@ -187,17 +172,13 @@ func indexOf(s, sub string) int {
 // TestMain removes the default config file location influence so tests
 // don't pick up ~/.gseer/config.yaml from the dev environment.
 func TestMain(m *testing.M) {
-	// HOME and USERPROFILE both point at the temp dir so
-	// defaultConfigPath() resolves the same NON-EXISTENT location on
-	// every platform: os.UserHomeDir() reads $HOME on Unix but
-	// %USERPROFILE% on Windows, so setting only HOME left Windows
-	// looking at the real profile.
+	// HOME points at the temp dir so defaultConfigPath() resolves the
+	// same NON-EXISTENT location (never a real ~/.gseer/config.yaml).
 	tmp, err := os.MkdirTemp("", "gseer-config-test-")
 	if err != nil {
 		panic(err)
 	}
 	defer func() { _ = os.RemoveAll(tmp) }()
 	_ = os.Setenv("HOME", tmp)
-	_ = os.Setenv("USERPROFILE", tmp)
 	os.Exit(m.Run())
 }

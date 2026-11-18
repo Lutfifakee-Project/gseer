@@ -28,7 +28,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -57,9 +56,6 @@ func engineRun(t *testing.T, bin, home string, env map[string]string, args ...st
 }
 
 func TestZeroConfigFirstEngineCommands(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX permission assertions do not apply on windows")
-	}
 	if testing.Short() {
 		t.Skip("builds and drives the real binary")
 	}

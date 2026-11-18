@@ -25,8 +25,7 @@ package cli
 // the same command surface:
 //
 //   - personal     → sqlite.Store (one embedded file, no server);
-//   - self-hosted  → postgres.Store (the hardened deployment);
-//   - client       → refused (no local engine — E_CLIENT_ONLY).
+//   - self-hosted  → postgres.Store (the hardened deployment).
 
 import (
 	"errors"
@@ -79,9 +78,9 @@ func openRegistryStore(cmd *cobra.Command) (collect.RegistryBackend, func(), *co
 		}
 		return postgres.NewStore(pool), func() { pool.Close() }, cfg, nil
 	default:
-		return nil, nil, nil, fmt.Errorf("E_CLIENT_ONLY: `gseer source` and `gseer collect` manage the LOCAL registry\n"+
-			"Why: the client profile has no local database (current profile: %s)\n"+
-			"Try: gseer setup --personal  (single-file personal mode) or gseer setup --self-hosted", cfg.Profile)
+		return nil, nil, nil, fmt.Errorf("E_CONFIG: `gseer source` and `gseer collect` manage the LOCAL registry\n"+
+			"Why: the current profile (%s) has no local engine (validation should have rejected it)\n"+
+			"Try: gseer setup  (single-file personal mode) or gseer setup --self-hosted", cfg.Profile)
 	}
 }
 

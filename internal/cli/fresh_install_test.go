@@ -35,7 +35,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -100,9 +99,6 @@ func freshRun(t *testing.T, bin string, home string, env map[string]string, args
 }
 
 func TestFreshInstallAcceptance(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX permission assertions do not apply on windows")
-	}
 	if testing.Short() {
 		t.Skip("builds and drives the real binary")
 	}

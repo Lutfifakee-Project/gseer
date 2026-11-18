@@ -17,12 +17,13 @@
 package config
 
 import (
-	"strings"
 	"testing"
 )
 
 // validate_test.go — tests for strict schema, value validation, and
-// profile validation.
+// profile validation.  v0.3.2 CLI-only architecture: the client-profile,
+// server.listen, and index.manifest_url validation tests were removed
+// with those surfaces.
 
 // TestValidateValuesLogLevel verifies invalid log levels are rejected.
 func TestValidateValuesLogLevel(t *testing.T) {
@@ -40,7 +41,7 @@ func TestValidateValuesLogLevel(t *testing.T) {
 		{"INFO", true}, // case-insensitive
 	}
 	for _, tc := range cases {
-		c := &Config{Profile: ProfileClient, Client: ClientConfig{Endpoint: "x"}, Log: LogConfig{Level: tc.level}}
+		c := &Config{Profile: ProfilePersonal, Database: DatabaseConfig{DSN: "/tmp/x.db"}, Log: LogConfig{Level: tc.level}}
 		err := validateValues(c)
 		if tc.ok && err != nil {
 			t.Errorf("level %q: expected nil, got %v", tc.level, err)
@@ -56,7 +57,7 @@ func TestValidateValuesLogLevel(t *testing.T) {
 
 // TestValidateValuesLogFormat verifies invalid log formats are rejected.
 func TestValidateValuesLogFormat(t *testing.T) {
-	c := &Config{Profile: ProfileClient, Client: ClientConfig{Endpoint: "x"}, Log: LogConfig{Format: "xml"}}
+	c := &Config{Profile: ProfilePersonal, Database: DatabaseConfig{DSN: "/tmp/x.db"}, Log: LogConfig{Format: "xml"}}
 	err := validateValues(c)
 	if err == nil || err.Code != CodeConfigInvalidValue {
 		t.Errorf("format xml: expected E_CONFIG_INVALID_VALUE, got %v", err)
@@ -93,39 +94,6 @@ func TestValidateValuesDBPort(t *testing.T) {
 	}
 }
 
-// TestValidateValuesListenShape verifies malformed listen addresses are caught.
-func TestValidateValuesListenShape(t *testing.T) {
-	c := &Config{Profile: ProfileSelfHosted, Server: ServerConfig{Listen: "no-port-here"}}
-	err := validateValues(c)
-	if err == nil || err.Code != CodeConfigInvalidValue {
-		t.Errorf("listen 'no-port-here': expected E_CONFIG_INVALID_VALUE, got %v", err)
-	}
-}
-
-// TestValidateProfileClientMissingEndpoint verifies the client profile
-// requires client.endpoint.
-func TestValidateProfileClientMissingEndpoint(t *testing.T) {
-	c := &Config{Profile: ProfileClient}
-	err := ValidateProfile(c)
-	if err == nil || err.Code != CodeConfigRequired {
-		t.Errorf("client without endpoint: expected E_CONFIG_REQUIRED, got %v", err)
-	}
-}
-
-// TestValidateProfileClientWithDB verifies the client profile rejects
-// database.* keys (profile conflict).
-func TestValidateProfileClientWithDB(t *testing.T) {
-	c := &Config{
-		Profile:  ProfileClient,
-		Client:   ClientConfig{Endpoint: "https://x"},
-		Database: DatabaseConfig{Host: "127.0.0.1"},
-	}
-	err := ValidateProfile(c)
-	if err == nil || err.Code != CodeConfigProfileConflict {
-		t.Errorf("client with database: expected E_CONFIG_PROFILE_CONFLICT, got %v", err)
-	}
-}
-
 // TestValidateProfileSelfHostedMissingDB verifies the self-hosted profile
 // requires database.* (DSN or components).
 func TestValidateProfileSelfHostedMissingDB(t *testing.T) {
@@ -136,45 +104,13 @@ func TestValidateProfileSelfHostedMissingDB(t *testing.T) {
 	}
 }
 
-// TestValidateProfileSelfHostedWithClientEndpoint verifies the self-hosted
-// profile rejects client.endpoint.
-func TestValidateProfileSelfHostedWithClientEndpoint(t *testing.T) {
-	c := &Config{
-		Profile:  ProfileSelfHosted,
-		Client:   ClientConfig{Endpoint: "https://x"},
-		Database: DatabaseConfig{Host: "127.0.0.1"},
-	}
+// TestValidateProfilePersonalMissingDSN verifies the personal profile
+// requires the database FILE path.
+func TestValidateProfilePersonalMissingDSN(t *testing.T) {
+	c := &Config{Profile: ProfilePersonal}
 	err := ValidateProfile(c)
-	if err == nil || err.Code != CodeConfigProfileConflict {
-		t.Errorf("self-hosted with client.endpoint: expected E_CONFIG_PROFILE_CONFLICT, got %v", err)
-	}
-}
-
-// TestValidateProfileSelfHostedNonLoopbackNoToken verifies a non-loopback
-// listen without an auth token is rejected.
-func TestValidateProfileSelfHostedNonLoopbackNoToken(t *testing.T) {
-	c := &Config{
-		Profile:  ProfileSelfHosted,
-		Server:   ServerConfig{Listen: "0.0.0.0:8443"}, // non-loopback, no token
-		Database: DatabaseConfig{Host: "127.0.0.1"},
-	}
-	err := ValidateProfile(c)
-	if err == nil || err.Code != CodeConfigInvalidValue {
-		t.Errorf("non-loopback no token: expected E_CONFIG_INVALID_VALUE, got %v", err)
-	}
-}
-
-// TestValidateProfileSelfHostedNonLoopbackWithToken verifies a non-loopback
-// listen WITH an auth token passes.
-func TestValidateProfileSelfHostedNonLoopbackWithToken(t *testing.T) {
-	c := &Config{
-		Profile:  ProfileSelfHosted,
-		Server:   ServerConfig{Listen: "0.0.0.0:8443", Token: "secret"},
-		Database: DatabaseConfig{Host: "127.0.0.1"},
-	}
-	err := ValidateProfile(c)
-	if err != nil {
-		t.Errorf("non-loopback with token: expected nil, got %v", err)
+	if err == nil || err.Code != CodeConfigRequired {
+		t.Errorf("personal without database.dsn: expected E_CONFIG_REQUIRED, got %v", err)
 	}
 }
 
@@ -291,51 +227,7 @@ func TestExtractFieldName(t *testing.T) {
 	}
 }
 
-// TestIsLoopback verifies loopback detection for various address forms.
-func TestIsLoopback(t *testing.T) {
-	cases := []struct {
-		listen string
-		want   bool
-	}{
-		{"127.0.0.1:8443", true},
-		{"127.0.0.1", true},
-		{"localhost:8443", true},
-		{"[::1]:8443", true},
-		{"0.0.0.0:8443", false},
-		{"10.0.0.1:8443", false},
-		{"example.com:8443", false},
-		{":8443", true}, // empty host = all interfaces, but we treat as loopback for default safety
-	}
-	for _, tc := range cases {
-		if got := isLoopback(tc.listen); got != tc.want {
-			t.Errorf("isLoopback(%q): want %v, got %v", tc.listen, tc.want, got)
-		}
-	}
-}
-
-// TestValidateProfileClientEnvOnlyNamesTheMissingFile pins the v0.3.2
-// honesty fix: "client" is also the DEFAULT profile when nothing is
-// configured anywhere (Source=env-only).  In that state the
-// E_CONFIG_REQUIRED error must say that NO CONFIG FILE WAS FOUND — not
-// read as a forgotten endpoint for a deliberately chosen client profile
-// (the owner-reported personal-setup workflow failure).
-func TestValidateProfileClientEnvOnlyNamesTheMissingFile(t *testing.T) {
-	c := &Config{Profile: ProfileClient, Source: "env-only"}
-	err := ValidateProfile(c)
-	if err == nil || err.Code != CodeConfigRequired {
-		t.Fatalf("env-only client: expected E_CONFIG_REQUIRED, got %v", err)
-	}
-	if !strings.Contains(err.Error(), "no config file was found") {
-		t.Errorf("env-only error must name the missing config file, got: %v", err)
-	}
-	// An explicit client profile (a real config file was read) keeps the
-	// plain endpoint error — no misleading file-missing context.
-	explicit := &Config{Profile: ProfileClient, Source: "/explicit/config.yaml"}
-	err2 := ValidateProfile(explicit)
-	if err2 == nil || err2.Code != CodeConfigRequired {
-		t.Fatalf("explicit client: expected E_CONFIG_REQUIRED, got %v", err2)
-	}
-	if strings.Contains(err2.Error(), "no config file was found") {
-		t.Errorf("explicit-profile error must not claim no config was found: %v", err2)
-	}
-}
+// TestValidateProfileClientEnvOnlyNamesTheMissingFile was removed with
+// the client profile (v0.3.2 CLI-only architecture): the
+// zero-configuration default profile is personal now — pinned by
+// TestDefaultProfileIsPersonal (fix7_config_test.go).

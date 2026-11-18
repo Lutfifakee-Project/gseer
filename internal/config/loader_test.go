@@ -43,40 +43,34 @@ func loadWithFlags(t *testing.T, fixture string, flags Flags) (*Config, *Error) 
 	return Load(flags)
 }
 
-// TestPrecedenceFlagOverEnvOverFile verifies the full precedence chain:
-// a flag value beats an env value which beats a file value.
-func TestPrecedenceFlagOverEnvOverFile(t *testing.T) {
-	// File says: profile=self-hosted, listen=127.0.0.1:8443.
-	// Env says:  GSEER_LISTEN=127.0.0.1:7000  (overrides file).
-	// Flag says: --profile=client  (overrides env+file).
-	//
-	// But profile=client + listen would be a conflict... use a different shape:
-	//
-	// File: valid-selfhosted.yaml (profile=self-hosted, listen=127.0.0.1:8443)
-	// Env:  GSEER_LISTEN=127.0.0.1:7000 (overrides file listen)
-	// Flag: --server NOT used here; instead test env-over-file for listen.
-	t.Setenv("GSEER_LISTEN", "127.0.0.1:7000")
+// TestPrecedenceEnvOverFile verifies env beats file: the file's database
+// components are overridden by an explicit GSEER_DB_DSN.
+func TestPrecedenceEnvOverFile(t *testing.T) {
+	t.Setenv("GSEER_DB_DSN", "postgres://env-user@env-host:6543/env-db")
 	c, e := loadWithFlags(t, "valid-selfhosted.yaml", Flags{})
 	if e != nil {
 		t.Fatalf("expected success, got %v", e)
 	}
-	if c.Server.Listen != "127.0.0.1:7000" {
-		t.Errorf("env should override file: want 127.0.0.1:7000, got %q", c.Server.Listen)
+	if c.Database.DSN != "postgres://env-user@env-host:6543/env-db" {
+		t.Errorf("env should override file components: got %q", c.Database.DSN)
 	}
 }
 
 // TestPrecedenceFlagOverEnv verifies a flag beats an env var.
 func TestPrecedenceFlagOverEnv(t *testing.T) {
 	t.Setenv("GSEER_PROFILE", "self-hosted")
-	c, e := loadWithFlags(t, "", Flags{Profile: "client", Endpoint: "https://flag.example.com"})
+	// personal requires a database FILE path; the env provides it so the
+	// load succeeds and only the PROFILE precedence is under test.
+	t.Setenv("GSEER_DB_DSN", "/tmp/flag-over-env/gseer.db")
+	c, e := loadWithFlags(t, "", Flags{Profile: "personal"})
 	if e != nil {
 		t.Fatalf("expected success, got %v", e)
 	}
-	if c.Profile != ProfileClient {
-		t.Errorf("flag should override env: want client, got %q", c.Profile)
+	if c.Profile != ProfilePersonal {
+		t.Errorf("flag should override env: want personal, got %q", c.Profile)
 	}
-	if c.Client.Endpoint != "https://flag.example.com" {
-		t.Errorf("flag endpoint: got %q", c.Client.Endpoint)
+	if c.Database.DSN != "/tmp/flag-over-env/gseer.db" {
+		t.Errorf("DSN from env: want the env-provided file path, got %q", c.Database.DSN)
 	}
 }
 
@@ -109,13 +103,10 @@ func TestApplyDefaultsPopulatesPDValues(t *testing.T) {
 }
 
 // TestApplyDefaultsV001Specific verifies the v0.0.1-specific defaults
-// (listen, log, db components) are applied.
+// (log, db components) are applied for the self-hosted profile.
 func TestApplyDefaultsV001Specific(t *testing.T) {
 	c := &Config{Profile: ProfileSelfHosted, Database: DatabaseConfig{Host: "127.0.0.1"}}
 	applyDefaults(c)
-	if c.Server.Listen != DefaultListen {
-		t.Errorf("Listen: want %q, got %q", DefaultListen, c.Server.Listen)
-	}
 	if c.Log.Level != DefaultLogLevel {
 		t.Errorf("LogLevel: want %q, got %q", DefaultLogLevel, c.Log.Level)
 	}
@@ -124,16 +115,6 @@ func TestApplyDefaultsV001Specific(t *testing.T) {
 	}
 	if c.Database.Port != DefaultDBPort {
 		t.Errorf("DBPort: want %d, got %d", DefaultDBPort, c.Database.Port)
-	}
-}
-
-// TestApplyDefaultsClientProfileNoListen verifies the client profile
-// does NOT get a server.listen default (no local server).
-func TestApplyDefaultsClientProfileNoListen(t *testing.T) {
-	c := &Config{Profile: ProfileClient}
-	applyDefaults(c)
-	if c.Server.Listen != "" {
-		t.Errorf("client profile should not get a listen default; got %q", c.Server.Listen)
 	}
 }
 
@@ -165,31 +146,6 @@ func TestApplyDefaultsLockTimeoutWithExplicitDSN(t *testing.T) {
 	applyDefaults(c3)
 	if c3.Database.MigrationLockTimeoutMs != 60000 {
 		t.Errorf("operator value overridden: MigrationLockTimeoutMs = %d, want 60000", c3.Database.MigrationLockTimeoutMs)
-	}
-}
-
-// TestHashAndClearToken verifies token hashing: plaintext → hash, then
-// plaintext is cleared.
-func TestHashAndClearToken(t *testing.T) {
-	s := &ServerConfig{Token: "secret"}
-	hashAndClearToken(s)
-	if s.Token != "" {
-		t.Errorf("plaintext must be cleared; got %q", s.Token)
-	}
-	if s.TokenHash == "" {
-		t.Error("TokenHash must be set")
-	}
-	if s.TokenHash != HashToken("secret") {
-		t.Errorf("TokenHash must equal HashToken(plaintext)")
-	}
-}
-
-// TestHashAndClearTokenEmpty verifies an empty token leaves TokenHash empty.
-func TestHashAndClearTokenEmpty(t *testing.T) {
-	s := &ServerConfig{Token: ""}
-	hashAndClearToken(s)
-	if s.TokenHash != "" {
-		t.Errorf("empty token should produce empty hash; got %q", s.TokenHash)
 	}
 }
 

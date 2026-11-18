@@ -33,7 +33,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -164,12 +163,6 @@ func assertNoStagingLeft(t *testing.T, dirs ...string) {
 // weakening either.
 func assertCleanupReportedOrDone(t *testing.T, dir string, err error) {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		if err == nil || !strings.Contains(err.Error(), "restore-staging") {
-			t.Errorf("a wedged cleanup on windows must name the leftover staging artifacts explicitly, got: %v", err)
-		}
-		return
-	}
 	assertNoStagingLeft(t, dir)
 }
 
@@ -231,12 +224,10 @@ func TestRestoreSuccessAndSearchAfterRestore(t *testing.T) {
 		t.Errorf("recovery file missing: %v", serr)
 	}
 	// The restored file carries the restrictive permission policy.
-	if runtime.GOOS != "windows" {
-		if st, serr := os.Stat(live); serr != nil {
-			t.Errorf("stat live: %v", serr)
-		} else if perm := st.Mode().Perm(); perm != 0o600 {
-			t.Errorf("restored live mode = %04o, want 0600", perm)
-		}
+	if st, serr := os.Stat(live); serr != nil {
+		t.Errorf("stat live: %v", serr)
+	} else if perm := st.Mode().Perm(); perm != 0o600 {
+		t.Errorf("restored live mode = %04o, want 0600", perm)
 	}
 	assertNoStagingLeft(t, dir)
 }

@@ -25,31 +25,32 @@ import (
 // config.go — the Config struct hierarchy and supported profile types.
 //
 // The Config is the single in-memory representation produced by Load().
-// Every surface (CLI, REST API, dashboard) reads from the same Config
-// so that precedence and validation are applied once, at load time.
+// Every surface (the GSEER CLI) reads from the same Config so that
+// precedence and validation are applied once, at load time.
+//
+// v0.3.2 architecture decision (owner): CLI-ONLY product.  The client
+// (remote-endpoint) profile, the server.* settings (API + dashboard),
+// and the shared-index channel were removed — the profiles are
+// personal (embedded SQLite Local Index) and self-hosted (headless CLI
+// over PostgreSQL).
 
 // Profile is the deployment profile (SPEC-03 §5).
 type Profile string
 
 const (
-	// ProfileClient is the CLI-only profile: queries a remote endpoint,
-	// no PostgreSQL, no local server.
-	ProfileClient Profile = "client"
-	// ProfileSelfHosted runs the local API + dashboard backed by
-	// PostgreSQL.  Migrations run on setup --self-hosted and server start.
+	// ProfileSelfHosted runs the CLI engine headless over PostgreSQL.
+	// Migrations run on setup --self-hosted.
 	ProfileSelfHosted Profile = "self-hosted"
 	// ProfilePersonal runs the full engine against ONE embedded SQLite
 	// database file (checkpoint B): no PostgreSQL, no separate service.
 	// database.dsn holds the database FILE path (not a postgres URL);
-	// first-run provisioning is `gseer setup --personal`.
+	// first-run provisioning is `gseer setup` (personal by default).
 	ProfilePersonal Profile = "personal"
 )
 
 // Config is the validated, in-memory configuration.
 type Config struct {
 	Profile      Profile            `yaml:"profile"`
-	Client       ClientConfig       `yaml:"client"`
-	Server       ServerConfig       `yaml:"server"`
 	Database     DatabaseConfig     `yaml:"database"`
 	Policy       PolicyConfig       `yaml:"policy"`
 	Log          LogConfig          `yaml:"log"`
@@ -57,7 +58,7 @@ type Config struct {
 	Defaults     DefaultsConfig     `yaml:"defaults"`
 	Fingerprints FingerprintsConfig `yaml:"fingerprints"`
 	Update       UpdateConfig       `yaml:"update"`
-	Index        IndexConfig        `yaml:"index"`
+	Dataset      DatasetConfig      `yaml:"dataset"`
 
 	// Source is the file path the config was loaded from, or "env-only"
 	// when no file was present (defaults + env + flags only).  Set by
@@ -65,34 +66,35 @@ type Config struct {
 	Source string `yaml:"-"`
 }
 
-// ClientConfig holds the client-profile settings (SPEC-03 §5).
-type ClientConfig struct {
-	// Endpoint is the remote GSEER server URL (e.g. https://gseer.example).
-	// Required for the client profile; ignored for self-hosted.
-	Endpoint string `yaml:"endpoint"`
+// DatasetConfig points the CLI at the central internet-asset dataset
+// channel (v0.3.2 Rev 9 — the owner-mandated central distribution).
+//
+// The dataset is a VERSIONED, CHECKSUMMED export of validated passive
+// discovery evidence, produced by the project's scheduled GitHub Actions
+// pipeline (`.github/workflows/dataset.yml`) and published as release
+// artifacts.  `gseer setup` and `gseer dataset update` download the
+// manifest, verify the checksum, and import the payload into the Local
+// Index through the SAME ingestion path every other writer uses (same
+// suppression gate, same delivery-identity dedupe, provenance preserved).
+// Search stays LOCAL: the dataset only FEEDS the index — there is no
+// shared-index query service to depend on.
+//
+// Integrity model (deliberate, owner-reviewed Rev 8 decision): payload
+// SHA-256 in the manifest + HTTPS transport — no third-party signing
+// ceremony.  A checksum mismatch refuses the import outright.
+type DatasetConfig struct {
+	// ManifestURL is the dataset manifest location.  Empty means the
+	// official project channel (OfficialDatasetManifestURL).  Plain
+	// http:// is accepted ONLY for loopback hosts (local testing).
+	ManifestURL string `yaml:"manifest_url"`
 }
 
-// ServerConfig holds the self-hosted server settings.
-type ServerConfig struct {
-	// Listen is the bind address for the API + dashboard.  Loopback by
-	// default; non-loopback requires explicit operator action + auth.
-	Listen string `yaml:"listen"`
-	// Token is the plaintext API token from config/env.  After Load, it
-	// is hashed to TokenHash and this field is CLEARED so that no
-	// in-memory representation retains the plaintext beyond Load.
-	Token string `yaml:"token,omitempty"`
-	// TokenHash is the SHA-256 hex digest of Token, computed during Load.
-	// The API verifies incoming Bearer tokens against this hash.
-	TokenHash string `yaml:"-"`
-	// TrustedProxies lists the CIDRs (or bare IPs) of reverse proxies in
-	// front of the server whose X-Forwarded-For header may be honored
-	// for client-IP resolution (rate limiting, audit).  Empty (default)
-	// = the peer address is used directly and X-Forwarded-For is
-	// IGNORED — a client can never spoof its identity by setting the
-	// header.  Only name proxies you actually run (e.g. 127.0.0.1 for a
-	// local nginx).  Invalid entries are rejected at config load.
-	TrustedProxies []string `yaml:"trusted_proxies,omitempty"`
-}
+// OfficialDatasetManifestURL is the default central-dataset manifest
+// location: the rolling `central-dataset` GitHub release maintained by
+// the project's scheduled dataset pipeline.  That release is deliberately
+// kept NON-latest so the binary releases remain the headline "Latest"
+// release; the manifest inside it is replaced per dataset version.
+const OfficialDatasetManifestURL = "https://github.com/Lutfifakee-Project/gseer/releases/download/central-dataset/gseer-dataset-manifest.json"
 
 // DatabaseConfig holds the PostgreSQL connection settings (PD-8).
 type DatabaseConfig struct {
@@ -105,9 +107,7 @@ type DatabaseConfig struct {
 	// RuntimeDSN (v0.2.0 M-B) is the least-privilege RUNTIME credential
 	// — the `gseer_app` login role provisioned by the hardened
 	// deployment order (bootstrap → migrate → grants → audit).
-	// `gseer server start` REQUIRES it: the server never serves traffic
-	// under the operator credential (OD-5 fail-closed model).  CLI
-	// data-plane commands prefer it and say so explicitly when they
+	// CLI data-plane commands prefer it and say so explicitly when they
 	// fall back to the operator credential.
 	RuntimeDSN string `yaml:"runtime_dsn,omitempty"`
 	// Component fields (used when DSN is not set).
@@ -172,29 +172,6 @@ type UpdateConfig struct {
 	// proves nothing (docs/UPDATE.md).
 	ManifestURL string `yaml:"manifest_url"`
 }
-
-// IndexConfig points the CLI at the signed shared-index channel
-// (v0.3.2 — the approved shared-index architecture).  The shared index
-// is a versioned, signed SQLite snapshot published by the project's
-// scheduled pipeline; `gseer setup` (default) and `gseer index update`
-// download, verify, and import it into the personal store.
-type IndexConfig struct {
-	// ManifestURL is the signed index manifest location.  Empty means
-	// the official project channel (OfficialIndexManifestURL).  The
-	// manifest MUST carry an Ed25519 signature that verifies against
-	// the index trust key embedded in the binary — the URL alone
-	// proves nothing (docs/SHARED-INDEX.md, mirroring docs/UPDATE.md).
-	// Plain http:// is accepted ONLY for loopback hosts (local testing).
-	ManifestURL string `yaml:"manifest_url"`
-}
-
-// OfficialIndexManifestURL is the default signed shared-index manifest
-// location: the rolling `shared-index` GitHub release maintained by the
-// project's scheduled index pipeline.  That release is deliberately
-// kept NON-latest (gh release create --latest=false) so the binary
-// releases remain the headline "Latest" release; the pointer URL is
-// stable while the manifest inside it is re-signed per sequence.
-const OfficialIndexManifestURL = "https://github.com/Lutfifakee-Project/gseer/releases/download/shared-index/gseer-index-manifest.json"
 
 // SourceConfig is a registered data source (config-only in v0.0.1;
 // never collected).  The collection framework lands in v0.0.2.

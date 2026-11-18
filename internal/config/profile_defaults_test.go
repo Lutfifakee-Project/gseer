@@ -25,23 +25,17 @@ import (
 // profile-dependent defaults must be applied based on the FINAL resolved
 // profile (after env + flags), not the YAML/env profile.
 //
-// The 5 scenarios the owner specified:
-//
-//  1. YAML self-hosted → CLI client.
-//  2. YAML client → CLI self-hosted.
-//  3. Environment self-hosted → CLI client.
-//  4. Environment client → CLI self-hosted.
-//  5. No YAML + profile selected by CLI.
-//
 // The corrected Load order (loader.go) applies defaults AFTER env + flags,
-// so the final resolved profile drives the defaults.
+// so the final resolved profile drives the defaults.  v0.3.2 CLI-only
+// architecture: the client-profile scenarios are gone — the two profiles
+// are personal (SQLite Local Index) and self-hosted (PostgreSQL).
 
 // helper: load a fixture with a clean env and the given flags.
 func loadForProfileTest(t *testing.T, fixture string, flags Flags) (*Config, *Error) {
 	t.Helper()
 	// Clear profile-related env vars so they don't interfere.
 	for _, k := range []string{
-		"GSEER_PROFILE", "GSEER_CLIENT_ENDPOINT", "GSEER_DB_HOST",
+		"GSEER_PROFILE", "GSEER_DB_HOST",
 		"GSEER_DB_PORT", "GSEER_DB_USER", "GSEER_DB_PASSWORD", "GSEER_DB_NAME",
 		"GSEER_DB_DSN", "GSEER_DB_SSLMODE", "GSEER_CONFIG",
 	} {
@@ -55,102 +49,84 @@ func loadForProfileTest(t *testing.T, fixture string, flags Flags) (*Config, *Er
 	return Load(flags)
 }
 
-// Scenario 1a: YAML self-hosted (no DB fields) → CLI client.
-// The final profile is client; DB defaults must NOT be applied.
-// No profile conflict because the YAML didn't set any DB fields.
-func TestProfileDefaults_Scenario1a_YAMLSelfHostedToCLIClient(t *testing.T) {
-	c, e := loadForProfileTest(t, "selfhosted-no-db.yaml", Flags{Profile: "client", Endpoint: "https://x"})
+// Scenario 1: YAML self-hosted (no DB fields) → CLI personal.
+// The final profile is personal; PostgreSQL DB defaults must NOT be
+// applied (personal stores a FILE path, not components).
+func TestProfileDefaults_Scenario1_YAMLSelfHostedToCLIPersonal(t *testing.T) {
+	// personal-minimal.yaml carries the database FILE path, so only the
+	// profile-dependent DEFAULTS are under test.
+	c, e := loadForProfileTest(t, "personal-minimal.yaml", Flags{Profile: "personal"})
 	if e != nil {
 		t.Fatalf("expected success, got %v", e)
 	}
-	if c.Profile != ProfileClient {
-		t.Errorf("Profile: want client, got %q", c.Profile)
+	if c.Profile != ProfilePersonal {
+		t.Errorf("Profile: want personal, got %q", c.Profile)
 	}
-	// DB defaults must NOT be applied (final profile is client).
 	if c.Database.Host != "" {
-		t.Errorf("Database.Host should be empty (client profile, no DB defaults); got %q", c.Database.Host)
+		t.Errorf("Database.Host should be empty (personal profile, no DB defaults); got %q", c.Database.Host)
 	}
 	if c.Database.Port != 0 {
-		t.Errorf("Database.Port should be 0 (client profile); got %d", c.Database.Port)
+		t.Errorf("Database.Port should be 0 (personal profile); got %d", c.Database.Port)
 	}
 }
 
-// Scenario 1b: YAML self-hosted WITH DB fields → CLI client.
-// The final profile is client, but the YAML explicitly set database.* —
-// this is a profile conflict (operator set DB fields for self-hosted but
-// asked for client mode).  Must be rejected with E_CONFIG_PROFILE_CONFLICT.
-// The Endpoint flag is set so the client.endpoint-required check passes
-// and the database.* conflict check fires.
-func TestProfileDefaults_Scenario1b_YAMLSelfHostedWithDBToCLIClient(t *testing.T) {
-	_, e := loadForProfileTest(t, "valid-selfhosted.yaml", Flags{Profile: "client", Endpoint: "https://x"})
-	if e == nil {
-		t.Fatal("expected E_CONFIG_PROFILE_CONFLICT, got nil")
-	}
-	if e.Code != CodeConfigProfileConflict {
-		t.Errorf("Code: want %q, got %q", CodeConfigProfileConflict, e.Code)
-	}
-}
-
-// Scenario 2: YAML client → CLI self-hosted.
+// Scenario 2: YAML personal → CLI self-hosted.
 // The final profile is self-hosted; DB defaults MUST be applied.
-func TestProfileDefaults_Scenario2_YAMLClientToCLISelfHosted(t *testing.T) {
-	c, e := loadForProfileTest(t, "client-minimal.yaml", Flags{Profile: "self-hosted"})
+func TestProfileDefaults_Scenario2_YAMLPersonalToCLISelfHosted(t *testing.T) {
+	c, e := loadForProfileTest(t, "", Flags{Profile: "self-hosted"})
 	if e != nil {
 		t.Fatalf("expected success, got %v", e)
 	}
 	if c.Profile != ProfileSelfHosted {
 		t.Errorf("Profile: want self-hosted, got %q", c.Profile)
 	}
-	// DB defaults MUST be applied (final profile is self-hosted, no DSN set).
 	if c.Database.Host != DefaultDBHost {
 		t.Errorf("Database.Host: want %q (default applied for self-hosted), got %q", DefaultDBHost, c.Database.Host)
 	}
 	if c.Database.Port != DefaultDBPort {
 		t.Errorf("Database.Port: want %d, got %d", DefaultDBPort, c.Database.Port)
 	}
-	if c.Server.Listen != DefaultListen {
-		t.Errorf("Server.Listen: want %q, got %q", DefaultListen, c.Server.Listen)
-	}
 }
 
-// Scenario 3: Environment self-hosted → CLI client.
-// Env sets GSEER_PROFILE=self-hosted; CLI sets --profile=client.
-// Final profile is client; DB defaults must NOT be applied.
-func TestProfileDefaults_Scenario3_EnvSelfHostedToCLIClient(t *testing.T) {
-	// Start with a clean env, then set GSEER_PROFILE=self-hosted.
+// Scenario 3: Environment self-hosted → CLI personal.
+// Env sets GSEER_PROFILE=self-hosted; CLI sets --profile=personal.
+// Final profile is personal; DB defaults must NOT be applied.
+func TestProfileDefaults_Scenario3_EnvSelfHostedToCLIPersonal(t *testing.T) {
 	for _, k := range []string{
-		"GSEER_PROFILE", "GSEER_CLIENT_ENDPOINT", "GSEER_DB_HOST",
+		"GSEER_PROFILE", "GSEER_DB_HOST",
 		"GSEER_DB_PORT", "GSEER_DB_USER", "GSEER_DB_PASSWORD", "GSEER_DB_NAME",
 		"GSEER_DB_DSN", "GSEER_DB_SSLMODE", "GSEER_CONFIG",
 	} {
 		t.Setenv(k, "")
 	}
 	t.Setenv("GSEER_PROFILE", "self-hosted")
-	// No fixture (env-only); CLI overrides to client.
-	c, e := Load(Flags{Profile: "client", Endpoint: "https://x"})
+	// personal requires a database FILE path; provide it so only the
+	// profile precedence is under test.
+	t.Setenv("GSEER_DB_DSN", "/tmp/profile-scenario3/gseer.db")
+	c, e := Load(Flags{Profile: "personal"})
 	if e != nil {
 		t.Fatalf("expected success, got %v", e)
 	}
-	if c.Profile != ProfileClient {
-		t.Errorf("Profile: want client (CLI overrides env), got %q", c.Profile)
+	if c.Profile != ProfilePersonal {
+		t.Errorf("Profile: want personal (CLI overrides env), got %q", c.Profile)
 	}
 	if c.Database.Host != "" {
-		t.Errorf("Database.Host should be empty (client profile); got %q", c.Database.Host)
+		t.Errorf("Database.Host should be empty (personal profile); got %q", c.Database.Host)
 	}
 }
 
-// Scenario 4: Environment client → CLI self-hosted.
-// Env sets GSEER_PROFILE=client; CLI sets --profile=self-hosted.
+// Scenario 4: Environment personal → CLI self-hosted.
+// Env sets GSEER_PROFILE=personal; CLI sets --profile=self-hosted.
 // Final profile is self-hosted; DB defaults MUST be applied.
-func TestProfileDefaults_Scenario4_EnvClientToCLISelfHosted(t *testing.T) {
+func TestProfileDefaults_Scenario4_EnvPersonalToCLISelfHosted(t *testing.T) {
 	for _, k := range []string{
-		"GSEER_PROFILE", "GSEER_CLIENT_ENDPOINT", "GSEER_DB_HOST",
+		"GSEER_PROFILE", "GSEER_DB_HOST",
 		"GSEER_DB_PORT", "GSEER_DB_USER", "GSEER_DB_PASSWORD", "GSEER_DB_NAME",
 		"GSEER_DB_DSN", "GSEER_DB_SSLMODE", "GSEER_CONFIG",
 	} {
 		t.Setenv(k, "")
 	}
-	t.Setenv("GSEER_PROFILE", "client")
+	t.Setenv("GSEER_PROFILE", "personal")
 	c, e := Load(Flags{Profile: "self-hosted"})
 	if e != nil {
 		t.Fatalf("expected success, got %v", e)
@@ -179,20 +155,5 @@ func TestProfileDefaults_Scenario5_NoYAMLProfileByCLI(t *testing.T) {
 	}
 	if c.Database.Host != DefaultDBHost {
 		t.Errorf("Database.Host: want %q, got %q", DefaultDBHost, c.Database.Host)
-	}
-}
-
-// Scenario 5b: No YAML + profile=client by CLI.
-// No config file, no env; CLI sets --profile=client with --server.
-func TestProfileDefaults_Scenario5b_NoYAMLClientByCLI(t *testing.T) {
-	c, e := loadForProfileTest(t, "", Flags{Profile: "client", Endpoint: "https://x"})
-	if e != nil {
-		t.Fatalf("expected success, got %v", e)
-	}
-	if c.Profile != ProfileClient {
-		t.Errorf("Profile: want client, got %q", c.Profile)
-	}
-	if c.Database.Host != "" {
-		t.Errorf("Database.Host should be empty (client); got %q", c.Database.Host)
 	}
 }

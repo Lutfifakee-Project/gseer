@@ -273,15 +273,21 @@ func (p *dnsPass) batch(resolver string, seedCount int) (*Batch, error) {
 }
 
 // seeds resolves the seed list: config mode uses the configured names,
-// index mode reads identifiers already in the operator's index.
+// index mode reads identifiers already in the operator's index.  Mode
+// "none" means the connector is seed-free (e.g. `ctlog`) and needs no
+// identifiers at all — seed-driven connectors yield an empty, zero-work
+// batch instead of an error, so a misconfigured registration is visible
+// in the run stats rather than fatal.
 func seeds(ctx Ctx, indexKind string) ([]string, error) {
 	switch ctx.Config.SeedMode {
 	case "", "config":
 		return ctx.Config.Seeds, nil
 	case "index":
 		return ctx.IndexSeeds(indexKind, ctx.Limit)
+	case "none":
+		return nil, nil
 	default:
-		return nil, Fatal(fmt.Errorf("dns: unknown seed_mode %q (want \"config\" or \"index\")", ctx.Config.SeedMode))
+		return nil, Fatal(fmt.Errorf("dns: unknown seed_mode %q (want \"config\", \"index\" or \"none\")", ctx.Config.SeedMode))
 	}
 }
 

@@ -286,8 +286,10 @@ func TestDoctorPersonalChecks(t *testing.T) {
 
 // TestOpenSourceStoreProfileGates pins the profile gates: since v0.3.0
 // personal mode SERVES the registry (the embedded SQLite file is the
-// collection registry), so `source list` succeeds there — while the
-// client profile is still refused as client-only.
+// collection registry), so `source list` succeeds there — while an
+// INVALID profile is rejected by config validation before any registry
+// opens (v0.3.2 CLI-only architecture: the client profile is gone, the
+// valid profiles are personal and self-hosted).
 func TestOpenSourceStoreProfileGates(t *testing.T) {
 	oldProfile := flags.profile
 	t.Cleanup(func() { flags.profile = oldProfile })
@@ -310,11 +312,11 @@ func TestOpenSourceStoreProfileGates(t *testing.T) {
 		}
 	})
 
-	t.Run("client profile refuses as client-only", func(t *testing.T) {
+	t.Run("invalid profile is rejected before the registry opens", func(t *testing.T) {
 		cfgPath := filepath.Join(t.TempDir(), "config.yaml")
-		content := "profile: client\nclient:\n  endpoint: https://gseer.example.invalid\n"
+		content := "profile: hybrid\n"
 		if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
-			t.Fatalf("write client config: %v", err)
+			t.Fatalf("write config: %v", err)
 		}
 		withConfigPath(t, cfgPath)
 		src, _, err := RootCmd.Find([]string{"source", "list"})
@@ -322,8 +324,8 @@ func TestOpenSourceStoreProfileGates(t *testing.T) {
 			t.Fatalf("source list not registered: %v", err)
 		}
 		err = src.RunE(src, nil)
-		if err == nil || !strings.Contains(err.Error(), "E_CLIENT_ONLY") {
-			t.Errorf("want E_CLIENT_ONLY, got: %v", err)
+		if err == nil || !strings.Contains(err.Error(), "E_CONFIG") {
+			t.Errorf("want E_CONFIG for an invalid profile, got: %v", err)
 		}
 	})
 }

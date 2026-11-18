@@ -148,34 +148,26 @@ func validateValues(c *Config) *Error {
 				"database.migration_lock_timeout_ms must be between 1000 and 300000 milliseconds")
 		}
 	}
-	// Server listen address basic shape (host:port).  Detailed
-	// reachability is the doctor's job (M3/M11).
-	if c.Server.Listen != "" {
-		if !strings.Contains(c.Server.Listen, ":") {
-			return errInvalidValue("server.listen", c.Server.Listen,
-				"server.listen must be host:port (e.g. 127.0.0.1:8443)")
-		}
-	}
-	// Index manifest URL shape (v0.3.2 shared index): https always;
-	// plain http ONLY for loopback hosts (local testing).  The trust
-	// still comes from the Ed25519 signature, not the URL — this check
-	// only refuses plaintext transport to non-local endpoints.
-	if c.Index.ManifestURL != "" {
-		u, uerr := url.Parse(c.Index.ManifestURL)
+	// Dataset manifest URL shape (Rev 9 central dataset): https always;
+	// plain http ONLY for loopback hosts (local testing).  Integrity comes
+	// from the payload SHA-256 in the manifest — this check only refuses
+	// plaintext transport to non-local endpoints.
+	if c.Dataset.ManifestURL != "" {
+		u, uerr := url.Parse(c.Dataset.ManifestURL)
 		if uerr != nil || u.Scheme == "" || u.Host == "" {
-			return errInvalidValue("index.manifest_url", c.Index.ManifestURL,
-				"index.manifest_url must be an absolute https URL (or http:// on a loopback host for local testing)")
+			return errInvalidValue("dataset.manifest_url", c.Dataset.ManifestURL,
+				"dataset.manifest_url must be an absolute https URL (or http:// on a loopback host for local testing)")
 		}
 		if u.Scheme != "https" && (u.Scheme != "http" || !isLoopbackHost(u.Hostname())) {
-			return errInvalidValue("index.manifest_url", c.Index.ManifestURL,
-				"index.manifest_url must use https; plain http is accepted only for loopback hosts")
+			return errInvalidValue("dataset.manifest_url", c.Dataset.ManifestURL,
+				"dataset.manifest_url must use https; plain http is accepted only for loopback hosts")
 		}
 	}
 	return nil
 }
 
 // isLoopbackHost reports whether the host is a loopback address or the
-// literal name "localhost" (the local-testing exception for the index
+// literal name "localhost" (the local-testing exception for the dataset
 // manifest URL's transport check).
 func isLoopbackHost(host string) bool {
 	if host == "localhost" {
@@ -193,14 +185,11 @@ func isLoopbackHost(host string) bool {
 // reason).
 //
 // Database defaults are applied ONLY for the self-hosted profile — the
-// client profile does not use PostgreSQL, and setting database defaults
-// there would trigger a profile-conflict validation error.
+// personal profile stores its database FILE path explicitly (defaulting
+// components there would produce a postgres DSN and a profile conflict).
 func applyDefaults(c *Config) {
 	if c.Profile == "" {
-		c.Profile = ProfileClient // safest default: no PostgreSQL needed
-	}
-	if c.Server.Listen == "" && c.Profile == ProfileSelfHosted {
-		c.Server.Listen = DefaultListen
+		c.Profile = ProfilePersonal // the zero-configuration product default
 	}
 	if c.Log.Level == "" {
 		c.Log.Level = DefaultLogLevel

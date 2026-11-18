@@ -1,19 +1,19 @@
-# GSEER — Quickstart (v0.3.1)
+# GSEER — Quickstart (v0.3.2, Linux-only / CLI-only)
 
 > Canonical fresh-install workflow.  Every command below was executed
 > against the real binary during the release-readiness rounds.  The
-> OFFICIAL product path is the CLI only (INSTALL → SETUP → USE →
-> SEARCH):
+> OFFICIAL product path is the CLI only (INSTALL → SETUP → SEARCH):
 >
 > - **Path A — personal mode (default, zero-config):** one embedded
->   SQLite file; no database server, no Docker, no account.  `gseer
->   setup` provisions it AND fetches the official signed shared index —
->   the autonomous GitHub Shared Index is the official data source.
+>   SQLite file; no database server, no Docker, no account, no hosted
+>   service.  `gseer setup` provisions it AND bootstraps local passive
+>   discovery from your own egress context — real internet assets land
+>   in your Local Index.
 > - **Path B — developer self-hosting internals (PostgreSQL 16+):** a
 >   maintained internal capability (hardened deployment order, credential
 >   model in `docs/DEPLOYMENT.md`) — NOT an official product
 >   installation or usage path, and never required for the CLI
->   product (INSTALL → SETUP → USE).
+>   product.  Headless: GSEER ships no API server, dashboard, or website.
 
 ## Path A — personal mode (zero-config)
 
@@ -23,34 +23,43 @@ Install once, then run:
 > `gseer source add …` — initializes personal mode the same way when no
 > configuration exists yet.  Nothing to provision by hand.
 
-> **The fastest path to real data (v0.3.2):** `gseer setup` provisions
-> personal mode AND downloads the official signed shared index — after
-> it, search returns real indexed internet assets.  Trust chain and
-> freshness: `docs/SHARED-INDEX.md`.
+> **The path to real data (v0.3.2 Rev 9):** `gseer setup` provisions
+> personal mode AND imports the CENTRAL DATASET — a versioned, checksummed
+> export of validated passive discovery evidence published by the
+> project's scheduled pipeline (`docs/DATASET.md`).  On top of that it
+> bootstraps local passive discovery from your egress context.  The
+> import is atomic (snapshot → verify → rollback/recovery) and a dead
+> channel degrades honestly.  Refresh any time: `gseer dataset update`.
 
 ```bash
 go install github.com/Lutfifakee-Project/gseer/cmd/gseer@latest
 gseer setup
-#   Fresh install — configuring PERSONAL MODE + the official SHARED INDEX.
+#   Fresh install — configuring PERSONAL MODE + local discovery bootstrap.
 #   [ ok  ] personal database: ~/.gseer/gseer.db      (one SQLite file, 0600)
-#   [ ok  ] shared index: verified + installed sequence 12 (built …, schema v5)
-#   [ ok  ] imported: 183 assets inserted, … observations
-gseer search 'nginx'                # bare keyword over the shared index
-gseer search 'country=="ID" && port=="443"'
-gseer index status                  # how fresh is the index?
-gseer index update                  # fetch → verify → install → import (idempotent)
-gseer doctor
+#   [ ok  ] context: egress 203.0.113.7 (PTR "host.example.net" → domain example.net)
+#   [ ok  ] collect bootstrap-ptr: 4 facts ingested, 0 deduped, 0 suppressed
+#   [ ok  ] collect bootstrap-dns: 11 facts ingested, …
+#   [ ok  ] collect bootstrap-asn: 1 facts ingested, …
+#   [ ok  ] scope 1: domain_suffix example.net, tls/443, max 1 handshake per run (audited; revoke: gseer scope revoke 1)
+#   [ ok  ] tls www.example.net:443 — tls=TLSv1.3 cipher=TLS_AES_… (ingested=1 deduped=0 provenance=scan-tls)
+gseer search 'port=443'             # real observed evidence from YOUR Local Index
+gseer search 'nginx'                # bare keyword over the local index
+gseer status                        # discovery + dataset freshness
+gseer dataset status                # installed dataset version + evidence window
+gseer dataset update                # refresh the dataset WITHOUT a re-setup
+gseer doctor                        # full PASS/FAIL with the discovery freshness line
+gseer collect run --all             # refresh the passive evidence any time (explicit)
 
-# Offline / local-only alternative — provision WITHOUT any network call:
+# Offline / minimal alternative — provision WITHOUT any network call:
 gseer setup --personal
 gseer doctor
-#   4 PASS, 0 FAIL — index reported EMPTY (that is honest)
+#   index reported EMPTY (that is honest)
 
 # Evaluation data (labeled SYNTHETIC everywhere; QS-6 consent gate):
 gseer setup --load-fixtures
 gseer search 'port==443 && title CONTAINS "login"'
 
-# Real data — your own collection (nothing runs uninvoked):
+# Real data — your own collection beyond the bootstrap (nothing runs uninvoked):
 gseer source add my-dns --type dns --seed-mode config \
     --seeds example.net,example.org --enable --yes
 gseer collect run --source my-dns
@@ -65,8 +74,26 @@ gseer db restore backup.db
 ```
 
 That is the whole personal workflow: the binary, one SQLite file, and
-your collection.  The same `source`/`collect`/`suppress`/`export`
+your discovery.  The same `source`/`collect`/`suppress`/`export`
 surface as self-hosted works against the single file.
+
+### What the bootstrap does (and does not do)
+
+1. **Context** — the public egress IP is read from a public HTTPS echo
+   (provenance recorded; offline ⇒ an honest `[skip]`, nothing guessed),
+   reverse-DNS names it, and the registrable domain is derived via the
+   public-suffix list.
+2. **Passive collect** — `bootstrap-ptr`, `bootstrap-dns`, and
+   `bootstrap-asn` sources are registered (revoke any time with
+   `gseer source disable`/registry edit) and one bounded pass runs
+   through the SAME runner/ingest path every other writer uses.
+   Passive facts are ASSET-level: no port, banner, or title is ever
+   invented from them (the honesty contract in `internal/collect/doc.go`).
+3. **Bounded observation** — at most 3 TLS `:443` handshakes against
+   hostnames of the derived domain, under an auto-created scope
+   (`domain_suffix`, `tls/443`, 1 request per run).  Every decision is
+   audited (`gseer scope audit`); revoke with `gseer scope revoke <id>`.
+   This is where `port=443` evidence comes from — search NEVER probes.
 
 ### What `db restore` actually guarantees
 
@@ -83,9 +110,7 @@ marketed as "atomic".  What it does, in order:
    `.restore-old` from an earlier restore is never deleted: it is
    archived to a timestamped name and the move is printed.
 3. **Renames the staged copy onto the live path** (same-directory
-   rename: atomic per step on Linux/macOS; on Windows the replacement
-   uses `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING` and
-   `MOVEFILE_WRITE_THROUGH`).  For the brief moment between the two
+   rename: atomic per step).  For the brief moment between the two
    renames the live path does not exist — a crash there loses nothing,
    because the previous database is intact at `gseer.db.restore-old`.
 
@@ -102,13 +127,9 @@ mv ~/.gseer/gseer.db.restore-old ~/.gseer/gseer.db
 ```
 
 Platform notes: restore while no other GSEER process is using the
-database.  On Linux/macOS a concurrently running GSEER keeps working
-through the swap (its handles follow the old file); on Windows an open
-database or WAL sidecar makes the rename fail and the restore aborts
-cleanly with everything back in place.  Windows has no POSIX mode
-bits — the restored file's ACL follows the parent directory (which
-`setup --personal` created as a private directory); on Linux/macOS the
-restored database is always `0600`.
+database.  A concurrently running GSEER keeps working through the swap
+(its handles follow the old file).  The restored database is always
+`0600`.
 
 ### Where collection targets come from — `seed-mode` and `seed-kind`
 
@@ -133,7 +154,8 @@ gseer source add my-asn --type ip2asn --seed-mode index --seed-kind ip --enable 
 
 > Historical engineering capability, retained and tested internally; the
 > official product is the CLI in Path A.  Nothing below is required to
-> INSTALL → SETUP → USE → SEARCH GSEER.
+> INSTALL → SETUP → SEARCH GSEER.  Headless: no API server, no
+> dashboard — the CLI talks to PostgreSQL directly.
 
 ## 0. Prerequisites
 
@@ -142,7 +164,7 @@ gseer source add my-asn --type ip2asn --seed-mode index --seed-kind ip --enable 
 | Go | 1.26+ (only for building from source — `go.mod` requires 1.26) |
 | PostgreSQL | **16+ (OD-7, enforced by `gseer setup` and `gseer doctor`); verified end-to-end on 16.15 and 17.2** |
 | Docker + Compose | easiest way to run PostgreSQL (`postgres:17-alpine` template) — or use any PostgreSQL 16+ you already run |
-| OS | Linux / macOS / Windows |
+| OS | Linux (AMD64 required; ARM64 best-effort) |
 
 No global dataset, no hosted service: a fresh install has an **empty**
 index and searches exactly what you collect into it.
@@ -152,9 +174,9 @@ index and searches exactly what you collect into it.
 ```bash
 git clone https://github.com/Lutfifakee-Project/gseer.git
 cd gseer
-make build VERSION=v0.3.1
+make build VERSION=v0.3.2
 ./bin/gseer version
-#   gseer v0.3.1
+#   gseer v0.3.2
 # (optional: sudo cp bin/gseer /usr/local/bin/ so `gseer` is on PATH)
 ```
 
@@ -209,24 +231,20 @@ export GSEER_DB_RUNTIME_DSN='postgres://gseer_app:<password>@127.0.0.1:5432/gsee
 The **operator credential** (`GSEER_DB_DSN`) runs setup/migrations and
 operator-side diagnostics.  The **runtime credential**
 (`GSEER_DB_RUNTIME_DSN`, role `gseer_app`) is the least-privilege
-identity the server and the data-plane commands use.  `gseer server
-start` refuses to run under the operator credential — that is the
-OD-5 contract, and there is no bypass.  Lost the runtime password?
+identity the data-plane commands use.  Lost the runtime password?
 `gseer setup --self-hosted --reset-runtime-password` rotates it and
 prints a new DSN.
 
-Without `GSEER_PROFILE`/`GSEER_DB_DSN` the CLI defaults to the
-`client` profile and fails with
-`E_CONFIG_REQUIRED: required field "client.endpoint" is missing …`
-(exit 3) — that error is the config layer telling you the profile is
-still `client`, not a broken install.
+Without `GSEER_PROFILE`/`GSEER_DB_DSN` the CLI resolves the
+zero-configuration default (personal); for self-hosted work export the
+variables above or pass `--profile self-hosted`.
 
 ## 5. Initial doctor checks
 
 ```bash
 gseer doctor
 #   [ PASS ] config validity: loaded env-only (profile=self-hosted)
-#   [ PASS ] binary: version v0.3.1, …, sha256=…
+#   [ PASS ] binary: version v0.3.2, …, sha256=…
 #   [ PASS ] DB reachable: postgres://127.0.0.1:5432/gseer?sslmode=disable
 #   [ PASS ] PG version: PostgreSQL 17 (minimum 16)
 #   [ PASS ] migrations: at head v17
@@ -240,10 +258,7 @@ gseer doctor
 The EMPTY index is a **HINT**, not a failure — doctor never dresses an
 empty index up as healthy.  Doctor is read-only: it never migrates and
 never repairs.  Without the runtime credential the audit line is an
-honest `HINT` (provision with `gseer setup --self-hosted`); in the
-`client` profile the DB checks are skipped with an explicit
-`[ -    ] DB checks: skipped (client profile has no local database)`
-line instead of a fake result.
+honest `HINT` (provision with `gseer setup --self-hosted`).
 
 Optional evaluation data (labeled SYNTHETIC everywhere; QS-6 consent
 gate — set `GSEER_POLICY_EVALUATION_FIXTURES=true` or answer `y`):
@@ -284,9 +299,10 @@ gseer collect redrive --all           # operator's explicit second chance
 ```
 
 Passive facts are asset-level and carry provenance on every
-observation (and now on the asset row itself — the `sources` facet
+observation (and on the asset row itself — the `sources` facet
 reflects collector data); discovery never invents ports, banners, or
-HTTP titles.
+HTTP titles.  Port/HTTP facts require explicit observation (`gseer
+scan`) under a live scope.
 
 ## 8. GQL search
 
@@ -324,88 +340,49 @@ gseer host 203.0.113.10
 #     sources: my-dns
 #     first_seen: … · last_seen: … · stale: false
 #   SERVICES (3)
-#     22/tcp ssh · OpenSSH 9.6
-#     80/tcp http · http 301 "Redirecting"
-#     443/tcp https · http 200 "Admin Login" · tls TLSv1.3
+#     443/tcp https · tls TLSv1.3 (observed under scope 1)
 #   OBSERVATIONS: 3 total · last observed …
 gseer host portal.example.net -o json   # machine-readable full report
 ```
 
 `gseer host` matches the identifier against asset value, ip, hostname,
-and domain.  It is strictly read-only (SELECT-only in the runtime grant
-matrix) and self-hosted; the planned `gseer scan`/`gseer asset`
-commands do not exist (they exit 64 — see `docs/ROADMAP.md`).
+and domain.  It is strictly read-only and works on both profiles (the
+personal path reads the embedded SQLite store; self-hosted reads
+PostgreSQL).
 
-## 10. Server startup (hardened: audit before bind)
+## 10. Authorized observation — `gseer scan`
 
-```bash
-gseer server start
-#   Running the fail-closed privilege audit (OD-5) ...
-#   [audt] … audit notices …
-#   [ ok  ] privilege audit: PASSED — binding permitted (fail-closed gate, OD-5)
-#   GSEER server listening on http://127.0.0.1:8443
-#     Auth:       disabled (loopback bind only — set server.token for remote access)
-#     Index:      SYNTHETIC EVALUATION DATA (fixture corpus; not real observations)
-#   Ready. Press Ctrl-C to stop.
-```
-
-What the gate enforces before the port binds:
-
-1. the runtime credential is configured (`E_RUNTIME_CREDENTIAL_REQUIRED`,
-   exit 3, otherwise) and **is** `gseer_app`
-   (`E_RUNTIME_CREDENTIAL_MISMATCH`, exit 5, for anything else);
-2. the fail-closed effective-privilege audit **passes under gseer_app
-   itself** — any missing grant, unsafe role attribute, or escalation
-   path in the membership closure refuses startup with the complete
-   failure list (exit 5).  There is no bypass, flag, or override.
-
-A non-loopback bind is additionally refused without an API token
-(`E_CONFIG_INSECURE`, exit 3).  Migrations are operator work
-(`gseer setup --self-hosted`); the runtime credential is deliberately
-denied the migration ledger and can never run them.
-
-## 11. Health verification
+When you need HTTP/TLS facts for a target you own or control, register
+a scope and observe explicitly (default-deny gateway; every decision
+audited):
 
 ```bash
-gseer server status
-#   Server: RUNNING (pid NNNN) on http://127.0.0.1:8443 — health OK
-curl -s http://127.0.0.1:8443/api/v1/health
-#   {"data":{"status":"ok"}, …}
-curl -s http://127.0.0.1:8443/api/v1/version
-curl -s 'http://127.0.0.1:8443/api/v1/search?q=port%3D%3D443'
+gseer scope add cidr 127.0.0.1/32 --protocols http,tls --ports 8080,8443 --note "my dev server"
+gseer scan http --target localhost --port 8080
+gseer scan tls  --target localhost --port 8443
+gseer scope audit                     # every allow AND deny, on the record
 ```
 
-If the server was started with `GSEER_TOKEN` set, every `/api/v1`
-request needs `Authorization: Bearer $GSEER_TOKEN` — the client
-profile CLI cannot present that header, so use `curl` (or query from
-inside the compose network, `docs/DOCKER.md`).
-
-## 12. Shutdown
-
-```bash
-gseer server stop            # verifies process identity, then SIGTERM
-#   Server stopped (pid NNNN).
-# (a foreground `server start` stops with Ctrl-C)
-docker compose stop db       # stop PostgreSQL;  docker compose start db
-```
+Search never triggers scanning; `scan` never runs without a live scope.
 
 ## Troubleshooting quick picks
 
 | Symptom | Meaning / fix |
 | --- | --- |
-| `E_RUNTIME_CREDENTIAL_REQUIRED` on `server start` | No runtime credential configured. Run `gseer setup --self-hosted` (prints `GSEER_DB_RUNTIME_DSN` once) and export it. |
-| `E_RUNTIME_CREDENTIAL_MISMATCH` (exit 5) | `database.runtime_dsn` points at something that is not `gseer_app` (e.g. the operator credential). Point it at the gseer_app DSN — the server never serves traffic under another identity. |
+| `E_RUNTIME_CREDENTIAL_REQUIRED` in doctor | No runtime credential configured. Run `gseer setup --self-hosted` (prints `GSEER_DB_RUNTIME_DSN` once) and export it. |
 | `E_PRIVILEGE_AUDIT_FAILED` (exit 5) | The fail-closed audit found real deployment problems (missing grants, unsafe roles, escalation paths). Fix the deployment per `docs/DEPLOYMENT.md` §3.5 — never grant `gseer_app` more privileges to "make it pass". |
-| `E_CLIENT_ONLY` from `host`/`server`/`export` | Your shell is still in the `client` profile — export `GSEER_PROFILE=self-hosted` (+ DSNs), or pass `--profile self-hosted`. |
 | `E_BOOTSTRAP` during setup | The operator credential could not create/validate the hardened roles. Run setup with the database-owner credential, or remediate the named role state. |
 | `[note ] GSEER_DB_RUNTIME_DSN is not set …` on a data command | That command is running under the operator credential (explicit notice, not silent). Configure the runtime DSN for the least-privilege path. |
+| `[skip ] context: egress IP undetectable` | The setup bootstrap could not detect your egress context (offline?). Nothing was guessed — register sources manually with `gseer source add`. |
+| `E_SCOPE_DENIED` on `scan` | No live scope covers the target/protocol/port — register one with `gseer scope add`. Denials never touch the network. |
+| `E_SOURCE_TERMS` | That connector's provider terms are not cleared (`docs/SOURCES.md`) — a policy gate, not a bug. |
 
 ## Where to go next
 
-- `docs/DEPLOYMENT.md` — credential model, the hardened startup
+- `docs/DEPLOYMENT.md` — credential model, the hardened deployment
   sequence, the fail-closed privilege audit, PostgreSQL policy.
 - `docs/INSTALL.md` — install methods, checksums, build from source.
-- `docs/DOCKER.md` — full db + server stack, backup/restore, recovery.
+- `docs/DOCKER.md` — full db stack, backup/restore, recovery.
 - `docs/UPDATE.md` — signed updates and the in-place binary upgrade path.
 - `docs/SOURCES.md` — connector terms register.  `docs/RULES.md` —
   fingerprint rule contributions.

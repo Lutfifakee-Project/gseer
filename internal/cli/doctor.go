@@ -17,10 +17,12 @@
 package cli
 
 import (
+	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"runtime"
 	"strings"
@@ -29,7 +31,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Lutfifakee-Project/gseer/internal/config"
-	"github.com/Lutfifakee-Project/gseer/internal/index"
 	"github.com/Lutfifakee-Project/gseer/internal/search"
 	"github.com/Lutfifakee-Project/gseer/internal/searchlite"
 	"github.com/Lutfifakee-Project/gseer/internal/storage/postgres"
@@ -66,9 +67,10 @@ Wired:
     corresponding published release checksum when a binary release is
     available)
   - index contents: EMPTY | counts | fixture-labeled honesty label
-  - server reachability (client profile: probes the configured endpoint)
+  - discovery freshness (per-source registry state + last successful
+    collection job age)
   - runtime credential + fail-closed privilege audit (self-hosted, v0.2.0
-    OD-5: PASS means gseer server start may bind; FAIL names the failures;
+    OD-5: PASS names the verified grants; FAIL names the failures;
     HINT when the runtime credential is not provisioned yet)
   - personal mode (v0.2.1): database file + permissions, SQLite migration
     state, and the same index-contents honesty contract (read-only: the
@@ -83,7 +85,6 @@ filled index (QS-4 normative).  Doctor is read-only: it never migrates.`,
 			cfg, cerr := config.Load(config.Flags{
 				ConfigPath: flags.configPath,
 				Profile:    flags.profile,
-				Endpoint:   flags.server,
 			})
 			pass, fail := 0, 0
 			report := func(name, outcome, detail, fix string, err error) {
@@ -139,19 +140,6 @@ filled index (QS-4 normative).  Doctor is read-only: it never migrates.`,
 
 			if cfg.Profile == config.ProfilePersonal {
 				reportPersonalDBChecks(cmd, cfg, report)
-				printf(out, "\n%d PASS, %d FAIL", pass, fail)
-				if fail > 0 {
-					println(out, ". Fix the failures above and re-run.")
-					os.Exit(ExitUnavailable)
-				}
-				println(out, ".")
-				return nil
-			}
-
-			if cfg.Profile != config.ProfileSelfHosted {
-				// Client profile: probe the configured endpoint.
-				printf(out, "[ -    ] DB checks: skipped (client profile has no local database)\n")
-				reportClientEndpoint(cfg, report)
 				printf(out, "\n%d PASS, %d FAIL", pass, fail)
 				if fail > 0 {
 					println(out, ". Fix the failures above and re-run.")
@@ -222,7 +210,7 @@ func reportRuntimeCredentialCheck(cmd *cobra.Command, cfg *config.Config, report
 	if !explicit {
 		report("runtime credential", "HINT",
 			"gseer_app runtime credential is not configured (database.runtime_dsn / GSEER_DB_RUNTIME_DSN)",
-			"gseer server start requires it — provision with: gseer setup --self-hosted", nil)
+			"the hardened self-hosted data plane expects it — provision with: gseer setup --self-hosted", nil)
 		return
 	}
 	rep, err := postgres.RunPrivilegeAudit(commandContext(cmd), runtimeDSN)
@@ -290,37 +278,60 @@ func reportPersonalDBChecks(cmd *cobra.Command, cfg *config.Config, report func(
 		return
 	}
 	reportIndexMeta(meta, report)
-	reportSharedIndex(report)
+	reportDiscoveryFreshness(ctx, res.DB, report)
 }
 
-// reportSharedIndex reports the shared-index freshness contract (v0.3.2,
-// personal profile): not installed (HINT + the one-command fix), or the
-// installed sequence + age with a refresh hint past two weeks.  The
-// EMPTY hint names `gseer setup` FIRST — the shared index is the
-// fastest honest path to real internet-asset data.
-func reportSharedIndex(report func(name, outcome, detail, fix string, err error)) {
-	st, err := index.LoadState(sharedIndexDir())
-	if err != nil {
-		report("shared index", "FAIL", "cannot read the index state", "gseer index status", err)
+// reportDiscoveryFreshness reports the LOCAL discovery freshness contract
+// (personal profile): no sources registered (HINT + the one-command
+// bootstrap), or per-source registry state plus the age of the last
+// successful collection job.  Discovery is passive-first — the freshness
+// line tells the operator HOW CURRENT the Local Index evidence is.
+func reportDiscoveryFreshness(ctx context.Context, db *sql.DB, report func(name, outcome, detail, fix string, err error)) {
+	store := sqlite.NewStore(db)
+	sources, serr := store.ListSources(ctx)
+	if serr != nil {
+		report("discovery", "FAIL", "cannot read the source registry", "gseer doctor", serr)
 		return
 	}
-	if st == nil {
-		report("shared index", "HINT", "not installed — search would return only locally collected data",
-			"gseer setup  (or: gseer index update)", nil)
+	enabled := 0
+	for _, s := range sources {
+		if s.Enabled {
+			enabled++
+		}
+	}
+	if len(sources) == 0 {
+		report("discovery", "HINT", "no data sources registered — the index only holds what you collect",
+			"gseer setup  (auto-bootstrap: egress context → approved passive sources)", nil)
 		return
 	}
-	age := time.Since(st.BuiltAt).Round(time.Second)
-	detail := fmt.Sprintf("sequence %d, built %s (age %s), imported: %v",
-		st.Sequence, st.BuiltAt.UTC().Format("2006-01-02 15:04 UTC"), age, st.Imported)
-	if age > 14*24*time.Hour {
-		report("shared index", "HINT", detail+" — older than two weeks", "gseer index update", nil)
+	var lastRun time.Time
+	var lastRunRaw sql.NullString
+	if err := db.QueryRowContext(ctx,
+		"SELECT MAX(COALESCE(finished_at, started_at)) FROM collection_jobs WHERE status = 'success'").Scan(&lastRunRaw); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		report("discovery", "FAIL", "cannot read the collection job history", "gseer doctor", err)
 		return
 	}
-	if !st.Imported {
-		report("shared index", "HINT", detail, "gseer index update  (re-runs the import; idempotent)", nil)
-		return
+	// SQLite stores timestamps as TEXT — parse via the storage layer's
+	// canonical format (a direct *time.Time scan fails on driver.Value
+	// string; the acceptance run caught exactly that).
+	if lastRunRaw.Valid && lastRunRaw.String != "" {
+		if t, perr := sqlite.ParseTS(lastRunRaw.String); perr == nil {
+			lastRun = t
+		}
 	}
-	report("shared index", "PASS", detail, "", nil)
+	detail := fmt.Sprintf("%d source(s) registered, %d enabled", len(sources), enabled)
+	switch {
+	case lastRun.IsZero():
+		report("discovery", "HINT", detail+" — no successful collection run yet",
+			"gseer collect run --all", nil)
+	case time.Since(lastRun) > 14*24*time.Hour:
+		report("discovery", "HINT", fmt.Sprintf("%s — last successful run %s (%s old)",
+			detail, lastRun.UTC().Format("2006-01-02 15:04 UTC"), time.Since(lastRun).Round(time.Second)),
+			"gseer collect run --all  (refresh passive evidence)", nil)
+	default:
+		report("discovery", "PASS", fmt.Sprintf("%s — last successful run %s (%s old)",
+			detail, lastRun.UTC().Format("2006-01-02 15:04 UTC"), time.Since(lastRun).Round(time.Second)), "", nil)
+	}
 }
 
 // reportIndexMeta renders the shared IndexMeta honesty contract
@@ -358,31 +369,6 @@ func reportIndexCheck(cmd *cobra.Command, cfg *config.Config, report func(name, 
 		return
 	}
 	reportIndexMeta(meta, report)
-}
-
-// reportClientEndpoint probes the configured endpoint's health route
-// (client profile).
-func reportClientEndpoint(cfg *config.Config, report func(name, outcome, detail, fix string, err error)) {
-	endpoint := strings.TrimRight(cfg.Client.Endpoint, "/")
-	if endpoint == "" {
-		report("server reachability", "HINT", "no endpoint configured",
-			"gseer setup --server https://gseer.example.com", nil)
-		return
-	}
-	hc := &http.Client{Timeout: 5 * time.Second}
-	resp, err := hc.Get(endpoint + "/api/v1/health")
-	if err != nil {
-		report("server reachability", "FAIL", fmt.Sprintf("%s did not answer", endpoint),
-			"check client.endpoint and that the server is running", err)
-		return
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		report("server reachability", "FAIL", fmt.Sprintf("%s answered HTTP %d", endpoint, resp.StatusCode),
-			"check the server logs", nil)
-		return
-	}
-	report("server reachability", "PASS", endpoint+" health OK", "", nil)
 }
 
 func orNever(t *time.Time) string {

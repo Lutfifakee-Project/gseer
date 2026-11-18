@@ -45,8 +45,7 @@ import (
 
 // loadEngineConfig loads the config accepting the two engine profiles
 // (self-hosted PostgreSQL and personal SQLite), with the zero-config
-// first run applied (engineConfigOrInit).  The client profile has no
-// local engine and is rejected here.
+// first run applied (engineConfigOrInit).
 func loadEngineConfig() (*config.Config, error) {
 	cfg, err := engineConfigOrInit(nil)
 	if err != nil {
@@ -56,8 +55,8 @@ func loadEngineConfig() (*config.Config, error) {
 	case config.ProfileSelfHosted, config.ProfilePersonal:
 		return cfg, nil
 	default:
-		return nil, fmt.Errorf("E_CLIENT_ONLY: the engine commands need a local profile (self-hosted or personal; current: %s).\n"+
-			"Try: gseer setup --personal  (single-file personal mode)", cfg.Profile)
+		return nil, fmt.Errorf("E_CONFIG: the engine commands need a local profile (self-hosted or personal; current: %s).\n"+
+			"Try: gseer setup  (single-file personal mode)", cfg.Profile)
 	}
 }
 

@@ -65,7 +65,6 @@ func TestErrorCodesStable(t *testing.T) {
 		"E_CONFIG_PROFILE_CONFLICT":       CodeConfigProfileConflict,
 		"E_CONFIG_REQUIRED":               CodeConfigRequired,
 		"E_CONFIG_FILE_NOT_FOUND":         CodeConfigFileNotFound,
-		"E_CLIENT_ONLY":                   CodeClientOnly,
 	}
 	for want, got := range codes {
 		if want != got {

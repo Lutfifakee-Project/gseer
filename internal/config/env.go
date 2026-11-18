@@ -28,10 +28,6 @@ import (
 // environment variables (handled in loader.go).  The mapping is:
 //
 //      GSEER_PROFILE                    → Profile
-//      GSEER_CLIENT_ENDPOINT            → Client.Endpoint
-//      GSEER_LISTEN                     → Server.Listen
-//      GSEER_TOKEN                      → Server.Token (plaintext; hashed in Load)
-//      GSEER_SERVER_TRUSTED_PROXIES     → Server.TrustedProxies (CIDR list, M16)
 //      GSEER_DB_DSN                     → Database.DSN (overrides components)
 //      GSEER_DB_RUNTIME_DSN             → Database.RuntimeDSN (the gseer_app
 //                                         runtime credential, v0.2.0 M-B)
@@ -46,7 +42,7 @@ import (
 //      GSEER_LOG_FORMAT                 → Log.Format
 //      GSEER_POLICY_EVALUATION_FIXTURES → Policy.EvaluationFixtures
 //      GSEER_UPDATE_MANIFEST_URL        → Update.ManifestURL (v0.1.0)
-//      GSEER_INDEX_MANIFEST_URL         → Index.ManifestURL (v0.3.2 shared index)
+//      GSEER_DATASET_MANIFEST_URL       → Dataset.ManifestURL (Rev 9 central dataset)
 //      GSEER_FINGERPRINTS_DISABLED      → Fingerprints.Disabled (v0.1.0)
 //      GSEER_FINGERPRINTS_RULES_DIR     → Fingerprints.RulesDir (v0.1.0)
 //
@@ -73,41 +69,6 @@ var envMapping = []struct {
 			return false
 		}
 		c.Profile = Profile(v)
-		return true
-	}},
-	{"GSEER_CLIENT_ENDPOINT", func(c *Config, v string) bool {
-		if v == "" {
-			return false
-		}
-		c.Client.Endpoint = v
-		return true
-	}},
-	{"GSEER_LISTEN", func(c *Config, v string) bool {
-		if v == "" {
-			return false
-		}
-		c.Server.Listen = v
-		return true
-	}},
-	{"GSEER_TOKEN", func(c *Config, v string) bool {
-		if v == "" {
-			return false
-		}
-		c.Server.Token = v
-		return true
-	}},
-	// GSEER_SERVER_TRUSTED_PROXIES (M16): comma-separated CIDRs/bare IPs
-	// of proxies whose X-Forwarded-For may be honored.  Parsed strictly
-	// in validate (invalid entry = config error, fail-closed).
-	{"GSEER_SERVER_TRUSTED_PROXIES", func(c *Config, v string) bool {
-		if v == "" {
-			return false
-		}
-		parts := strings.Split(v, ",")
-		for i := range parts {
-			parts[i] = strings.TrimSpace(parts[i])
-		}
-		c.Server.TrustedProxies = parts
 		return true
 	}},
 	{"GSEER_DB_DSN", func(c *Config, v string) bool {
@@ -208,11 +169,11 @@ var envMapping = []struct {
 		c.Update.ManifestURL = v
 		return true
 	}},
-	{"GSEER_INDEX_MANIFEST_URL", func(c *Config, v string) bool {
+	{"GSEER_DATASET_MANIFEST_URL", func(c *Config, v string) bool {
 		if v == "" {
 			return false
 		}
-		c.Index.ManifestURL = v
+		c.Dataset.ManifestURL = v
 		return true
 	}},
 	{"GSEER_FINGERPRINTS_DISABLED", func(c *Config, v string) bool {

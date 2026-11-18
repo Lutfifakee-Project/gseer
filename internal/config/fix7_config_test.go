@@ -17,16 +17,15 @@
 package config
 
 // fix7_config_test.go — v0.3.2 pins for the audited setup failures
-// (STAGE 2 report §8) and the new index.* config section:
+// (STAGE 2 report §8):
 //
 //   1. validateSelfHosted refuses a non-postgres:// DSN (the mirror of
 //      the personal guard — the exact bug that made
-//      `gseer setup --self-hosted` hand a SQLite file path to pgx);
-//   2. the client E_CONFIG_REQUIRED hint is no longer circular (it
-//      names an actionable command);
-//   3. index.manifest_url transport validation (https; http loopback
-//      only);
-//   4. index.* keys are personal-only (client/self-hosted conflict).
+//      `gseer setup --self-hosted` hand a SQLite file path to pgx).
+//
+// The client-profile hint, index.manifest_url transport validation, and
+// index.* profile-conflict pins were removed with the client profile
+// and the shared-index channel (v0.3.2 CLI-only architecture).
 
 import (
 	"strings"
@@ -62,75 +61,13 @@ func TestValidateSelfHostedRejectsNonPostgresDSN(t *testing.T) {
 	}
 }
 
-func TestClientEndpointHintIsActionable(t *testing.T) {
-	c := &Config{Profile: ProfileClient}
-	err := Validate(c)
-	if err == nil || err.Code != CodeConfigRequired {
-		t.Fatalf("want E_CONFIG_REQUIRED, got %v", err)
-	}
-	next := err.Next
-	if !strings.Contains(next, "--server") {
-		t.Fatalf("client hint is still circular (no actionable --server command): %q", next)
-	}
-	if strings.Contains(next, "or: gseer setup --self-hosted") {
-		t.Fatalf("client hint still steers into the self-hosted trap: %q", next)
-	}
-}
-
-func TestIndexManifestURLValidation(t *testing.T) {
-	ok := []string{
-		"https://github.com/Lutfifakee-Project/gseer/releases/download/shared-index/gseer-index-manifest.json",
-		"http://127.0.0.1:8080/manifest.json",
-		"http://localhost:9090/manifest.json",
-		"http://[::1]:8080/manifest.json",
-	}
-	for _, u := range ok {
-		c := &Config{Profile: ProfilePersonal, Database: DatabaseConfig{DSN: "/tmp/x.db"}, Index: IndexConfig{ManifestURL: u}}
-		if err := Validate(c); err != nil {
-			t.Fatalf("valid index URL %q rejected: %v", u, err)
-		}
-	}
-	bad := []string{
-		"http://example.com/manifest.json", // plaintext to a non-local host
-		"ftp://example.com/manifest.json",
-		"not a url",
-		"/local/path.json",
-	}
-	for _, u := range bad {
-		c := &Config{Profile: ProfilePersonal, Database: DatabaseConfig{DSN: "/tmp/x.db"}, Index: IndexConfig{ManifestURL: u}}
-		if err := Validate(c); err == nil || err.Code != CodeConfigInvalidValue {
-			t.Fatalf("invalid index URL %q accepted: %v", u, err)
-		}
-	}
-}
-
-func TestIndexKeysArePersonalOnly(t *testing.T) {
-	client := &Config{Profile: ProfileClient, Client: ClientConfig{Endpoint: "https://x"},
-		Index: IndexConfig{ManifestURL: "https://x/m.json"}}
-	if err := Validate(client); err == nil || err.Code != CodeConfigProfileConflict {
-		t.Fatalf("client profile accepted index.*: %v", err)
-	}
-	selfHosted := &Config{Profile: ProfileSelfHosted,
-		Database: DatabaseConfig{DSN: "postgres://gseer@127.0.0.1:5432/gseer?sslmode=disable"},
-		Index:    IndexConfig{ManifestURL: "https://x/m.json"}}
-	if err := Validate(selfHosted); err == nil || err.Code != CodeConfigProfileConflict {
-		t.Fatalf("self-hosted profile accepted index.*: %v", err)
-	}
-	personal := &Config{Profile: ProfilePersonal, Database: DatabaseConfig{DSN: "/tmp/x.db"},
-		Index: IndexConfig{ManifestURL: "https://x/m.json"}}
-	if err := Validate(personal); err != nil {
-		t.Fatalf("personal profile rejected index.*: %v", err)
-	}
-}
-
-func TestEnvIndexManifestURLMapping(t *testing.T) {
-	t.Setenv("GSEER_INDEX_MANIFEST_URL", "https://idx.example.com/manifest.json")
-	t.Setenv("GSEER_DB_DSN", "/tmp/gseer-env-test.db")
-	cfg, lerr := Load(Flags{Profile: string(ProfilePersonal)})
-	if lerr != nil {
-		t.Fatalf("load: %v", lerr)
-	}
-	if cfg.Index.ManifestURL != "https://idx.example.com/manifest.json" {
-		t.Fatalf("GSEER_INDEX_MANIFEST_URL did not map: %q", cfg.Index.ManifestURL)
+// TestDefaultProfileIsPersonal pins the CLI-only default: with no
+// profile configured anywhere, the zero-configuration default is the
+// personal (Local Index) profile.
+func TestDefaultProfileIsPersonal(t *testing.T) {
+	c := &Config{}
+	applyDefaults(c)
+	if c.Profile != ProfilePersonal {
+		t.Fatalf("default profile = %q, want %q (the zero-configuration product default)", c.Profile, ProfilePersonal)
 	}
 }

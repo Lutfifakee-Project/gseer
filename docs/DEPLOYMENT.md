@@ -1,5 +1,14 @@
 # GSEER — Deployment, Credentials, and the Hardened Runtime Model
 
+> **v0.3.2 CLI-only architecture (owner decision):** GSEER ships NO API
+> server, dashboard, or website.  The hardened deployment order below
+> runs in `gseer setup --self-hosted` and is re-verified read-only by
+> `gseer doctor` (the in-binary fail-closed privilege audit under
+> `gseer_app`).  References to `gseer server start/stop` and the REST
+> API are HISTORICAL (the server was removed); the credential model,
+> grant matrix, and audit contract are unchanged and still enforced.
+
+
 This page is the canonical description of GSEER's deployment and runtime
 model. It covers three things operators keep asking about:
 
@@ -39,8 +48,8 @@ configuration.
 | --- | --- |
 | Database roles | **Three**: the operator credential (whatever the DSN names; database owner / migration executor), `gseer_policy_owner` (NOLOGIN; owns the suppression-policy layer), and `gseer_app` (LOGIN; the **only** credential the server uses at runtime, least-privilege). |
 | Schema migration | Embedded migrations 0001–0006 + **0016** (`gseer_policy` enforcement layer; refusal-first) + **0017** (search safe-casts). Versions 0007–0015 are permanently reserved (OD-4) — they do not exist and never will. Applied by `gseer setup --self-hosted` under the operator credential. |
-| Pre-runtime privilege audit | **In-binary and mandatory.** `gseer server start` runs the fail-closed effective-privilege audit under `gseer_app` before the port binds; a failure refuses startup (exit 5) with the complete failure list. There is no bypass, flag, or override (OD-5). |
-| Runtime credential enforcement | `server start` requires `database.runtime_dsn` / `GSEER_DB_RUNTIME_DSN` **and** verifies the connecting user IS `gseer_app` (`E_RUNTIME_CREDENTIAL_MISMATCH`, exit 5, otherwise). CLI data-plane commands prefer it and print an explicit notice when they fall back to the operator credential — never silently. |
+| Fail-closed privilege audit | **In-binary and mandatory.** `gseer setup --self-hosted` runs the fail-closed effective-privilege audit under `gseer_app` as the final deployment step, and `gseer doctor` re-runs it read-only; a failure refuses (exit 5) with the complete failure list. There is no bypass, flag, or override (OD-5). (Historically the audit also gated `gseer server start` before the port bound — the server was removed with the CLI-only decision.) |
+| Runtime credential enforcement | Data-plane commands prefer `database.runtime_dsn` / `GSEER_DB_RUNTIME_DSN` and the audit verifies the connecting user IS `gseer_app` (`E_RUNTIME_CREDENTIAL_MISMATCH`, exit 5, otherwise). CLI data-plane commands print an explicit notice when they fall back to the operator credential — never silently. |
 | PostgreSQL floor | **16** (OD-7; enforced by `gseer setup` and `gseer doctor`). Verified end-to-end on 16.15 and 17.2. |
 
 ---
@@ -59,8 +68,11 @@ configuration.
   `database.runtime_dsn`; the `gseer_app` role. The server serves ALL
   traffic as this identity, and the data-plane CLI commands (search,
   export, collect, suppress, source, host) use it when configured.
-- **One API token, separate from the database.** `GSEER_TOKEN`
-  protects the REST API; it is hashed at rest and required for any
+- **Credentials are database-only (v0.3.2 CLI-only architecture).**  The
+  API server and its token were removed; the CLI talks to PostgreSQL
+  directly.  Historical references below are retained where the hardened
+  order is described.  The former contract: `GSEER_TOKEN`
+  protected the REST API; it was hashed in memory and required for any
   non-loopback server bind (`E_CONFIG_INSECURE` — enforced in the
   config layer and again in `server start`). VERIFIED.
 - **Rotation.** `gseer setup --self-hosted --reset-runtime-password`
@@ -75,7 +87,7 @@ configuration.
   `SYNTHETIC EVALUATION DATA` rather than passed off as real data.
 - **Honest SKIP.** Under the `client` profile there is no local
   database, and doctor says so explicitly instead of pretending:
-  `[ -    ] DB checks: skipped (client profile has no local database)`.
+  `E_CONFIG` — an invalid profile is rejected before any DB contact.
   When the runtime credential is not configured, the privilege-audit
   check is an honest HINT naming the provisioning command — doctor
   never pretends an unprovisioned deployment is hardened.
@@ -185,7 +197,7 @@ closure walk double-cover each other. Rev 6.7.2's verification run
 included three decoy roles that prove each escalation class (INHERIT
 path, SET-only path with `INHERIT FALSE`, superuser-membership path)
 is caught. The audit is runnable by the operator **or** by `gseer_app`
-itself — and `gseer server start` runs it **as `gseer_app`**, so a
+itself — and `gseer setup --self-hosted` / `gseer doctor` run it **as `gseer_app`**, so a
 passing startup audit simultaneously proves the deployment state and
 the runtime credential's own reach.
 
@@ -202,7 +214,7 @@ does not start at all.
 
 ### 3.4 What a refusal means — and what exit code 5 means
 
-- **In-binary gate (VERIFIED, real binary):** `gseer server start`
+- **In-binary gate (VERIFIED, real binary):** the hardened setup and doctor audit
   refuses with `E_PRIVILEGE_AUDIT_FAILED`, the complete failure list,
   and **exit code 5** on any audit failure. Reproduced live: revoking
   `SELECT` on `public.assets` from `gseer_app` makes the next start
@@ -219,7 +231,7 @@ does not start at all.
 | 2 | Invalid query / invalid input (`E_QUERY_*`) |
 | 3 | Configuration failure (`E_CONFIG*`, non-loopback bind without token, missing runtime credential) |
 | 4 | Service unavailable (endpoint/DB/index; audit could not run) — exercised by `search` against a dead database or a missing index, the client-profile endpoint-refusal paths, `doctor` check failures, and `source`/`collect` query failures after the store opened (a DB that is unreachable at open fails the pre-query reachability gate and exits 1 — the generic error path) |
-| 5 | Security/privilege refusal: failed privilege audit, runtime-credential identity mismatch — and (client profile) a 401 from a token-protected API |
+| 5 | Security/privilege refusal: failed privilege audit, runtime-credential identity mismatch |
 | 64 | Usage error / planned-command pointer (`gseer scan`, `gseer asset`) |
 | 70 | Internal error |
 
@@ -246,7 +258,7 @@ failure), and 64 (`gseer scan` pointer).
 | `E_RUNTIME_CREDENTIAL_REQUIRED` (exit 3) | `database.runtime_dsn` / `GSEER_DB_RUNTIME_DSN` not configured | `gseer setup --self-hosted` prints the runtime DSN once; export it |
 | `E_RUNTIME_CREDENTIAL_MISMATCH` (exit 5) | The runtime DSN connects as something that is not `gseer_app` (e.g. the operator credential pasted in) | Point `database.runtime_dsn` at the `gseer_app` credential |
 | Migration ledger dirty / not at head | A migration failed mid-run | `gseer db migrate status` → `gseer db migrate diagnose` (read-only); repair only per its guidance |
-| `E_CONFIG_INSECURE` | Non-loopback `server.listen` without an API token | Set `server.token` / `GSEER_TOKEN`, or keep the loopback default |
+| `E_CONFIG_INSECURE` | (Historical — removed with the API server) | n/a |
 
 ### 3.5 Why there is no bypass
 
@@ -274,11 +286,11 @@ Live this cycle: gates 3–5 reproduce their refusals with exit 3/5/5
 against PostgreSQL 16.15 (missing runtime credential, operator-DSN
 mismatch, revoked `assets` grant).
 
-The gates `gseer server start` applies, in order:
+The gates the hardened runtime model applies, in order:
 
 1. Config loads and validates (self-hosted profile required —
    `E_CLIENT_ONLY` otherwise; exit 3).
-2. Non-loopback bind requires an API token — `E_CONFIG_INSECURE`
+2. (Historical) Non-loopback bind required an API token — removed with the API server
    (exit 3); enforced in the config layer as well.
 3. The runtime credential is configured (exit 3 otherwise) and the
    pool opens with it.
@@ -294,7 +306,7 @@ The gates `gseer server start` applies, in order:
 7. `net.Listen` on the configured address (loopback `127.0.0.1:8443`
    by default), pidfile written `0600`, index honestly reported
    (`EMPTY` / `SYNTHETIC EVALUATION DATA` / counts), graceful shutdown
-   on SIGINT/SIGTERM, `gseer server stop` verifies process identity
+   (historical) on SIGINT/SIGTERM, `gseer server stop` verified process identity
    before signalling.
 
 Migrations are deliberately NOT among the server's steps: they are
@@ -340,7 +352,7 @@ provisioning is safe (everything is idempotent) but unnecessary.
 - **Verified (v0.3.1 release-readiness rounds, real v0.3.1 binary +
   full integration suite): PostgreSQL 16.15** — hardened setup →
   doctor (`6 PASS, 0 FAIL`) → startup gates (mismatch/missing/audit-
-  failure refusals exit 5/3/5) → server start (audit under
+  failure refusals exit 5/3/5) → hardened setup (audit under
   `gseer_app`) → health → stop all pass live this cycle; the
   `-tags integration` battery passes on **16.15 and 17.11** (24/24
   packages on each); earlier rounds verified 16.15 and 17.2 end-to-end
@@ -353,7 +365,7 @@ provisioning is safe (everything is idempotent) but unnecessary.
 
 ## 7. Known limitations (honest)
 
-- The `gseer` client-profile CLI cannot present the REST API's Bearer
+- (Historical, removed with the client profile and the REST API) the client-profile CLI could not present the REST API's Bearer
   token (no token flag in the client path) — query a token-protected
   server with `curl -H "Authorization: Bearer …"` or from inside the
   compose network.

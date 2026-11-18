@@ -139,10 +139,10 @@ func TestHelpListsV002Commands(t *testing.T) {
 // pin that the CLI's verdict source is the SAME registry the runner uses.
 func TestSourceCommandsUseRunnerRegistry(t *testing.T) {
 	reg := collect.Registry()
-	if len(reg) != 5 {
-		t.Errorf("expected 5 registered connectors, got %d", len(reg))
+	if len(reg) != 6 {
+		t.Errorf("expected 6 registered connectors, got %d", len(reg))
 	}
-	for _, kind := range []string{"dns", "ip2asn", "ptr", "rdap", "ct"} {
+	for _, kind := range []string{"dns", "ip2asn", "ptr", "ctlog", "rdap", "ct"} {
 		if _, ok := reg[kind]; !ok {
 			t.Errorf("connector %q missing from the shared registry", kind)
 		}

@@ -43,8 +43,11 @@ enabled.  Every run:
   - respects the connector's terms review (docs/SOURCES.md) — a connector
     whose provider terms are not clearly compatible refuses to run even
     when enabled (E_SOURCE_TERMS);
-  - targets only identifiers you configured or that are already in your
-    index (no third-party target lists, no enumeration);
+  - targets identifiers you configured, identifiers already in your
+    index, or — for the SEED-FREE connectors — public infrastructure that
+    needs no identifiers at all (ctlog reads a bounded, tip-following
+    window of a public Certificate Transparency log; docs/SOURCES.md §G):
+    never a third-party target list, never enumeration;
   - writes asset-level facts through the same suppression-gated,
     idempotent ingestion path as every other writer;
   - records checkpoints, dead-lettered records and job stats in the
@@ -52,6 +55,7 @@ enabled.  Every run:
 
 Examples:
   gseer collect run --source my-dns
+  gseer collect run --source central-ctlog   # seed-free CT-log discovery (§G)
   gseer collect run --all
   gseer collect status`,
 	}

@@ -88,12 +88,11 @@ func runUpdate(cmd *cobra.Command, _ []string) error {
 	location := fManifest
 	if location == "" {
 		// The updater needs the channel, not a full profile config — a
-		// missing client.endpoint must not block the check (the rules
+		// missing database section must not block the check (the rules
 		// commands use the same tolerant resolution).
 		if cfg, cerr := config.Load(config.Flags{
 			ConfigPath: flags.configPath,
 			Profile:    flags.profile,
-			Endpoint:   flags.server,
 		}); cerr == nil {
 			location = cfg.Update.ManifestURL
 		} else {

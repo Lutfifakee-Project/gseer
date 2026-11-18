@@ -41,10 +41,6 @@ import (
 //  4. scanForUnsafeKeys — reject InsecureSkipVerify etc.
 //  5. strictDecode into Config (KnownFields(true) — unknown keys → error).
 //  6. applyDefaults — fill in PD-1…PD-9 and v0.0.1 defaults.
-//  7. applyEnv — environment-variable overlay.
-//  8. applyFlags — CLI flag overrides (highest precedence).
-//  9. hashAndClearToken — SHA-256 the token, clear the plaintext.
-// 10. Validate — profile + value validation.
 //
 // Steps 3 and 4 run against the raw map BEFORE strict decode so that
 // policy.active.* and unsafe keys produce pointed error messages rather
@@ -57,11 +53,8 @@ import (
 type Flags struct {
 	// ConfigPath is the --config flag value (path to a YAML file).
 	ConfigPath string
-	// Profile is the --profile flag value (client | self-hosted).
+	// Profile is the --profile flag value (personal | self-hosted).
 	Profile string
-	// Endpoint is the --server flag value (remote endpoint URL for
-	// the client profile).
-	Endpoint string
 }
 
 // Load resolves and validates the configuration.  Returns a *Config or
@@ -71,18 +64,24 @@ type Flags struct {
 // Load order (corrected per owner M2 review Finding 1):
 //
 //  1. Resolve config path (--config flag > GSEER_CONFIG env > default).
-//  2. Read file; loose-decode into map[string]any.
-//  3. scanForPolicyActive — reject any policy.active.* (AC-7.x).
-//  4. scanForUnsafeKeys — reject InsecureSkipVerify etc.
-//  5. strictDecode into Config (KnownFields(true) — unknown keys → error).
-//  6. applyEnv — environment-variable overlay (profile may change).
-//  7. applyFlags — CLI flag overrides (profile finalized here).
-//  8. applyDefaults — fill in PD-1…PD-9 and v0.0.1 defaults, based on
-//     the FINAL resolved profile (so a CLI --profile=client after a
-//     YAML self-hosted file does NOT inherit self-hosted DB defaults).
-//  9. hashAndClearToken — SHA-256 the token, clear the plaintext.
 //
-// 10. Validate — profile + value validation.
+//  2. Read file; loose-decode into map[string]any.
+//
+//  3. scanForPolicyActive — reject any policy.active.* (AC-7.x).
+//
+//  4. scanForUnsafeKeys — reject InsecureSkipVerify etc.
+//
+//  5. strictDecode into Config (KnownFields(true) — unknown keys → error).
+//
+//  6. applyEnv — environment-variable overlay (profile may change).
+//
+//  7. applyFlags — CLI flag overrides (profile finalized here).
+//
+//  8. applyDefaults — fill in PD-1…PD-9 and v0.0.1 defaults, based on
+//     the FINAL resolved profile (so a CLI --profile=self-hosted after a
+//     YAML personal file does NOT inherit personal defaults).
+//
+//  9. Validate — profile + value validation.
 //
 // The final precedence: CLI Flags > Environment > YAML > Defaults.
 func Load(flags Flags) (*Config, *Error) {
@@ -133,11 +132,10 @@ func Load(flags Flags) (*Config, *Error) {
 
 	// Order matters: env + flags FIRST, so the profile is finalized
 	// before applyDefaults fills in profile-dependent defaults (database
-	// components for self-hosted; none for client).
+	// components for self-hosted).
 	applyEnv(c)
 	applyFlags(c, flags)
 	applyDefaults(c)
-	hashAndClearToken(&c.Server)
 
 	if e := Validate(c); e != nil {
 		return nil, e
@@ -150,9 +148,6 @@ func applyFlags(c *Config, flags Flags) {
 	if flags.Profile != "" {
 		c.Profile = Profile(strings.TrimSpace(flags.Profile))
 	}
-	if flags.Endpoint != "" {
-		c.Client.Endpoint = flags.Endpoint
-	}
 }
 
 // resolveConfigPath determines the config file path in precedence order:
@@ -161,9 +156,8 @@ func applyFlags(c *Config, flags Flags) {
 // SAME directory `gseer setup` writes; v0.3.2 fix: the loader used to ignore
 // GSEER_HOME, so a portable personal setup wrote a config the loader could
 // not find and every following command failed with the misleading
-// E_CONFIG_REQUIRED client.endpoint error).  Returns "" if no path resolves
-// and no file exists (env-only mode is valid for client profile with
-// GSEER_CLIENT_ENDPOINT set).
+// E_CONFIG_REQUIRED error).  Returns "" if no path resolves
+// and no file exists (env-only mode).
 func resolveConfigPath(flags Flags) (string, *Error) {
 	if flags.ConfigPath != "" {
 		if _, err := os.Stat(flags.ConfigPath); err != nil {
@@ -178,6 +172,8 @@ func resolveConfigPath(flags Flags) (string, *Error) {
 		return envPath, nil
 	}
 	// Platform default: only return if the file actually exists.
+	// (Env-only mode is valid — the zero-configuration first run provisions
+	// personal mode and writes the config; see internal/cli/first_run.go.)
 	def := DefaultConfigPath()
 	if def != "" {
 		if _, err := os.Stat(def); err == nil {

@@ -155,12 +155,6 @@ func runHost(cmd *cobra.Command, args []string) error {
 		}
 		return emitHostReport(out, rep)
 	}
-	if cfg.Profile != config.ProfileSelfHosted {
-		printf(out, "E_CLIENT_ONLY: `gseer host` inspects the LOCAL index (self-hosted profile)\n"+
-			"Why: the client profile holds no data; use the server's dashboard/API against a remote instance\n"+
-			"Try: gseer --profile self-hosted host %s\n", identifier)
-		exitWith(ExitConfig)
-	}
 
 	pool, err := openAppPool(cmd, cfg)
 	if err != nil {
