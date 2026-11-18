@@ -245,7 +245,11 @@ var searchColumns = map[string]string{
 	"sources":             "sources",
 	"first_seen":          "first_seen",
 	"last_seen":           "last_seen",
-	"stale":               "stale",
+	// v0.3.2 (migration 0006): the row's REAL evidence time — the newest
+	// observation's observed_at, mirroring the PG planner's 0022 column.
+	// Fixed-width micro strings (SQ-02) keep lexicographic = chronological.
+	"observed_at": "observed_at",
+	"stale":       "stale",
 }
 
 var sortableFields = map[string]bool{
@@ -257,7 +261,7 @@ var sortableFields = map[string]bool{
 	"http.status": true, "http.title": true, "http.server": true,
 	"tls.version": true, "tls.cert_subject_cn": true, "tls.cert_issuer_cn": true,
 	"tls.cert_expiry": true, "tls.cert_serial": true, "tls.cert_sans_dns": true,
-	"first_seen": true, "last_seen": true,
+	"first_seen": true, "last_seen": true, "observed_at": true,
 }
 
 // allSearchColumns is the canonical projection list, in view order —
@@ -271,7 +275,7 @@ var allSearchColumns = []string{
 	"http_status", "http_title", "http_server",
 	"tls_version", "cert_subject_cn", "cert_issuer_cn", "cert_expiry",
 	"cert_serial", "cert_sans_dns",
-	"technologies", "sources", "first_seen", "last_seen", "stale",
+	"technologies", "sources", "first_seen", "last_seen", "observed_at", "stale",
 }
 
 func columnName(canonical string) string {
@@ -449,6 +453,40 @@ func (b *builder) compileComparison(c *ast.Comparison, alias string, branch *pla
 				return fmt.Sprintf("(%s IS NULL OR %s = '')", qcol, qcol)
 			}
 			return fmt.Sprintf("(%s IS NOT NULL AND %s <> '')", qcol, qcol)
+		}
+		// Boolean columns bind as SQL literals, not string params — the
+		// SQLite mirror of the PG planner's v0.3.2 fix: a TEXT "false"
+		// param never equals the INTEGER 0/1 stale column (the owner
+		// evidence hit exactly this: stale=="false" → 0 rows on personal
+		// mode over a fresh index).  TRUE/FALSE are portable SQLite
+		// literals; the validator only admits the two bool literals.
+		if c.Field == "stale" {
+			if want, ok := boolValue(c.Value); ok {
+				if c.Op == ast.OpNeq {
+					if want {
+						return fmt.Sprintf("(%s IS NOT NULL AND %s <> TRUE)", qcol, qcol)
+					}
+					return fmt.Sprintf("(%s IS NOT NULL AND %s <> FALSE)", qcol, qcol)
+				}
+				if want {
+					return fmt.Sprintf("%s = TRUE", qcol)
+				}
+				return fmt.Sprintf("%s = FALSE", qcol)
+			}
+		}
+		// Time columns compare through the gseer_ts normalizer on BOTH
+		// sides: stored values are fixed-width UTC micro strings (SQ-02)
+		// while a user value is plain RFC 3339 — lexicographic compare of
+		// the raw forms breaks on same-second boundaries ("…00.000000Z"
+		// sorts BEFORE "…00Z" because '.' < 'Z'), so `observed_at <
+		// "2026-01-15T00:00:00Z"` wrongly matched the boundary row.
+		// gseer_ts is a registered deterministic scalar function that
+		// normalizes any RFC 3339 / date-only text to the fixed-width
+		// micro form; NULL on either side stays a NULL (filtered) result.
+		if isTimeField(c.Field) {
+			if sv, ok := c.Value.(*ast.StrValue); ok {
+				return fmt.Sprintf("gseer_ts(%s) %s gseer_ts(%s)", qcol, op, b.placeholder(sv.S))
+			}
 		}
 		return b.simpleCompare(qcol, op, c.Value)
 	case ast.OpIn:
@@ -780,6 +818,18 @@ func boolValue(v ast.Value) (bool, bool) {
 
 func isListField(canonical string) bool {
 	return canonical == "technologies" || canonical == "sources"
+}
+
+// isTimeField reports whether the canonical path is a time column that
+// stores the fixed-width UTC micro form (SQ-02) — tls.cert_expiry's
+// stored form comes from evidence, so it normalizes through gseer_ts
+// the same way (the cursor predicate already did; comparisons do now).
+func isTimeField(canonical string) bool {
+	switch canonical {
+	case "first_seen", "last_seen", "observed_at", "tls.cert_expiry":
+		return true
+	}
+	return false
 }
 
 func likeEscape(s string) string {

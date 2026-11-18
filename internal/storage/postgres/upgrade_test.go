@@ -109,7 +109,7 @@ func TestV010ToV020UpgradePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upgrade migrations: %v", err)
 	}
-	if head != 21 || applied != 6 { // exactly 0016+0017+0018+0019+0020+0021 on top of (6, false) — final microfix head
+	if head != 22 || applied != 7 { // exactly 0016+0017+0018+0019+0020+0021+0022 on top of (6, false) — v0.3.2 query-engine head
 		t.Fatalf("upgrade applied %d to head %d, want 6 applied to head 21", applied, head)
 	}
 	if _, err := ApplyRuntimeGrants(ctx, dsn); err != nil {

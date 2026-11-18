@@ -447,6 +447,90 @@ func shrinkSyncTimeout(t *testing.T) (chan struct{}, func()) {
 	return release, unwedge
 }
 
+// restoreProductionBudget returns the bounded-sync budget to the
+// production value for the remainder of the test.  Used by wedge tests
+// whose later phases run REAL restores (success paths): those restores
+// perform genuine staging I/O, and racing it against the shrunken
+// 250ms wedge budget would make the test outcome depend on the
+// scheduler instead of on the code.  The shrunken budget is only needed
+// while a wedge must actually EXPIRE; once the last expiry has been
+// observed there is nothing left to bound tightly.
+func restoreProductionBudget(t *testing.T) {
+	t.Helper()
+	orig := restoreSyncTimeout
+	restoreSyncTimeout = 30 * time.Second
+	t.Cleanup(func() { restoreSyncTimeout = orig })
+}
+
+// stubRestoreSyncFile replaces the staged-copy fsync seam with an
+// instant success.  For tests that wedge a DIFFERENT seam: the staged
+// fsync is real storage I/O, and under -race on a loaded CI it can
+// outlive the shrunken budget, expiring the bounded wait at the WRONG
+// operation (E_DB_RESTORE_SYNC_STUCK from "fsync of the staged copy")
+// before the wedged seam is ever reached — exactly the owner-acceptance
+// flake in TestRestoreSecondRestoreFailsClosedWhileWedgeOutstanding.
+// Stubbing it removes real I/O latency from the bounded window without
+// touching production code or any assertion: the wedged seam still
+// blocks on the fixture's channel, and only that channel block can
+// trigger the expiry.
+func stubRestoreSyncFile(t *testing.T) {
+	t.Helper()
+	orig := restoreSyncFile
+	restoreSyncFile = func(*os.File) error { return nil }
+	t.Cleanup(func() { restoreSyncFile = orig })
+}
+
+// stubRestoreCloseFile replaces the staged-copy close seam with an
+// instant success — same rationale as stubRestoreSyncFile (close(2)
+// with writeback in flight is real storage latency; see its comment).
+func stubRestoreCloseFile(t *testing.T) {
+	t.Helper()
+	orig := restoreCloseFile
+	restoreCloseFile = func(*os.File) error { return nil }
+	t.Cleanup(func() { restoreCloseFile = orig })
+}
+
+// skipRestoreCloseDB replaces the sql.DB close seam with an instant,
+// deterministic cleanup.  The bounded closes it normally wraps (backup
+// probe close, validated staging close — the driver's close-time
+// checkpoint+fsync) are real storage I/O and are the other half of the
+// owner-acceptance flake: on the probe path the pool holds no
+// connection, so skipping is trivially safe; on the validated path the
+// driver would delete its own WAL sidecars at close, so the stub does
+// that BY NAME instead (glob the test dir for *.restore-staging*
+// sidecars) — no sqlite involvement, no fsync, and the staging set
+// ends up exactly as a real close leaves it.  Tests that wedge THIS
+// seam use their own counting stub and must not call this helper.
+func skipRestoreCloseDB(t *testing.T, dir string) {
+	t.Helper()
+	orig := restoreCloseDB
+	restoreCloseDB = func(*sql.DB) error {
+		matches, _ := filepath.Glob(filepath.Join(dir, "*.restore-staging*"))
+		for _, m := range matches {
+			if strings.HasSuffix(m, "-wal") || strings.HasSuffix(m, "-shm") || strings.HasSuffix(m, "-journal") {
+				_ = os.Remove(m)
+			}
+		}
+		return nil
+	}
+	t.Cleanup(func() { restoreCloseDB = orig })
+}
+
+// fastRestoreSyncSeams removes real storage latency from every bounded
+// sync seam EXCEPT the wedged directory fsync, for the tests that wedge
+// restoreSyncDir.  After this call the ONLY operation that can outlive
+// the shrunken budget is the fixture's own channel block: restore 1
+// deterministically reaches the directory fsync and fails with
+// E_DB_RESTORE_DIRSYNC regardless of -race instrumentation, CI load or
+// disk speed, and the success-path restores that follow the unwedge
+// cannot race the 250ms budget either.
+func fastRestoreSyncSeams(t *testing.T, dir string) {
+	t.Helper()
+	stubRestoreSyncFile(t)
+	stubRestoreCloseFile(t)
+	skipRestoreCloseDB(t, dir)
+}
+
 // drainRestoreWedge waits until no restore sync operation is
 // outstanding anymore (restoreWedgeOutstanding back to zero).
 func drainRestoreWedge(t *testing.T) {
@@ -516,6 +600,7 @@ func TestRestoreStuckStagedFileSyncReportsExplicitly(t *testing.T) {
 	orig := restoreSyncFile
 	restoreSyncFile = func(*os.File) error { <-release; return nil }
 	t.Cleanup(func() { restoreSyncFile = orig })
+	skipRestoreCloseDB(t, dir) // the probe close runs BEFORE the wedged fsync — keep real latency out of the bounded window
 
 	out, err := runRestore(t, live, backup)
 	if err == nil || !errors.Is(err, errRestoreSyncStuck) || !strings.Contains(err.Error(), "fsync of the staged copy") {
@@ -549,6 +634,7 @@ func TestRestoreStuckDirectorySyncReportsExplicitlyAfterSwap(t *testing.T) {
 	orig := restoreSyncDir
 	restoreSyncDir = func(string) error { <-release; return nil }
 	t.Cleanup(func() { restoreSyncDir = orig })
+	fastRestoreSyncSeams(t, dir) // determinism: only the wedged directory fsync may expire (see helper comment)
 
 	out, err := runRestore(t, live, backup)
 	if err == nil || !errors.Is(err, errRestoreSyncStuck) || !strings.Contains(err.Error(), "E_DB_RESTORE_DIRSYNC") {
@@ -600,12 +686,17 @@ func TestRestoreStuckStagingCloseReportsExplicitly(t *testing.T) {
 	orig := restoreCloseDB
 	var closeCalls atomic.Int64
 	restoreCloseDB = func(db *sql.DB) error {
-		if closeCalls.Add(1) >= 2 { // call 1 = probe close, call 2 = validated staging close
+		if closeCalls.Add(1) == 1 { // call 1 = probe close: skip it — real close latency must stay out of the bounded window (see skipRestoreCloseDB)
+			return nil
+		}
+		if closeCalls.Load() >= 2 { // call 2 = validated staging close (the wedge under test)
 			<-release
 		}
 		return db.Close()
 	}
 	t.Cleanup(func() { restoreCloseDB = orig })
+	stubRestoreSyncFile(t)  // the staged fsync runs BEFORE the wedged close
+	stubRestoreCloseFile(t) // and the staged file close runs BEFORE the wedged database close
 
 	out, err := runRestore(t, live, backup)
 	if err == nil || !errors.Is(err, errRestoreSyncStuck) || !strings.Contains(err.Error(), "close of the validated staging copy") {
@@ -656,12 +747,17 @@ func TestRestoreStuckCloseAfterFailedIntegrityCheck(t *testing.T) {
 	orig := restoreCloseDB
 	var closeCalls atomic.Int64
 	restoreCloseDB = func(db *sql.DB) error {
-		if closeCalls.Add(1) >= 2 { // call 1 = probe close (passes), call 2 = post-integrity-failure close (wedges)
+		if closeCalls.Add(1) == 1 { // call 1 = probe close (passes): skip it — see skipRestoreCloseDB
+			return nil
+		}
+		if closeCalls.Load() >= 2 { // call 2 = post-integrity-failure close (the wedge under test)
 			<-release
 		}
 		return db.Close()
 	}
 	t.Cleanup(func() { restoreCloseDB = orig })
+	stubRestoreSyncFile(t)  // the staged fsync runs BEFORE the wedged close
+	stubRestoreCloseFile(t) // and the staged file close runs BEFORE the wedged database close
 
 	out, err := runRestore(t, live, backup)
 	if err == nil || !errors.Is(err, errRestoreSyncStuck) || !strings.Contains(err.Error(), "close of the staged copy after a failed integrity check") {
@@ -743,6 +839,8 @@ func TestRestoreStuckStagedCopyCloseReportsExplicitly(t *testing.T) {
 	// must not be its own leak source.
 	restoreCloseFile = func(f *os.File) error { <-release; return orig(f) }
 	t.Cleanup(func() { restoreCloseFile = orig })
+	skipRestoreCloseDB(t, dir) // the probe close runs BEFORE the wedged file close
+	stubRestoreSyncFile(t)     // and so does the staged fsync
 
 	out, err := runRestore(t, live, backup)
 	if err == nil || !errors.Is(err, errRestoreSyncStuck) || !strings.Contains(err.Error(), "close of the staged copy") {
@@ -777,6 +875,7 @@ func TestRestoreSecondRestoreFailsClosedWhileWedgeOutstanding(t *testing.T) {
 	orig := restoreSyncDir
 	restoreSyncDir = func(string) error { <-release; return nil }
 	t.Cleanup(func() { restoreSyncDir = orig })
+	fastRestoreSyncSeams(t, dir) // determinism: only the wedged directory fsync may expire (see helper comment)
 
 	// Restore 1 wedges at the directory fsync, AFTER the swap.
 	out1, err1 := runRestore(t, live, backup)
@@ -803,6 +902,11 @@ func TestRestoreSecondRestoreFailsClosedWhileWedgeOutstanding(t *testing.T) {
 	// The wedge drains when storage recovers — the policy self-heals.
 	unwedge()
 	drainRestoreWedge(t)
+	// The success path below performs REAL staging I/O; give it the
+	// production budget so its outcome cannot race the shrunken wedge
+	// budget (the wedge has already been observed — nothing is left to
+	// bound tightly).
+	restoreProductionBudget(t)
 
 	out3, err3 := runRestore(t, live, backup)
 	if err3 != nil {

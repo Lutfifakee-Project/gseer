@@ -280,7 +280,11 @@ var searchColumns = map[string]string{
 	"sources":             "sources",
 	"first_seen":          "first_seen",
 	"last_seen":           "last_seen",
-	"stale":               "stale",
+	// v0.3.2 (migration 0022): the row's REAL evidence time — the newest
+	// observation's observed_at (import-stamped last_seen moves on every
+	// ingest; observed_at only moves when new evidence lands).
+	"observed_at": "observed_at",
+	"stale":       "stale",
 }
 
 // sortableFields is the set of fields the planner allows in ORDER BY.
@@ -295,7 +299,7 @@ var sortableFields = map[string]bool{
 	"http.status": true, "http.title": true, "http.server": true,
 	"tls.version": true, "tls.cert_subject_cn": true, "tls.cert_issuer_cn": true,
 	"tls.cert_expiry": true, "tls.cert_serial": true, "tls.cert_sans_dns": true,
-	"first_seen": true, "last_seen": true,
+	"first_seen": true, "last_seen": true, "observed_at": true,
 }
 
 // allSearchColumns is the canonical projection list, in view order
@@ -309,7 +313,7 @@ var allSearchColumns = []string{
 	"http_status", "http_title", "http_server",
 	"tls_version", "cert_subject_cn", "cert_issuer_cn", "cert_expiry",
 	"cert_serial", "cert_sans_dns",
-	"technologies", "sources", "first_seen", "last_seen", "stale",
+	"technologies", "sources", "first_seen", "last_seen", "observed_at", "stale",
 }
 
 // columnName resolves a canonical path to its search_index column.
@@ -735,6 +739,27 @@ func (b *builder) compileComparison(c *ast.Comparison, alias string, branch *Bra
 				return fmt.Sprintf("(%s IS NULL OR %s = '')", qcol, qcol)
 			}
 			return fmt.Sprintf("(%s IS NOT NULL AND %s <> '')", qcol, qcol)
+		}
+		// Boolean columns bind as SQL literals, not string params:
+		// `stale = $1` with a TEXT "false" param silently matches
+		// NOTHING on the SQLite dialect (INTEGER 0/1 vs text) while PG
+		// implicitly casts — the v0.3.2 CI/owner evidence caught exactly
+		// that (stale=="false" → 0 rows over a fresh index).  TRUE/FALSE
+		// are engine-portable literals and the validator only admits
+		// the two literals for TypeBool fields, so no injection surface.
+		if c.Field == "stale" {
+			if want, ok := boolValue(c.Value); ok {
+				if c.Op == ast.OpNeq {
+					if want {
+						return fmt.Sprintf("(%s IS NOT NULL AND %s <> TRUE)", qcol, qcol)
+					}
+					return fmt.Sprintf("(%s IS NOT NULL AND %s <> FALSE)", qcol, qcol)
+				}
+				if want {
+					return fmt.Sprintf("%s = TRUE", qcol)
+				}
+				return fmt.Sprintf("%s = FALSE", qcol)
+			}
 		}
 		return b.simpleCompare(qcol, op, c.Value)
 	case ast.OpIn:
@@ -1193,7 +1218,7 @@ func columnCast(field string) string {
 	switch field {
 	case "port", "asn", "http.status":
 		return "::bigint"
-	case "first_seen", "last_seen", "tls.cert_expiry":
+	case "first_seen", "last_seen", "observed_at", "tls.cert_expiry":
 		return "::timestamptz"
 	}
 	return "::text"

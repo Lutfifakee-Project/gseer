@@ -77,7 +77,13 @@ type Row struct {
 
 	FirstSeen time.Time `json:"first_seen"`
 	LastSeen  time.Time `json:"last_seen"`
-	Stale     bool      `json:"stale"`
+	// v0.3.2 (migration 0022 PG / 0006 personal SQLite): the row's REAL
+	// evidence time — the newest observation's observed_at.  Unlike
+	// last_seen (bumped by every ingest/import), observed_at only moves
+	// when new evidence lands.  Asset-only rows without any observation
+	// carry NULL (omitted in JSON).
+	ObservedAt *time.Time `json:"observed_at,omitempty"`
+	Stale      bool       `json:"stale"`
 
 	// ipPrefix is the raw inet scan target (PG type inet cannot scan
 	// into *string); after Scan it reduces to the IP string form.
@@ -137,13 +143,18 @@ func (r *Row) sortValue(field string) (string, bool) {
 		return r.AssetValue, false
 	case "asset_kind":
 		return r.AssetKind, false
-	case "first_seen", "last_seen", "tls.cert_expiry":
+	case "first_seen", "last_seen", "observed_at", "tls.cert_expiry":
 		var t time.Time
 		switch field {
 		case "first_seen":
 			t = r.FirstSeen
 		case "last_seen":
 			t = r.LastSeen
+		case "observed_at":
+			if r.ObservedAt == nil {
+				return "", true
+			}
+			t = *r.ObservedAt
 		case "tls.cert_expiry":
 			if r.TLSCertExpiry == nil {
 				return "", true
@@ -195,6 +206,7 @@ var rowScanTargets = map[string]func(*Row) any{
 	"sources":         func(r *Row) any { return &r.Sources },
 	"first_seen":      func(r *Row) any { return &r.FirstSeen },
 	"last_seen":       func(r *Row) any { return &r.LastSeen },
+	"observed_at":     func(r *Row) any { return &r.ObservedAt },
 	"stale":           func(r *Row) any { return &r.Stale },
 }
 

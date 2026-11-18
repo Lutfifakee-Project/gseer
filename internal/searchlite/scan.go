@@ -155,6 +155,7 @@ var scanBindings = map[string]func(*search.Row) scanCell{
 	"sources":         func(*search.Row) scanCell { return scanCell{kind: "sources", raw: new(any)} },
 	"first_seen":      func(*search.Row) scanCell { return scanCell{kind: "first_seen"} },
 	"last_seen":       func(*search.Row) scanCell { return scanCell{kind: "last_seen"} },
+	"observed_at":     func(*search.Row) scanCell { return scanCell{kind: "observed_at"} },
 	"stale":           func(*search.Row) scanCell { return scanCell{kind: "stale"} },
 }
 
@@ -223,6 +224,15 @@ var applyKinds = map[string]func(*scanCell, *search.Row){
 		if c.str.Valid && c.str.String != "" {
 			if t, err := parseTS(c.str.String); err == nil {
 				r.LastSeen = t
+			}
+		}
+	},
+	"observed_at": func(c *scanCell, r *search.Row) {
+		// The row's REAL evidence time (newest observation observed_at,
+		// migration 0006); NULL when the asset has no observation.
+		if c.str.Valid && c.str.String != "" {
+			if t, err := parseTS(c.str.String); err == nil {
+				r.ObservedAt = &t
 			}
 		}
 	},

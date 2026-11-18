@@ -52,8 +52,8 @@ func TestScopeRegistryOnPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatalf("migrations: %v", err)
 	}
-	if head != 21 {
-		t.Fatalf("migration head = %d, want 21 (…0019_scan_concurrency_leases + 0020_scan_lease_tokens + 0021_cert_projection)", head)
+	if head != 22 {
+		t.Fatalf("migration head = %d, want 22 (…0019_scan_concurrency_leases + 0020_scan_lease_tokens + 0021_cert_projection + 0022_row_observed_at)", head)
 	}
 	if applied < 1 {
 		t.Fatalf("fresh database applied %d migrations, want the full set", applied)

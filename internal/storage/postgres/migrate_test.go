@@ -28,13 +28,13 @@ import "testing"
 // leases; the FINAL security microfix adds 0020_scan_lease_tokens
 // (per-acquisition lease ownership tokens + renewal support).  The
 // reserved band stays untouched.
-const wantHead = 21
+const wantHead = 22
 
 // wantFileCount is the number of embedded up-migration FILES — not the
 // head version.  Versions 0007–0015 are permanently reserved (OD-4),
-// so the applied-counter reports files (12) while the ledger version
-// and head stay 21.
-const wantFileCount = 12
+// so the applied-counter reports files (13) while the ledger version
+// and head stay 22.
+const wantFileCount = 13
 
 // TestHeadVersion — the embedded migration set's head version is
 // parsed from the highest NNNN prefix (unit; no database).
@@ -44,7 +44,7 @@ func TestHeadVersion(t *testing.T) {
 		t.Fatalf("HeadVersion error: %v", err)
 	}
 	if head != wantHead {
-		t.Errorf("HeadVersion = %d, want %d (0001–0006 shipped v0.1.0; 0016 pinned; 0017 safe-casts; 0018 active observation; 0019 concurrency leases; 0020 lease tokens; 0021 cert projection; 0007–0015 reserved)", head, wantHead)
+		t.Errorf("HeadVersion = %d, want %d (0001–0006 shipped v0.1.0; 0016 pinned; 0017 safe-casts; 0018 active observation; 0019 concurrency leases; 0020 lease tokens; 0021 cert projection; 0022 row observed_at; 0007–0015 reserved)", head, wantHead)
 	}
 }
 
@@ -53,10 +53,10 @@ func TestMigrationFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationFiles error: %v", err)
 	}
-	if len(names) != 12 {
-		t.Fatalf("got %d migration files, want 12 (0001–0006 + 0016 + 0017 + 0018 + 0019 + 0020 + 0021; the reserved 0007–0015 must never exist): %v", len(names), names)
+	if len(names) != 13 {
+		t.Fatalf("got %d migration files, want 13 (0001–0006 + 0016 + 0017 + 0018 + 0019 + 0020 + 0021 + 0022; the reserved 0007–0015 must never exist): %v", len(names), names)
 	}
-	want := []string{"0001_core.up.sql", "0002_helper_views.up.sql", "0003_search_index.up.sql", "0004_search_indexes.up.sql", "0005_suppressions.up.sql", "0006_collection.up.sql", "0016_suppression_policy_hardening.up.sql", "0017_search_safe_casts.up.sql", "0018_active_observation.up.sql", "0019_scan_concurrency_leases.up.sql", "0020_scan_lease_tokens.up.sql", "0021_cert_projection.up.sql"}
+	want := []string{"0001_core.up.sql", "0002_helper_views.up.sql", "0003_search_index.up.sql", "0004_search_indexes.up.sql", "0005_suppressions.up.sql", "0006_collection.up.sql", "0016_suppression_policy_hardening.up.sql", "0017_search_safe_casts.up.sql", "0018_active_observation.up.sql", "0019_scan_concurrency_leases.up.sql", "0020_scan_lease_tokens.up.sql", "0021_cert_projection.up.sql", "0022_row_observed_at.up.sql"}
 	for i, w := range want {
 		if names[i] != w {
 			t.Errorf("names[%d] = %s, want %s", i, names[i], w)

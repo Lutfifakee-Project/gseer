@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "dataset_version": 1,
+  "generated_at_utc": "2026-11-18T05:38:27.116659489Z",
+  "payload": {
+    "filename": "gseer-dataset.ndjson.gz",
+    "sha256": "4f995d4f6103b695c1e355816ddd33015745a6f518cd70fb2bbd913a7ca59936",
+    "size_bytes": 22993,
+    "records": 269
+  },
+  "rows": {
+    "assets": 202,
+    "services": 18,
+    "observations": 269
+  },
+  "provenance": [
+    {
+      "source": "central-asn",
+      "connector": "ip2asn",
+      "records": 49,
+      "newest_observed_at": "2026-11-18T05:38:21.476718Z"
+    },
+    {
+      "source": "central-ctlog",
+      "connector": "ctlog",
+      "records": 64,
+      "newest_observed_at": "2026-11-18T05:38:14.236973Z"
+    },
+    {
+      "source": "central-dns",
+      "connector": "dns",
+      "records": 109,
+      "newest_observed_at": "2026-11-18T05:38:15.391305Z"
+    },
+    {
+      "source": "central-ptr",
+      "connector": "ptr",
+      "records": 11,
+      "newest_observed_at": "2026-11-18T05:38:22.715937Z"
+    },
+    {
+      "source": "scan-tls",
+      "connector": "scan-tls",
+      "records": 36,
+      "newest_observed_at": "2026-11-18T05:38:26.779233Z"
+    }
+  ],
+  "freshness": {
+    "oldest_observed_at": "2026-11-18T05:38:14.236973Z",
+    "newest_observed_at": "2026-11-18T05:38:26.779233Z"
+  },
+  "validator_version": "1",
+  "notes": "coverage: the seed register (pipeline/dataset-seeds.yaml) plus the seed-free CT-log window (docs/SOURCES.md §G) — real passive discovery evidence over the terms-reviewed connectors; NOT internet-wide coverage."
+}

@@ -111,7 +111,7 @@ var fields = map[string]*Field{
 	"domain":              {Canonical: "domain", Type: TypeString, Ops: opStrText | ast.OpSetInDomain},
 	"hostname":            {Canonical: "hostname", Type: TypeString, Ops: opStrText | ast.OpSetInDomain},
 	"asn":                 {Canonical: "asn", Type: TypeInt, Ops: opOrdered},
-	"asn_org":             {Canonical: "asn_org", Aliases: []string{"org"}, Type: TypeString, Ops: opStrText},
+	"asn_org":             {Canonical: "asn_org", Aliases: []string{"org", "organization"}, Type: TypeString, Ops: opStrText},
 	"geo_country":         {Canonical: "geo_country", Aliases: []string{"country", "ip_country"}, Type: TypeString, Ops: opEqNeqIn},
 	"geo_region":          {Canonical: "geo_region", Aliases: []string{"region", "ip_region"}, Type: TypeString, Ops: opEqNeqIn},
 	"geo_city":            {Canonical: "geo_city", Aliases: []string{"city", "ip_city"}, Type: TypeString, Ops: opStrText},
@@ -125,8 +125,8 @@ var fields = map[string]*Field{
 	"http.title":          {Canonical: "http.title", Aliases: []string{"title"}, Type: TypeString, Ops: opStrText},
 	"http.server":         {Canonical: "http.server", Aliases: []string{"server"}, Type: TypeString, Ops: opStrText},
 	"tls.version":         {Canonical: "tls.version", Aliases: []string{"tls_version"}, Type: TypeString, Ops: opEqNeqIn},
-	"tls.cert_subject_cn": {Canonical: "tls.cert_subject_cn", Aliases: []string{"cert_subject_cn", "cert_subject", "cert.subject.cn"}, Type: TypeString, Ops: opStrText},
-	"tls.cert_issuer_cn":  {Canonical: "tls.cert_issuer_cn", Aliases: []string{"cert_issuer_cn", "cert_issuer", "cert.issuer.cn"}, Type: TypeString, Ops: opStrText},
+	"tls.cert_subject_cn": {Canonical: "tls.cert_subject_cn", Aliases: []string{"cert_subject_cn", "cert_subject", "cert.subject", "cert.subject.cn"}, Type: TypeString, Ops: opStrText},
+	"tls.cert_issuer_cn":  {Canonical: "tls.cert_issuer_cn", Aliases: []string{"cert_issuer_cn", "cert_issuer", "cert.issuer", "cert.issuer.cn"}, Type: TypeString, Ops: opStrText},
 	"tls.cert_expiry":     {Canonical: "tls.cert_expiry", Aliases: []string{"cert_expiry"}, Type: TypeTime, Ops: opOrdered},
 	// v0.3.2 certificate breadth (approved STAGE 4 item 6): the TLS
 	// observer captures cert_serial + cert_sans_dns into evidence and
@@ -140,7 +140,14 @@ var fields = map[string]*Field{
 	"sources":           {Canonical: "sources", Type: TypeList, Ops: ast.OpSetContains},
 	"first_seen":        {Canonical: "first_seen", Type: TypeTime, Ops: opOrdered},
 	"last_seen":         {Canonical: "last_seen", Type: TypeTime, Ops: opOrdered},
-	"stale":             {Canonical: "stale", Type: TypeBool, Ops: opEqNeq},
+	// v0.3.2 observed_at: the REAL evidence time — the newest
+	// observation's observed_at behind the row (migration 0022 PG /
+	// 0006 personal SQLite project it from the observations table, the
+	// canonical provenance surface).  Unlike last_seen (bumped by every
+	// ingest/import), observed_at only moves when NEW EVIDENCE arrives,
+	// so freshness filters answer "how old is the evidence?".
+	"observed_at": {Canonical: "observed_at", Type: TypeTime, Ops: opOrdered},
+	"stale":       {Canonical: "stale", Type: TypeBool, Ops: opEqNeq},
 	// Derived boolean fields (compatibility syntax; the planner lowers
 	// them to predicates over the underlying columns - no new column).
 	"is_domain":       {Canonical: "is_domain", Type: TypeBool, Ops: opEqNeq},

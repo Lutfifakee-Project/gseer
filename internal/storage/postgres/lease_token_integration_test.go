@@ -44,8 +44,8 @@ func TestScanLeaseTokensOnPostgres(t *testing.T) {
 	}
 	if _, head, err := RunMigrations(dsn, lockTimeoutForTest()); err != nil {
 		t.Fatalf("migrations: %v", err)
-	} else if head != 21 {
-		t.Fatalf("migration head = %d, want 21 (…0019 + 0020 + 0021_cert_projection)", head)
+	} else if head != 22 {
+		t.Fatalf("migration head = %d, want 22 (…0019 + 0020 + 0021_cert_projection + 0022_row_observed_at)", head)
 	}
 	if _, err := ApplyRuntimeGrants(ctx, dsn); err != nil {
 		t.Fatalf("runtime grants: %v", err)

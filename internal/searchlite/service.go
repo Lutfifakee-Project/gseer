@@ -355,6 +355,11 @@ func rowSortValue(r *search.Row, field string) (string, bool) {
 		return r.AssetValue, false
 	case "asset_kind":
 		return r.AssetKind, false
+	case "observed_at":
+		if r.ObservedAt == nil {
+			return "", true
+		}
+		return r.ObservedAt.UTC().Format(microLayout), false
 	// The cursor value MUST use the same fixed-width micro layout the
 	// storage layer writes (SQ-02): RFC3339Nano trims trailing zeros,
 	// which breaks the string equality/tiebreaker against stored rows
