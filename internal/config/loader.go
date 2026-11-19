@@ -205,6 +205,35 @@ func DefaultConfigPath() string {
 	return filepath.Join(DefaultDir(), "config.yaml")
 }
 
+// DefaultStateDir resolves the persistent personal-database state
+// directory per the XDG state convention: $XDG_STATE_HOME/gseer when
+// XDG_STATE_HOME is set and absolute, else $HOME/.local/state/gseer.
+//
+// FIX (Rev16 personal DB portability): this is the DEFAULT location for
+// the personal database FILE, so it deliberately ignores GSEER_HOME and
+// TMPDIR.  The old default (~/.gseer/gseer.db, and before that whatever
+// a harness pointed GSEER_HOME at — e.g. the /tmp/asdlc-rollback/store.db
+// in the owner-acceptance finding, seeded by the v0.3.1-era shared-index
+// acceptance scripts) could end up on a recycled tmpfs: the database
+// vanished between sessions and looked like a corruption.  A state
+// directory under XDG_STATE_HOME or the home directory survives reboots
+// and tmpfs cleanup, and nothing in this resolution can ever produce a
+// /tmp path.  GSEER_HOME remains an EXPLICIT portable-install override
+// (respected wherever it points — the default-DB code only consults
+// this function when GSEER_HOME is unset).
+func DefaultStateDir() string {
+	if v := strings.TrimSpace(os.Getenv("XDG_STATE_HOME")); v != "" && filepath.IsAbs(v) {
+		return filepath.Join(v, "gseer")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		// Same honest last resort as DefaultDir: a HOME-less environment
+		// is a broken install; keep the CLI runnable instead of panicking.
+		return ".gseer"
+	}
+	return filepath.Join(home, ".local", "state", "gseer")
+}
+
 // extractFieldName parses the yaml.v3 TypeError message to extract the
 // offending key name.  yaml.v3 formats unknown-field errors as:
 //

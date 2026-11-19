@@ -73,7 +73,9 @@ type Info struct {
 // Current returns the build metadata for the running binary.  Go runtime
 // version is always available; the other fields reflect ldflags injection
 // with the toolchain's build information as the honest fallback (see the
-// package comment).
+// package comment).  The version string is normalized through
+// normalizeVersion so EVERY surface (this Info, the banner, status,
+// doctor) renders one canonical form.
 func Current() Info {
 	info := Info{
 		Version:   Version,
@@ -84,7 +86,43 @@ func Current() Info {
 	if bi, ok := readBuildInfo(); ok {
 		info = applyBuildInfo(info, bi)
 	}
+	info.Version = normalizeVersion(info.Version)
 	return info
+}
+
+// normalizeVersion collapses the version-prefix inconsistencies this
+// repo's history produced.  Build pipelines hand the binary a version
+// string in several shapes: GoReleaser tag builds inject `{{ .Version }}`
+// verbatim (which may already carry the "v" of the tag or of a snapshot
+// version template), the Makefile defaults to "dev", and the module
+// fallback yields canonical "v…" strings.  Before this normalization the
+// banner de-duplicated the prefix while status/doctor/`gseer version`
+// echoed the raw string — so a snapshot build printed "v0.3.1-snapshot"
+// in the banner but "vv0.3.1-snapshot" everywhere else (the Rev16
+// owner-acceptance finding).  One canonical form, applied at ONE choke
+// point (Current), fixes every surface at once:
+//
+//	""             → ""          (callers keep their own empty handling)
+//	"dev"          → "dev"       (the honest no-metadata label, never "vdev")
+//	"vv0.3.1"      → "v0.3.1"    (doubled prefix collapsed)
+//	"0.3.1"        → "v0.3.1"    (un-prefixed release string prefixed once)
+//	"v0.3.1"       → "v0.3.1"    (already canonical — untouched)
+//
+// A value whose first non-"v" character is not a digit (a word like
+// "candidate") is NOT version-shaped and is returned untouched, so
+// nothing that is not a semver-ish release string gets rewritten.
+func normalizeVersion(v string) string {
+	t := strings.TrimSpace(v)
+	if t == "" || t == "dev" {
+		return t
+	}
+	s := strings.TrimLeft(t, "v")
+	if s == "" || s[0] < '0' || s[0] > '9' {
+		// Not version-shaped (or all "v"s): keep the operator's value
+		// verbatim rather than guessing.
+		return t
+	}
+	return "v" + s
 }
 
 // applyBuildInfo fills the un-injected fields from the toolchain's build

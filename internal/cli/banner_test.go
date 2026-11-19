@@ -63,15 +63,18 @@ func TestBannerTemplateMatchesCanonical(t *testing.T) {
 }
 
 // TestBannerVersionDevFallback verifies that when Version is empty
-// (no ldflags injection), bannerVersion returns "  vdev" (two spaces +
-// fallback) and never a double prefix like "vvdev".
+// (no ldflags injection), bannerVersion returns "  dev" — the Rev16
+// cross-surface contract: the dev/no-metadata label displays as "dev"
+// on EVERY surface (banner, `gseer version`, status, doctor), never a
+// banner-only "vdev" (the old local prepend) and never a double prefix
+// like "vvdev".
 func TestBannerVersionDevFallback(t *testing.T) {
 	orig := version.Version
 	defer func() { version.Version = orig }()
 
 	version.Version = ""
-	if got := bannerVersion(); got != "  vdev" {
-		t.Errorf("bannerVersion() = %q, want %q (fallback with two spaces)", got, "  vdev")
+	if got := bannerVersion(); got != "  dev" {
+		t.Errorf("bannerVersion() = %q, want %q (dev fallback with two spaces)", got, "  dev")
 	}
 	if strings.HasPrefix(bannerVersion(), "vv") {
 		t.Errorf("bannerVersion() has double 'v' prefix: %q", bannerVersion())

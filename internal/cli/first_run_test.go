@@ -39,9 +39,15 @@ func firstRun(t *testing.T, args ...string) string {
 func firstRunAt(t *testing.T, home string, args ...string) string {
 	t.Helper()
 	// Isolate the home directory: configDir() and the config loader
-	// resolve the default paths through os.UserHomeDir().
+	// resolve the default paths through os.UserHomeDir().  The Rev16
+	// default PERSONAL DATABASE path also honors XDG_STATE_HOME and
+	// GSEER_HOME, so both are pinned empty — otherwise a test host with
+	// either set would resolve the database outside the isolated HOME
+	// (non-deterministic on machines with a real XDG state dir).
 	t.Setenv("HOME", home)
 	t.Setenv("GSEER_CONFIG", "")
+	t.Setenv("GSEER_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
 	oldCfg, oldQuiet, oldProfile := flags.configPath, flags.quiet, flags.profile
 	t.Cleanup(func() {
 		flags.configPath, flags.quiet, flags.profile = oldCfg, oldQuiet, oldProfile
@@ -88,11 +94,22 @@ func TestFirstRunAutoInitializesPersonalMode(t *testing.T) {
 		}
 	}
 	// The artifacts exist at the platform paths under the isolated HOME.
+	// Rev16 portability contract: the CONFIG stays at ~/.gseer, while the
+	// personal DATABASE defaults to the persistent XDG state directory
+	// ($HOME/.local/state/gseer — the XDG_STATE_HOME fallback), never the
+	// config dir and never a /tmp-derived path.
 	if _, err := os.Stat(filepath.Join(home, ".gseer", "config.yaml")); err != nil {
 		t.Errorf("config.yaml not created: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(home, ".gseer", "gseer.db")); err != nil {
-		t.Errorf("gseer.db not created: %v", err)
+	if _, err := os.Stat(filepath.Join(home, ".local", "state", "gseer", "gseer.db")); err != nil {
+		t.Errorf("personal database not created in the XDG state dir: %v", err)
+	}
+	if _, serr := os.Stat(filepath.Join(home, ".gseer", "gseer.db")); serr == nil {
+		t.Errorf("the database must NOT live in the config dir anymore (pre-Rev16 layout)")
+	}
+	if !strings.Contains(out, filepath.Join("state", "gseer", "gseer.db")) &&
+		!strings.Contains(out, string(filepath.Separator)+"state"+string(filepath.Separator)) {
+		t.Errorf("first-run output must name the state-dir database path, got:\n%s", out)
 	}
 
 	// A second bare run is the STATUS panel — no re-initialization.

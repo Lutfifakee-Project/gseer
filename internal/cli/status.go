@@ -206,7 +206,12 @@ func collectStatusView() statusView {
 
 func renderStatusTable(out interface{ Write([]byte) (int, error) }, v statusView) {
 	printf(out, "GSEER status\n")
-	printf(out, "  binary       : gseer v%s (commit %s, built %s) sha256=%s\n",
+	// Rev16: v.Binary.Version comes from version.Current(), which is the
+	// ONE normalized choke point — it already carries its canonical "v"
+	// prefix (and "dev" stays "dev").  The old hardcoded "v%s" doubled it
+	// ("gseer vv0.3.1-snapshot" — the owner-acceptance finding) and
+	// rendered the dev build as "gseer vdev".
+	printf(out, "  binary       : gseer %s (commit %s, built %s) sha256=%s\n",
 		v.Binary.Version, v.Binary.Commit, v.Binary.BuiltAt, v.Binary.SHA256)
 	if v.Profile.NotedAs != "" {
 		printf(out, "  profile      : %s (%s)\n", v.Profile.Name, v.Profile.NotedAs)

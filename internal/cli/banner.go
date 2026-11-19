@@ -19,7 +19,6 @@ package cli
 import (
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/Lutfifakee-Project/gseer/internal/version"
 	"github.com/spf13/cobra"
@@ -37,17 +36,19 @@ const bannerTemplate = `
 
 // bannerVersion returns the display version string for the banner,
 // prefixed with two spaces so the version sits at the right edge of the
-// last banner line (e.g. "|_|  v0.1.0").  It uses build metadata Version;
-// when empty (no ldflags injection), falls back to "dev".  When Version
-// already carries a "v" prefix (e.g. "v0.1.0"), it is returned as-is to
-// avoid doubling the prefix (no "vv0.1.0").
+// last banner line (e.g. "|_|  v0.1.0").  Since the Rev16 fix the
+// canonical "v"-prefixed form is produced by ONE choke point —
+// version.Current() (normalizeVersion) — which every surface shares, so
+// the banner can no longer disagree with status/doctor/`gseer version`
+// (previously this function de-duplicated the prefix locally while the
+// other surfaces echoed the raw injected string, so a v-prefixed
+// snapshot build rendered "v0.3.1-snapshot" here but "vv0.3.1-snapshot"
+// everywhere else — the Rev16 owner-acceptance finding).  Empty build
+// metadata still falls back to "dev".
 func bannerVersion() string {
 	v := version.Current().Version
 	if v == "" {
 		v = "dev"
-	}
-	if !strings.HasPrefix(v, "v") {
-		v = "v" + v
 	}
 	return "  " + v
 }

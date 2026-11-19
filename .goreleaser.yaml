@@ -77,6 +77,12 @@ builds:
       # an unsubstantiated value.  (The shared-index trust anchor was
       # removed with the shared-index channel; there is no key
       # ceremony in the release anymore.)
+      # Rev16: {{ .Version }} is injected VERBATIM — a tag carries its
+      # leading "v" and snapshot version templates may add another, so
+      # the CLI normalizes the prefix in ONE place
+      # (internal/version.normalizeVersion): no surface can render a
+      # doubled "vv…" and tagged/dev/snapshot builds all display one
+      # canonical form.
       - -s -w
         -X github.com/Lutfifakee-Project/gseer/internal/version.Version={{ .Version }}
         -X github.com/Lutfifakee-Project/gseer/internal/version.Commit={{ .FullCommit }}
