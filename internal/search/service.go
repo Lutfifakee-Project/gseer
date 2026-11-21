@@ -1,18 +1,8 @@
 // GSEER — internet-asset search engine.
-// Copyright (C) 2026  The GSEER Authors
+// Copyright (c) 2026 Lutfifakee Project
 //
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published
-// by the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: MIT
+// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
 
 package search
 
@@ -103,6 +93,12 @@ type Result struct {
 	// Notice is a caller-facing notice (e.g. empty index guidance,
 	// fixture-data label).  Never empty when the index needs context.
 	Notice string
+	// VisibleColumns is the canonical tabular column order for a custom
+	// projection (mandatory identity/metadata block + requested fields);
+	// nil = the default all-columns projection.  The CSV renderer uses
+	// it for headers.  Not serialized — the JSON/YAML row shape carries
+	// the pruned rows themselves.
+	VisibleColumns []string `json:"-"`
 }
 
 // QueryInfo describes the executed query.
@@ -204,6 +200,16 @@ func (s *Service) Search(ctx context.Context, q Query) (*Result, error) {
 	out.HasMore = len(rows) == plan.Limit && plan.Limit > 0
 	if out.HasMore && len(rows) > 0 {
 		out.NextCursor = cursorFromRow(plan, rows[len(rows)-1])
+	}
+	// v0.3.2-r2 fix: a custom projection returns the mandatory
+	// identity/metadata block plus EXACTLY the requested fields — no
+	// sort/projection column leaks into the wire rows.  Prune AFTER the
+	// cursor derivation: cursorFromRow reads the sort value and the row
+	// key off the unpruned last row.  The default projection (empty
+	// Fields) is untouched.
+	if len(q.Fields) > 0 {
+		PruneToProjection(out.Rows, q.Fields)
+		out.VisibleColumns = VisibleColumns(q.Fields)
 	}
 
 	if q.WithStats {

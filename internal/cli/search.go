@@ -1,23 +1,14 @@
 // GSEER — internet-asset search engine.
-// Copyright (C) 2026  The GSEER Authors
+// Copyright (c) 2026 Lutfifakee Project
 //
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published
-// by the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: MIT
+// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
 
 package cli
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/Lutfifakee-Project/gseer/internal/config"
 	"github.com/Lutfifakee-Project/gseer/internal/gql/planner"
@@ -141,7 +133,7 @@ is strict — port==443, not port=="443").`,
 	cmd.Flags().BoolVar(&fExplain, "explain", false, "print the compiled query plan (AST → branch → SQL) and exit")
 	cmd.Flags().BoolVar(&fValidate, "validate", false, "validate the query and exit (no execution)")
 	cmd.Flags().DurationVar(&fTimeout, "timeout", 0, "per-query time budget (default 5s, hard cap 30s)")
-	cmd.Flags().StringSliceVar(&fFields, "fields", nil, "projection fields (default: all search_index columns)")
+	cmd.Flags().StringSliceVar(&fFields, "fields", nil, "projection fields (default: all search_index columns; the row identity and metadata columns row_id, row_kind, asset_id, asset_kind, asset_value, first_seen, last_seen, observed_at, stale are always included)")
 	// --collapse is reserved: registered, help-marked "planned", invocation
 	// exits 64 per SPEC-03 §3 (design at v0.1.0, D-13).
 	cmd.Flags().BoolVar(&fCollapse, "collapse", false, "PLANNED (D-13); invocation exits 64")
@@ -217,6 +209,16 @@ func runSearch(cmd *cobra.Command, args []string, sf searchFlags) error {
 		return nil
 	}
 
+	// Output format validation (status.go rule): fail fast on an unknown
+	// -o value before any database contact.
+	switch flags.output {
+	case "", "table", "json", "yaml", "csv", "ndjson":
+	default:
+		printf(out, "E_SEARCH_OUTPUT: unsupported output format %q (table|json|yaml|csv|ndjson)\n", flags.output)
+		exitWith(ExitInvalidInput)
+		return nil
+	}
+
 	cfg, cerr := engineConfigOrInit(cmd)
 	if cerr != nil {
 		printf(out, "%s\nTry: gseer setup --help\n", cerr.Error())
@@ -283,14 +285,16 @@ func localSearch(out io.Writer, cfg *config.Config, q search.Query, fr facetsReq
 			exitWith(searchExitCode(err))
 		}
 	}
-	renderSearchWithFacets(out, res, fres, jsonOutput())
+	renderSearchWithFacets(out, res, fres, flags.output)
 	return nil
 }
 
 // renderSearchWithFacets renders the result and, when present, the
-// facet aggregates (JSON: a facets key; table: a compact section).
-func renderSearchWithFacets(out io.Writer, res *search.Result, fres *search.FacetsResult, asJSON bool) {
-	if asJSON && fres != nil {
+// facet aggregates (JSON: a facets key; table: a compact section; the
+// row-only formats yaml/csv/ndjson do not mix aggregates into the row
+// stream).
+func renderSearchWithFacets(out io.Writer, res *search.Result, fres *search.FacetsResult, format string) {
+	if format == "json" && fres != nil {
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(map[string]any{
@@ -304,8 +308,8 @@ func renderSearchWithFacets(out io.Writer, res *search.Result, fres *search.Face
 		})
 		return
 	}
-	renderResult(out, res, asJSON)
-	if fres == nil || asJSON {
+	renderResult(out, res, format)
+	if fres == nil || (format != "" && format != "table") {
 		return
 	}
 	printf(out, "\nFacets (same filter, same SearchService):\n")
@@ -330,12 +334,9 @@ func renderSearchWithFacets(out io.Writer, res *search.Result, fres *search.Face
 // Rendering
 // ---------------------------------------------------------------------------
 
-func jsonOutput() bool {
-	return flags.output == "json"
-}
-
-func renderResult(out io.Writer, res *search.Result, asJSON bool) {
-	if asJSON {
+func renderResult(out io.Writer, res *search.Result, format string) {
+	switch format {
+	case "json":
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
 		payload := map[string]any{
@@ -350,19 +351,147 @@ func renderResult(out io.Writer, res *search.Result, asJSON bool) {
 			payload["index"] = res.Index
 		}
 		_ = enc.Encode(payload)
-		return
+	case "yaml":
+		renderResultYAML(out, res)
+	case "csv":
+		renderResultCSV(out, res)
+	case "ndjson":
+		renderResultNDJSON(out, res)
+	default: // "", "table"
+		if res.Notice != "" {
+			printf(out, "--- %s\n\n", res.Notice)
+		}
+		printf(out, "%d result(s) in %d ms  (mode=%s)\n", res.Query.RowCount, res.Query.TookMs, res.Query.Mode)
+		if len(res.VisibleColumns) > 0 {
+			// Custom --fields projection: render the projected column
+			// contract (header = VisibleColumns, same cells as CSV).
+			// The historical single-line form reads fixed service
+			// summary fields (port/transport/protocol/…) that are not
+			// populated under a custom projection — rendering them as
+			// "-/-" would misrepresent pruned data.
+			renderProjectedTable(out, res)
+		} else {
+			for _, r := range res.Rows {
+				printf(out, "  %s\n", rowLine(r))
+			}
+		}
+		// Small result sets get the full-detail hint; wide tables stay one line.
+		if res.HasMore && res.NextCursor != "" {
+			printf(out, "\nNext page: append --cursor %s\n", res.NextCursor)
+		}
 	}
+}
 
-	if res.Notice != "" {
-		printf(out, "--- %s\n\n", res.Notice)
+// renderProjectedTable renders a custom --fields projection as an
+// aligned column table whose header is exactly the projected column
+// contract (VisibleColumns = mandatory identity/metadata block plus the
+// requested fields) and whose cells come from the SAME renderer as CSV
+// (Row.CSVCell) — one value contract across tabular surfaces.  A field
+// that is absent from a row renders as an empty cell, never a
+// fabricated value.  The default table (no --fields) keeps the
+// historical single-line rowLine form untouched (byte-compatible).
+func renderProjectedTable(out io.Writer, res *search.Result) {
+	cols := res.VisibleColumns
+	widths := make([]int, len(cols))
+	cells := make([][]string, len(res.Rows))
+	for i, c := range cols {
+		widths[i] = len(c)
 	}
-	printf(out, "%d result(s) in %d ms  (mode=%s)\n", res.Query.RowCount, res.Query.TookMs, res.Query.Mode)
+	for j := range res.Rows {
+		row := make([]string, len(cols))
+		for i, c := range cols {
+			v := res.Rows[j].CSVCell(c)
+			if len(v) > 48 {
+				v = v[:45] + "..."
+			}
+			row[i] = v
+			if len(v) > widths[i] {
+				widths[i] = len(v)
+			}
+		}
+		cells[j] = row
+	}
+	for i, c := range cols {
+		printf(out, "%-*s  ", widths[i], c)
+	}
+	printf(out, "\n")
+	for i := range cols {
+		printf(out, "%s  ", strings.Repeat("-", widths[i]))
+	}
+	printf(out, "\n")
+	for _, row := range cells {
+		for i := range cols {
+			printf(out, "%-*s  ", widths[i], row[i])
+		}
+		printf(out, "\n")
+	}
+}
+
+// renderResultYAML renders the same envelope as JSON with YAML syntax.
+// Every struct-typed part of the envelope (rows, query metadata, index
+// metadata) is round-tripped through its JSON encoding, so the YAML
+// keys — including nested fields such as QueryInfo.sort or
+// IndexMeta.fixture_observations — are IDENTICAL to the JSON wire keys
+// by construction (one serialization contract, no drift between the
+// two surfaces).
+func renderResultYAML(out io.Writer, res *search.Result) {
+	payload := map[string]any{
+		"rows":        jsonRoundTrip(res.Rows),
+		"count":       res.Query.RowCount,
+		"has_more":    res.HasMore,
+		"next_cursor": res.NextCursor,
+		"query":       jsonRoundTrip(res.Query),
+		"notice":      res.Notice,
+	}
+	if res.Index != nil {
+		payload["index"] = jsonRoundTrip(res.Index)
+	}
+	enc := yaml.NewEncoder(out)
+	_ = enc.Encode(payload)
+	_ = enc.Close()
+}
+
+// jsonRoundTrip converts any JSON-marshalable value into the plain Go
+// data (maps/slices/scalars) its JSON wire form describes, so YAML
+// inherits the JSON field names, types, and null semantics verbatim.
+func jsonRoundTrip(v any) any {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return v // unreachable for the envelope structs; fall back honestly
+	}
+	var m any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return v
+	}
+	return m
+}
+
+// renderResultCSV renders rows as CSV in the canonical column order: a
+// custom projection = the mandatory identity/metadata block plus the
+// requested fields; the default = all search_index columns.
+func renderResultCSV(out io.Writer, res *search.Result) {
+	w := csv.NewWriter(out)
+	defer w.Flush()
+	cols := res.VisibleColumns
+	if cols == nil {
+		cols = planner.AllSearchColumns()
+	}
+	_ = w.Write(cols)
 	for _, r := range res.Rows {
-		printf(out, "  %s\n", rowLine(r))
+		cells := make([]string, len(cols))
+		for i, c := range cols {
+			cells[i] = r.CSVCell(c)
+		}
+		_ = w.Write(cells)
 	}
-	// Small result sets get the full-detail hint; wide tables stay one line.
-	if res.HasMore && res.NextCursor != "" {
-		printf(out, "\nNext page: append --cursor %s\n", res.NextCursor)
+}
+
+// renderResultNDJSON writes one compact JSON object per row (standard
+// newline-delimited JSON; no envelope, no facet mixing).
+func renderResultNDJSON(out io.Writer, res *search.Result) {
+	enc := json.NewEncoder(out)
+	for _, r := range res.Rows {
+		_ = enc.Encode(r)
 	}
 }
 

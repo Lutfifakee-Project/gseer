@@ -13,7 +13,7 @@ GSEER is **not** a clone of any hosted internet-search engine and makes
 no claim of global internet coverage. It is a self-hosted search engine
 over data *you* collect.
 
-**License:** GNU Affero General Public License v3.0 (AGPL-3.0) — see
+**License (historical):** GNU Affero General Public License v3.0 (AGPL-3.0) — see
 `LICENSE`.
 
 ## v0.1.0 — First Useful Self-Hosted
@@ -206,3 +206,7 @@ not made.
 - `docs/RULES.md` — fingerprint rule format and contributions
 - `docs/ROADMAP.md` — release register
 - `CHANGELOG.md` — per-release changes
+
+> Anotasi 2026-11-19: catatan ini mendokumentasikan kondisi lisensi SAAT v0.1.0.
+> Proyek telah bermigrasi ke MIT License sejak v0.3.2 — lihat
+> docs/releases/LICENSE-MIGRATION-v0.3.2.md dan LICENSE.

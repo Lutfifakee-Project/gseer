@@ -1,27 +1,21 @@
 // GSEER — internet-asset search engine.
-// Copyright (C) 2026  The GSEER Authors
+// Copyright (c) 2026 Lutfifakee Project
 //
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published
-// by the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: MIT
+// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
 
 package search
 
 import (
 	"fmt"
 	"net/netip"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/Lutfifakee-Project/gseer/internal/gql/planner"
 )
 
 // row.go — the result row shape and the projection-aware scanner.
@@ -242,4 +236,175 @@ func formatPrefix(p netip.Prefix) string {
 		return p.Addr().String()
 	}
 	return p.String()
+}
+
+// ---------------------------------------------------------------------------
+// Projection pruning (v0.3.2-r2 owner finding)
+// ---------------------------------------------------------------------------
+//
+// The planners now ALWAYS include the mandatory identity/metadata
+// columns and the ORDER BY columns in the SELECT (the keyset cursor
+// reads them off the scanned last row).  The wire contract, however, is
+// "mandatory block + exactly the requested fields": the service prunes
+// the scanned rows back down so no sort/projection column leaks into
+// the output on ANY surface (CLI JSON/YAML/CSV/NDJSON/table, REST,
+// dashboard).  Pruning runs AFTER cursor derivation.
+
+// pruneColumnClearers nils the OPTIONAL columns of a Row (everything
+// outside the mandatory identity/metadata block).  ip clears both the
+// exposed string and the raw inet scan slot.
+var pruneColumnClearers = map[string]func(*Row){
+	"ip":              func(r *Row) { r.ipPrefix, r.IP = nil, nil },
+	"domain":          func(r *Row) { r.Domain = nil },
+	"hostname":        func(r *Row) { r.Hostname = nil },
+	"asn":             func(r *Row) { r.ASN = nil },
+	"asn_org":         func(r *Row) { r.ASNOrg = nil },
+	"geo_country":     func(r *Row) { r.GeoCountry = nil },
+	"geo_region":      func(r *Row) { r.GeoRegion = nil },
+	"geo_city":        func(r *Row) { r.GeoCity = nil },
+	"port":            func(r *Row) { r.Port = nil },
+	"transport":       func(r *Row) { r.Transport = nil },
+	"protocol":        func(r *Row) { r.Protocol = nil },
+	"name":            func(r *Row) { r.Name = nil },
+	"product":         func(r *Row) { r.Product = nil },
+	"version":         func(r *Row) { r.Version = nil },
+	"http_status":     func(r *Row) { r.HTTPStatus = nil },
+	"http_title":      func(r *Row) { r.HTTPTitle = nil },
+	"http_server":     func(r *Row) { r.HTTPServer = nil },
+	"tls_version":     func(r *Row) { r.TLSVersion = nil },
+	"cert_subject_cn": func(r *Row) { r.TLSCertSubjectCN = nil },
+	"cert_issuer_cn":  func(r *Row) { r.TLSCertIssuerCN = nil },
+	"cert_expiry":     func(r *Row) { r.TLSCertExpiry = nil },
+	"cert_serial":     func(r *Row) { r.TLSCertSerial = nil },
+	"cert_sans_dns":   func(r *Row) { r.TLSCertSansDNS = nil },
+	"technologies":    func(r *Row) { r.Technologies = nil },
+	"sources":         func(r *Row) { r.Sources = nil },
+}
+
+// PruneToProjection nils out the optional fields the caller did not
+// request.  Mandatory identity/metadata fields are never touched (a
+// custom projection must not zero or erase them — the r2 owner
+// finding).  Empty/nil fields (the default all-columns projection) is a
+// no-op, so the default behavior is byte-identical.
+func PruneToProjection(rows []Row, fields []string) {
+	if len(fields) == 0 || len(rows) == 0 {
+		return
+	}
+	keep := make(map[string]bool, len(fields)+len(planner.MandatoryProjectionColumns()))
+	for _, f := range fields {
+		if col := planner.ResolveProjectionColumn(f); col != "" {
+			keep[col] = true
+		}
+	}
+	for i, r := range rows {
+		for col, clear := range pruneColumnClearers {
+			if !keep[col] {
+				clear(&r)
+			}
+		}
+		rows[i] = r // #nosec G602 -- i is the range index over rows itself; in-bounds by construction
+	}
+}
+
+// VisibleColumns returns the canonical column order for tabular
+// renderers (CSV): the mandatory identity/metadata block plus the
+// requested fields, in canonical view order.  Returns nil when fields
+// is empty — meaning the default all-columns projection.
+func VisibleColumns(fields []string) []string {
+	if len(fields) == 0 {
+		return nil
+	}
+	keep := make(map[string]bool, len(fields)+9)
+	for _, f := range fields {
+		if col := planner.ResolveProjectionColumn(f); col != "" {
+			keep[col] = true
+		}
+	}
+	mandatory := planner.MandatoryProjectionColumns()
+	mset := make(map[string]bool, len(mandatory))
+	for _, c := range mandatory {
+		mset[c] = true
+	}
+	out := make([]string, 0, len(keep)+len(mset))
+	for _, c := range planner.AllSearchColumns() {
+		if mset[c] || keep[c] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// csvCellRenderers maps every projected column to its CSV cell renderer
+// (a table keeps the renderer flat as the column set grows).  Times
+// render as RFC3339Nano UTC, lists comma-joined, SQL NULL → "".
+var csvCellRenderers = map[string]func(*Row) string{
+	"row_id":          func(r *Row) string { return strconv.FormatInt(r.RowID, 10) },
+	"row_kind":        func(r *Row) string { return r.RowKind },
+	"asset_id":        func(r *Row) string { return strconv.FormatInt(r.AssetID, 10) },
+	"asset_kind":      func(r *Row) string { return r.AssetKind },
+	"asset_value":     func(r *Row) string { return r.AssetValue },
+	"ip":              func(r *Row) string { return derefStr(r.IP) },
+	"domain":          func(r *Row) string { return derefStr(r.Domain) },
+	"hostname":        func(r *Row) string { return derefStr(r.Hostname) },
+	"asn":             func(r *Row) string { return intPtrCell(r.ASN) },
+	"asn_org":         func(r *Row) string { return derefStr(r.ASNOrg) },
+	"geo_country":     func(r *Row) string { return derefStr(r.GeoCountry) },
+	"geo_region":      func(r *Row) string { return derefStr(r.GeoRegion) },
+	"geo_city":        func(r *Row) string { return derefStr(r.GeoCity) },
+	"port":            func(r *Row) string { return intPtrCell(r.Port) },
+	"transport":       func(r *Row) string { return derefStr(r.Transport) },
+	"protocol":        func(r *Row) string { return derefStr(r.Protocol) },
+	"name":            func(r *Row) string { return derefStr(r.Name) },
+	"product":         func(r *Row) string { return derefStr(r.Product) },
+	"version":         func(r *Row) string { return derefStr(r.Version) },
+	"http_status":     func(r *Row) string { return intPtrCell(r.HTTPStatus) },
+	"http_title":      func(r *Row) string { return derefStr(r.HTTPTitle) },
+	"http_server":     func(r *Row) string { return derefStr(r.HTTPServer) },
+	"tls_version":     func(r *Row) string { return derefStr(r.TLSVersion) },
+	"cert_subject_cn": func(r *Row) string { return derefStr(r.TLSCertSubjectCN) },
+	"cert_issuer_cn":  func(r *Row) string { return derefStr(r.TLSCertIssuerCN) },
+	"cert_expiry":     func(r *Row) string { return timePtrCell(r.TLSCertExpiry) },
+	"cert_serial":     func(r *Row) string { return derefStr(r.TLSCertSerial) },
+	"cert_sans_dns":   func(r *Row) string { return derefStr(r.TLSCertSansDNS) },
+	"technologies":    func(r *Row) string { return strings.Join(r.Technologies, ",") },
+	"sources":         func(r *Row) string { return strings.Join(r.Sources, ",") },
+	"first_seen":      func(r *Row) string { return r.FirstSeen.UTC().Format(time.RFC3339Nano) },
+	"last_seen":       func(r *Row) string { return r.LastSeen.UTC().Format(time.RFC3339Nano) },
+	"observed_at":     func(r *Row) string { return timePtrCell(r.ObservedAt) },
+	"stale": func(r *Row) string {
+		if r.Stale {
+			return "true"
+		}
+		return "false"
+	},
+}
+
+// CSVCell renders one column's value for the tabular (CSV) renderer.
+// Unknown columns render as "".
+func (r *Row) CSVCell(col string) string {
+	if f, ok := csvCellRenderers[col]; ok {
+		return f(r)
+	}
+	return ""
+}
+
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+func intPtrCell(i *int) string {
+	if i == nil {
+		return ""
+	}
+	return strconv.Itoa(*i)
+}
+
+func timePtrCell(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339Nano)
 }

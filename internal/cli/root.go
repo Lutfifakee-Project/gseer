@@ -1,18 +1,8 @@
 // GSEER — internet-asset search engine.
-// Copyright (C) 2026  The GSEER Authors
+// Copyright (c) 2026 Lutfifakee Project
 //
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published
-// by the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: MIT
+// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
 
 // Package cli implements the `gseer` command tree (SPEC-03).
 //
@@ -79,7 +69,7 @@ Authorized observation (docs/SCANNING.md — default-deny gateway, explicit only
   gseer scan http --target localhost --port 8080
 Coming later (not in this release — see docs/ROADMAP.md):
   asset
-License: GNU AGPL-3.0 — https://github.com/Lutfifakee-Project/gseer`,
+License: MIT — https://github.com/Lutfifakee-Project/gseer`,
 	// Disable the cobra completion subcommand's auto-help banner; we
 	// register `completion` ourselves with the exact short description.
 	CompletionOptions: cobra.CompletionOptions{

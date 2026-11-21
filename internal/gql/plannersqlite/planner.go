@@ -1,18 +1,8 @@
 // GSEER — internet-asset search engine.
-// Copyright (C) 2026  The GSEER Authors
+// Copyright (c) 2026 Lutfifakee Project
 //
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published
-// by the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: MIT
+// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
 
 // Package plannersqlite lowers a validated GQL AST to parameterized SQL
 // for the SQLite personal-mode engine (database/sql + modernc driver).
@@ -73,6 +63,10 @@ func Compile(root ast.Node, opts planner.Options) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
+	// v0.3.2-r2 fix: identity/metadata and ORDER BY columns always ride
+	// along in the SELECT — the projection-aware scanner binds by column
+	// name, so a projection that dropped them zeroed the row metadata.
+	projection = ensureProjectionColumns(projection, sorts)
 	cursorPayload, err := planner.DecodeCursor(opts.Cursor)
 	if err != nil {
 		return nil, err
@@ -320,6 +314,37 @@ func resolveProjection(fields []string) ([]string, error) {
 		resolved = append(resolved, col)
 	}
 	return resolved, nil
+}
+
+// mandatoryProjectionColumns mirrors the PG planner: the identity+
+// metadata column set EVERY result row must carry regardless of the
+// caller's projection (the wire row shape is non-optional; dropping any
+// of these zeroed the row metadata and broke the keyset cursor —
+// v0.3.2-r2 owner finding).
+var mandatoryProjectionColumns = []string{
+	"row_id", "row_kind", "asset_id", "asset_kind", "asset_value",
+	"first_seen", "last_seen", "observed_at", "stale",
+}
+
+// ensureProjectionColumns augments a caller projection with the
+// mandatory identity/metadata columns and the ORDER BY columns (the
+// cursor reads the sort value off the scanned last row).  The default
+// all-columns projection passes through unchanged — the default result
+// shape and SQL never change.
+func ensureProjectionColumns(projection []string, sorts []planner.SortSpec) []string {
+	out := projection
+	add := func(col string) {
+		if col != "" && !containsString(out, col) {
+			out = append(out, col)
+		}
+	}
+	for _, c := range mandatoryProjectionColumns {
+		add(c)
+	}
+	for _, s := range sorts {
+		add(columnName(s.Field))
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------

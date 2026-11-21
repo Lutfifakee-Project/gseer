@@ -1,20 +1,10 @@
 //go:build integration
 
 // GSEER — internet-asset search engine.
-// Copyright (C) 2026  The GSEER Authors
+// Copyright (c) 2026 Lutfifakee Project
 //
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published
-// by the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: MIT
+// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
 
 package planner
 
@@ -198,7 +188,30 @@ func hQuery(t *testing.T, pool *pgxpool.Pool, p *Plan) []hardeningID {
 	var out []hardeningID
 	for rows.Next() {
 		var r hardeningID
-		if err := rows.Scan(&r.RowID, &r.RowKind, &r.AssetValue, &r.Port, &r.HTTPStatus); err != nil {
+		// v0.3.2-r2: the plan SQL now ALWAYS carries the mandatory
+		// identity/metadata columns next to the requested projection, so
+		// bind BY COLUMN NAME (the production scanner does the same);
+		// unknown columns scan into a discard buffer.
+		fds := rows.FieldDescriptions()
+		dests := make([]any, len(fds))
+		for i, fd := range fds {
+			switch fd.Name {
+			case "row_id":
+				dests[i] = &r.RowID
+			case "row_kind":
+				dests[i] = &r.RowKind
+			case "asset_value":
+				dests[i] = &r.AssetValue
+			case "port":
+				dests[i] = &r.Port
+			case "http_status":
+				dests[i] = &r.HTTPStatus
+			default:
+				var discard any
+				dests[i] = &discard
+			}
+		}
+		if err := rows.Scan(dests...); err != nil {
 			t.Fatalf("Scan: %v", err)
 		}
 		out = append(out, r)

@@ -6,7 +6,7 @@
 > Search internet assets.
 
 [![CI](https://github.com/Lutfifakee-Project/gseer/actions/workflows/ci.yml/badge.svg)](https://github.com/Lutfifakee-Project/gseer/actions/workflows/ci.yml)
-[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ---
 
@@ -260,7 +260,7 @@ the existing database.
 - **Signed updates** — `gseer update` verifies an Ed25519-signed manifest
   before anything is downloaded or replaced.
 
-GNU Affero General Public License v3.0 — see [`LICENSE`](LICENSE).
+MIT License — see [`LICENSE`](LICENSE). (Migrated from AGPL-3.0 as of v0.3.2 — see docs/releases/LICENSE-MIGRATION-v0.3.2.md.)
 Contributions welcome: fingerprint rules ([`docs/RULES.md`](docs/RULES.md))
 are the easiest starting point.
 

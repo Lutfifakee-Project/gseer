@@ -1,18 +1,8 @@
 // GSEER — internet-asset search engine.
-// Copyright (C) 2026  The GSEER Authors
+// Copyright (c) 2026 Lutfifakee Project
 //
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published
-// by the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: MIT
+// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
 
 package planner
 
@@ -432,6 +422,66 @@ func resolveProjection(fields []string) ([]string, error) {
 	return resolved, nil
 }
 
+// mandatoryProjectionColumns is the identity+metadata column set EVERY
+// result row must carry regardless of the caller's projection: the row
+// key (row_id/row_kind/asset_id), the asset identity, the freshness
+// stamps, and the stale flag.  The wire contract (SPEC-07 JSON row
+// shape) declares them non-optional; a projection that dropped any of
+// them zeroed the row metadata (v0.3.2-r2 owner finding) and corrupted
+// the keyset cursor (cursorFromRow needs row_id/row_kind and the sort
+// value off the scanned row).
+var mandatoryProjectionColumns = []string{
+	"row_id", "row_kind", "asset_id", "asset_kind", "asset_value",
+	"first_seen", "last_seen", "observed_at", "stale",
+}
+
+// MandatoryProjectionColumns returns a copy of the identity+metadata
+// column set every projection must carry (the render layer's contract
+// mirror; the search service prunes against this set).
+func MandatoryProjectionColumns() []string {
+	return append([]string{}, mandatoryProjectionColumns...)
+}
+
+// AllSearchColumns returns a copy of the canonical projection list in
+// view order (the CSV/NDJSON renderers' default header order).
+func AllSearchColumns() []string {
+	return append([]string{}, allSearchColumns...)
+}
+
+// ResolveProjectionColumn exports the canonical-path/column-name
+// resolution for the render layer: the search service prunes result
+// rows to the caller's projection and must normalize the exact same
+// spellings (canonical paths like "tls.version" and column names like
+// "tls_version").  Returns "" for unknown names.
+func ResolveProjectionColumn(name string) string {
+	return resolveProjectionColumn(name)
+}
+
+// ensureProjectionColumns augments a caller projection with the
+// mandatory identity/metadata columns and the ORDER BY columns (the
+// keyset cursor reads the sort value back off the scanned last row).
+// The default all-columns projection already contains everything, so it
+// passes through unchanged — the default result shape and SQL never
+// change.  Optional-but-unrequested columns are NOT appended here: the
+// render layer prunes them back off the rows (PruneToProjection), so
+// the wire contract stays "mandatory block + exactly the requested
+// fields".
+func ensureProjectionColumns(projection []string, sorts []SortSpec) []string {
+	out := projection
+	add := func(col string) {
+		if col != "" && !containsString(out, col) {
+			out = append(out, col)
+		}
+	}
+	for _, c := range mandatoryProjectionColumns {
+		add(c)
+	}
+	for _, s := range sorts {
+		add(columnName(s.Field))
+	}
+	return out
+}
+
 // decodeCursorForSort decodes the page cursor (if any) and validates it
 // matches the first sort field (a cursor is tied to the sort order of
 // the page that produced it).
@@ -531,6 +581,10 @@ func Compile(root ast.Node, opts Options) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
+	// v0.3.2-r2 fix: identity/metadata and ORDER BY columns always ride
+	// along in the SELECT — scanRow binds by column name, so a projection
+	// that dropped them zeroed the row metadata and broke the cursor.
+	projection = ensureProjectionColumns(projection, sorts)
 
 	// Decode cursor (if any) and validate it matches the first sort field.
 	cursorPayload, err := decodeCursorForSort(opts.Cursor, sorts)
