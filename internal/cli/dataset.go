@@ -240,6 +240,19 @@ func newDatasetStatusCmd() *cobra.Command {
 // loadDatasetState opens the personal database and reads the dataset
 // install state (read-only intent; sqlite.Open creates nothing when the
 // file exists — the engine commands provisioned it already).
+// datasetFetcherFromConfig builds the fetcher the CLI uses, applying the
+// config's trusted redirect hosts (R4 P0-5).  An UNSET list (nil) keeps
+// NewFetcher's product defaults (the official GitHub release-asset CDN);
+// an explicitly configured list replaces the defaults verbatim — an
+// empty list trusts nothing (strict fail-closed).
+func datasetFetcherFromConfig(cfg *config.Config) *dataset.Fetcher {
+	f := dataset.NewFetcher()
+	if cfg != nil && cfg.Dataset.TrustedRedirectHosts != nil {
+		f.TrustedRedirectHosts = cfg.Dataset.TrustedRedirectHosts
+	}
+	return f
+}
+
 func loadDatasetState(cmd *cobra.Command, cfg *config.Config) (*dataset.State, error) {
 	res, err := openPersonal(cfg)
 	if err != nil {

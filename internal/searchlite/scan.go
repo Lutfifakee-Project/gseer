@@ -134,6 +134,8 @@ var scanBindings = map[string]func(*search.Row) scanCell{
 	"version":         func(r *search.Row) scanCell { return scanCell{raw: &r.Version} },
 	"http_status":     func(*search.Row) scanCell { return scanCell{kind: "http_status"} },
 	"http_title":      func(r *search.Row) scanCell { return scanCell{raw: &r.HTTPTitle} },
+	"http_body":       func(r *search.Row) scanCell { return scanCell{raw: &r.HTTPBody} },
+	"http_header":     func(r *search.Row) scanCell { return scanCell{raw: &r.HTTPHeader} },
 	"http_server":     func(r *search.Row) scanCell { return scanCell{raw: &r.HTTPServer} },
 	"tls_version":     func(r *search.Row) scanCell { return scanCell{raw: &r.TLSVersion} },
 	"cert_subject_cn": func(r *search.Row) scanCell { return scanCell{raw: &r.TLSCertSubjectCN} },

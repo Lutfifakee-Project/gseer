@@ -61,6 +61,8 @@ type Field string
 const (
 	FieldHTTPServer       Field = "http.server"
 	FieldHTTPTitle        Field = "http.title"
+	FieldHTTPBody         Field = "http.body"
+	FieldHTTPHeaders      Field = "http.headers"
 	FieldTLSVersion       Field = "tls.version"
 	FieldTLSCertSubjectCN Field = "tls.cert_subject_cn"
 	FieldTLSCertIssuerCN  Field = "tls.cert_issuer_cn"
@@ -68,7 +70,7 @@ const (
 )
 
 // Fields is the closed matchable-field set, in documentation order.
-var Fields = []Field{FieldHTTPServer, FieldHTTPTitle, FieldTLSVersion, FieldTLSCertSubjectCN, FieldTLSCertIssuerCN, FieldSSHBanner}
+var Fields = []Field{FieldHTTPServer, FieldHTTPTitle, FieldHTTPBody, FieldHTTPHeaders, FieldTLSVersion, FieldTLSCertSubjectCN, FieldTLSCertIssuerCN, FieldSSHBanner}
 
 func (f Field) valid() bool {
 	for _, ok := range Fields {

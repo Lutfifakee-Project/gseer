@@ -99,6 +99,13 @@ type Manifest struct {
 	// Notes is an optional human-readable coverage statement (the
 	// pipeline's honest "what this dataset covers" line).
 	Notes string `json:"notes,omitempty"`
+
+	// Signature is the Ed25519 signing block (sign.go) over the
+	// manifest's canonical core.  A manifest without a valid signature
+	// block is refused at PARSE level (fail-closed — P0-1): consumers
+	// never see an unsigned manifest, and the import path re-verifies
+	// against the embedded keyring before anything is imported.
+	Signature *ManifestSignature `json:"signature,omitempty"`
 }
 
 // PayloadInfo locates and fingerprints the payload.
@@ -187,7 +194,9 @@ type RecordObservation struct {
 	Evidence   map[string]any `json:"evidence,omitempty"`
 }
 
-// ParseManifest decodes + validates a manifest document.
+// ParseManifest decodes + validates a manifest document.  The
+// signature block is REQUIRED here (P0-1): an unsigned or malformedly
+// signed manifest never parses, so no consumer path can skip it.
 func ParseManifest(data []byte) (*Manifest, error) {
 	var m Manifest
 	dec := json.NewDecoder(strings.NewReader(string(data)))
@@ -201,8 +210,22 @@ func ParseManifest(data []byte) (*Manifest, error) {
 	return &m, nil
 }
 
-// Validate enforces the manifest contract (docs/DATASET.md §3).
+// Validate enforces the manifest contract INCLUDING the signature
+// block (docs/DATASET.md §3 + §5).
 func (m *Manifest) Validate() error {
+	if err := m.ValidateCore(); err != nil {
+		return err
+	}
+	if m.Signature == nil {
+		return fmt.Errorf("E_DATASET_UNSIGNED: dataset manifest carries no signature — refused (docs/DATASET.md §5)")
+	}
+	return m.Signature.validate()
+}
+
+// ValidateCore enforces the content contract of the manifest WITHOUT
+// the signature requirement — the publisher-side shape check used
+// before signing (gseer-dataset build) and by ParseManifestUnsigned.
+func (m *Manifest) ValidateCore() error {
 	if m.SchemaVersion > SchemaVersion {
 		return fmt.Errorf("dataset: manifest schema_version %d is newer than this binary understands (%d) — upgrade gseer to import it",
 			m.SchemaVersion, SchemaVersion)

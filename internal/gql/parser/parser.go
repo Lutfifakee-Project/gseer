@@ -24,15 +24,18 @@ import (
 //	primary  := "(" or ")" | quantified | comparison | exists
 //	not      := ( "!" | KwNot ) not | primary
 //	quantified := ( KwAny | KwAll ) "(" IDENT ")" "{" or "}"
-//	predicate  := op value | KwIn "(" value ("," value)* ")"
+//	predicate  := op value | KwIn "(" value ("," value)* ")" | ":" value
 //	comparison := IDENT predicate
 //	exists     := IDENT            (no predicate follows)
 //	op         := "==" | "!=" | "=" | "<" | "<=" | ">" | ">=" |
 //	              KwContains | KwInCIDR | KwInDomain
-//	value      := STRING | INT
+//	value      := STRING | INT | IDENT (shorthand only: a non-keyword,
+//	              non-scope bare word — the common asset-search shorthand form)
 //
 // Sugar: `=` parses as `==` (ASSIGN → OpEq); the keyword boolean forms
-// parse to the same nodes as their symbolic forms.  `field != "value"`
+// parse to the same nodes as their symbolic forms; `field:value` parses
+// to the IDENTICAL node as `field == value` (OpEq — the compatibility
+// shorthand adds no new semantics, it only adds a spelling).  `field != "value"`
 // is its own comparison operator (OpNeq), NOT a negated equality.
 //
 // Parse-time limits (K-13): node count and tree depth are enforced HERE
@@ -455,6 +458,13 @@ func (p *parser) parseFieldTail() (ast.Node, error) {
 	case lexer.MATCH:
 		p.advance()
 		return p.comparison(field, ast.OpMatch)
+	case lexer.COLON:
+		// The `field:value` shorthand — the common asset-search
+		// spelling.  It parses to the SAME node as `field == value`; the
+		// shorthand adds a spelling, not semantics (see the grammar
+		// header above and docs/audit/V032-SEARCH-SYNTAX-AUDIT.md §5).
+		p.advance()
+		return p.shorthand(field)
 	case lexer.KwIn:
 		p.advance()
 		return p.inList(field)
@@ -508,6 +518,51 @@ func (p *parser) comparison(field lexer.Token, op ast.Op) (ast.Node, error) {
 			"try: "+field.Text+" "+op.String()+" 42")
 	default:
 		return nil, p.unexpected(vtok, "a string or integer literal after "+field.Text+" "+op.String())
+	}
+}
+
+// shorthand parses the value position of the common asset-search
+// shorthand.  The accepted value grammar: an integer literal, a quoted
+// string, or a bare word (IDENT — a keyword lexeme can never reach this
+// branch, because the lexer emits AND/OR/… as keyword tokens).  The node
+// is exactly the node `field == value` builds; error hints point at the
+// equivalent operator form so the two spellings teach each other.
+func (p *parser) shorthand(field lexer.Token) (ast.Node, error) {
+	vtok := p.peek()
+	switch vtok.Kind {
+	case lexer.STRING:
+		p.advance()
+		return p.checked(&ast.Comparison{
+			Field: field.Text, Op: ast.OpEq,
+			Value: &ast.StrValue{S: vtok.Value},
+			Line:  field.Line, Col: field.Col,
+		}, field)
+	case lexer.INT:
+		p.advance()
+		var n int64
+		if _, err := fmt.Sscanf(vtok.Text, "%d", &n); err != nil {
+			return nil, p.errorf(vtok, fmt.Sprintf("integer literal %s is out of range at line %d, column %d", vtok.Text, vtok.Line, vtok.Col),
+				"GQL integer literals are 64-bit", "reduce the literal's magnitude")
+		}
+		return p.checked(&ast.Comparison{
+			Field: field.Text, Op: ast.OpEq,
+			Value: &ast.IntValue{N: n},
+			Line:  field.Line, Col: field.Col,
+		}, field)
+	case lexer.IDENT:
+		p.advance()
+		return p.checked(&ast.Comparison{
+			Field: field.Text, Op: ast.OpEq,
+			Value: &ast.StrValue{S: vtok.Text},
+			Line:  field.Line, Col: field.Col,
+		}, field)
+	case lexer.EOF:
+		return nil, p.errorf(vtok, "missing value after ':' at line "+itoa(vtok.Line)+", column "+itoa(vtok.Col),
+			"the shorthand field:value needs a value (a number, a quoted string, or a bare word)",
+			"try: "+field.Text+":443   or   "+field.Text+":\"text\"   (equivalent to "+field.Text+" == value)")
+	default:
+		return nil, p.unexpected(vtok, "a number, quoted string, or bare word after "+field.Text+":"+""+
+			"  (e.g. "+field.Text+":443)")
 	}
 }
 

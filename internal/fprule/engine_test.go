@@ -225,7 +225,7 @@ tests:
 		{"confidence high", strings.Replace(base, "confidence: 0.9", "confidence: 1.5", 1), "outside [0,1]"},
 		{"confidence negative", strings.Replace(base, "confidence: 0.9", "confidence: -0.1", 1), "outside [0,1]"},
 		{"no provenance", strings.Replace(base, "provenance: test-only valid rule used as the lint baseline", "provenance: \"\"", 1), "provenance is empty"},
-		{"unknown field", strings.Replace(base, "field: http.server", "field: http.body", 1), "unknown field"},
+		{"unknown field", strings.Replace(base, "field: http.server", "field: http.status_code", 1), "unknown field"},
 		{"bad pattern", strings.Replace(base, "pattern: '^ok$'", "pattern: '(unclosed'", 1), "does not compile"},
 		{"version group out of range", strings.Replace(base, "pattern: '^ok$'", "pattern: '^ok$'\n    version_group: 3", 1), "exceeds pattern's"},
 		{"weight out of range", strings.Replace(base, "pattern: '^ok$'", "pattern: '^ok$'\n    weight: 1.5", 1), "weight 1.5 outside"},
