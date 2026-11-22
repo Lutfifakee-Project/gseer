@@ -13,21 +13,30 @@
 #   4. observes TLS :443 on the seeds' web hostnames under an explicit,
 #      audited scope (the same P2 regime CLI users run — the honesty
 #      contract reserves PORT facts to explicit observation);
-#   5. exports + validates the dataset (gseer-dataset build + validate —
-#      validation is the publication gate);
+#   5. exports + signs + validates the dataset (gseer-dataset build +
+#      validate — validation is the publication gate and REQUIRES a
+#      passing Ed25519 signature against the embedded key);
 #   6. publishes the artifact as the rolling `central-dataset` release
 #      (NON-latest, stable asset names: gseer-dataset-manifest.json +
 #      gseer-dataset.ndjson.gz) and a run artifact for auditing.
 #
-# Integrity: payload SHA-256 in the manifest + HTTPS transport.  The
-# dataset version is monotonic ON THE CHANNEL: the published manifest is
-# the authority (a run publishes max(run_number, published + 1), so a
-# migrated repository can never publish a version users already consume).
-# The payload is uploaded BEFORE the manifest — the manifest upload is the
-# version commit point; a torn read during the swap (manifest/payload from
+# Integrity (P0-1: signed central dataset distribution): the manifest is
+# SIGNED with Ed25519 — `gseer-dataset sign` signs the canonical manifest
+# core (version, checksums, provenance, freshness) with the private seed
+# from the GSEER_DATASET_SIGNING_KEY repo secret, and every consumer CLI
+# verifies the signature against the key embedded in its binary BEFORE
+# downloading the payload.  An unsigned or tampered manifest can never
+# reach the import path (fail-closed).  The payload SHA-256 in the
+# signed manifest binds the payload bytes; the dataset version is
+# monotonic ON THE CHANNEL: the published manifest is the authority (a
+# run publishes max(run_number, published + 1), so a migrated repository
+# can never publish a version users already consume).  The payload is
+# uploaded BEFORE the manifest — the manifest upload is the version
+# commit point; a torn read during the swap (manifest/payload from
 # different versions) is honestly rejected by the CLI's checksum
-# verification (E_DATASET_CHECKSUM) and a retry succeeds.
-# Coverage is the SEED REGISTER — never claimed internet-wide.
+# verification (E_DATASET_CHECKSUM) and a retry succeeds.  Key ceremony
+# + rotation: docs/DATASET.md §5–§6.  Coverage is the SEED REGISTER —
+# never claimed internet-wide.
 #
 # Least privilege: contents: write is required to create/update the
 # `central-dataset` release; no other scope.
@@ -175,7 +184,14 @@ jobs:
           echo "DATASET_VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "[ ok ] channel version: $PUBLISHED -> publishing dataset v$VERSION"
 
-      - name: Build + validate the dataset (publication gate)
+      - name: Build + sign + validate the dataset (publication gate)
+        env:
+          # P0-1: the Ed25519 signing seed lives ONLY in this repo secret
+          # (never in the repository, never in an artifact).  build signs
+          # the manifest in-memory; without the secret the manifest stays
+          # unsigned and validate FAILS — the publication gate is
+          # fail-closed by construction.
+          GSEER_DATASET_SIGNING_KEY: ${{ secrets.GSEER_DATASET_SIGNING_KEY }}
         run: |
           set -euo pipefail
           mkdir -p dist-dataset

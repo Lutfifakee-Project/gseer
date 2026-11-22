@@ -192,6 +192,8 @@ func (o *HTTPObserver) Run(ctx context.Context, host string, port int) (*ScanRes
 		title   string
 		server  string
 		cType   string
+		bodyTxt string
+		hdrTxt  string
 		hops    []string
 		trunc   bool
 		finalIP = dec.IP
@@ -208,7 +210,7 @@ func (o *HTTPObserver) Run(ctx context.Context, host string, port int) (*ScanRes
 	// complete response, a failure, a denied hop, an exhausted budget)
 	// and returns the run result.
 	finish := func() (*ScanResult, error) {
-		evidence := buildHTTPScanEvidence(status, title, server, cType, failure,
+		evidence := buildHTTPScanEvidence(status, title, server, cType, bodyTxt, hdrTxt, failure,
 			dec.Scope.ID, net.JoinHostPort(dec.Host, strconv.Itoa(port)), finalIP, hops,
 			bytesRead, maxBytes, trunc)
 		facts := scanFacts(now, sourceID, SourceHTTP, ProvenanceHTTP, dec.Host, finalIP, port,
@@ -310,6 +312,8 @@ func (o *HTTPObserver) Run(ctx context.Context, host string, port int) (*ScanRes
 		}
 		trunc = trunc || tread
 		title = extractTitle(body)
+		bodyTxt = string(body)
+		hdrTxt = collectResponseHeaders(resp.Header)
 
 		if isRedirect(status) {
 			loc := resp.Header.Get("Location")
@@ -373,7 +377,7 @@ func decideRedirect(loc, curHost string, curPort int, hop int) (redirectTarget, 
 // buildHTTPScanEvidence assembles the run's evidence object: exactly
 // what the target answered (or the honest failure), with the
 // ACCUMULATED byte counter the scope budget was measured against.
-func buildHTTPScanEvidence(status int, title, server, cType, failure string,
+func buildHTTPScanEvidence(status int, title, server, cType, body, headers, failure string,
 	scopeID int64, target string, finalIP netip.Addr, hops []string,
 	bytesRead, maxBytes int64, trunc bool,
 ) map[string]any {
@@ -383,6 +387,8 @@ func buildHTTPScanEvidence(status int, title, server, cType, failure string,
 			"title":        title,
 			"server":       server,
 			"content_type": cType,
+			"body":         body,
+			"headers":      headers,
 		},
 		"scan": map[string]any{
 			"scope_id":       scopeID,
@@ -607,6 +613,47 @@ func errText(err error) string {
 		s = strings.ReplaceAll(s, "\n", " ")
 	}
 	return s
+}
+
+// interestingResponseHeaders lists the response headers the observer
+// records as technology/service evidence (a BOUNDED allow-list — never
+// the whole header dump).  The sensitive set (credentials, session
+// state, proxies) is excluded by construction and additionally
+// redaction-checked below.
+var interestingResponseHeaders = []string{
+	"Server", "X-Powered-By", "X-Pingback", "X-Generator", "X-Drupal-Cache",
+	"X-Redirect-By", "X-AspNet-Version", "X-Runtime", "Via", "Link",
+	"X-Gwt-Cache", "X-Served-By", "X-Cache", "Content-Language",
+}
+
+// redactedHeaderNames never enter the evidence even if present in the
+// allow-list above by a later edit (defense in depth for secrets).
+var redactedHeaderNames = map[string]bool{
+	"Set-Cookie": true, "Cookie": true, "Authorization": true,
+	"Proxy-Authorization": true, "Www-Authenticate": true,
+}
+
+// collectResponseHeaders renders the interesting response headers as a
+// canonical "Name: value" block (one header per line, canonical-name
+// order).  Bounded per header (256 bytes) and per count (the fixed
+// allow-list) so the evidence cannot balloon.
+func collectResponseHeaders(h http.Header) string {
+	var out []string
+	for _, name := range interestingResponseHeaders {
+		if redactedHeaderNames[name] {
+			continue
+		}
+		vals := h.Values(name)
+		if len(vals) == 0 {
+			continue
+		}
+		v := vals[0]
+		if len(v) > 256 {
+			v = v[:256]
+		}
+		out = append(out, name+": "+v)
+	}
+	return strings.Join(out, "\n")
 }
 
 func confidenceFor(failure string) string {

@@ -25,6 +25,8 @@ package cli
 // test only READS it; nothing here pretends to be a fresh discovery.
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -34,18 +36,49 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Lutfifakee-Project/gseer/internal/dataset"
 )
 
 // serveCentralV1 serves the vendored release artifacts with the
 // production /releases/download/<tag>/<asset> path shape and counts
 // every request (the search-stays-local proof reads the counter).
+//
+// P0-1: the vendored v1 manifest is UNSIGNED (it predates the signing
+// requirement) — the server re-signs it on the fly with an ephemeral
+// publisher key registered as the verifier's trust anchor.  The PAYLOAD
+// is byte-identical (the signature binds its sha256), so every exact
+// count below is asserted through the REAL signed journey.
 func serveCentralV1(t *testing.T) (manifestURL string, requests *int32) {
 	t.Helper()
+	manifestRaw, err := testdataFile("gseer-dataset-manifest.json")
+	if err != nil {
+		t.Fatalf("vendored manifest: %v", err)
+	}
+	m, err := dataset.ParseManifestUnsigned(manifestRaw)
+	if err != nil {
+		t.Fatalf("vendored manifest does not pass the core contract: %v", err)
+	}
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataset.SetTestKeyring(dataset.Keyring{dataset.KeyID(pub): pub})
+	t.Cleanup(func() { dataset.SetTestKeyring(nil) })
+	signed, err := dataset.SignManifest(m, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	var mu sync.Mutex
 	var hits int32
-	dir := t.TempDir()
-	_ = dir
 	mux := http.NewServeMux()
+	mux.HandleFunc("/releases/download/central-dataset/gseer-dataset-manifest.json", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		_, _ = w.Write(signed)
+	})
 	asset := func(name string) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			mu.Lock()
@@ -60,7 +93,6 @@ func serveCentralV1(t *testing.T) (manifestURL string, requests *int32) {
 			_, _ = w.Write(b)
 		}
 	}
-	mux.HandleFunc("/releases/download/central-dataset/gseer-dataset-manifest.json", asset("gseer-dataset-manifest.json"))
 	mux.HandleFunc("/releases/download/central-dataset/gseer-dataset.ndjson.gz", asset("gseer-dataset.ndjson.gz"))
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)

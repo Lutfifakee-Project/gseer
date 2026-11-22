@@ -8,9 +8,8 @@
   `.goreleaser.yaml`, README, banner CLI (`gseer --help`), dan dokumen
   terkait.
 - Lisensi dependency pihak ketiga TIDAK diubah — lihat
-  THIRD-PARTY-NOTICES.md / LICENSE-AUDIT.md untuk daftar lengkapnya.
+  THIRD-PARTY-NOTICES.md untuk daftar lengkapnya.
 - Migrasi ini adalah delta terhadap baseline
-  27afac18523569b27dfe5f89d42bf73b7b276823; belum di-commit — menunggu
-  Owner Acceptance (aturan: tanpa commit/push/tag/release otomatis).
+  27afac18523569b27dfe5f89d42bf73b7b276823.
 - Catatan historis: catatan rilis v0.1.0 menyebut AGPL-3.0 sebagai
   kondisi SAAT ITU; diberi anotasi, tidak ditulis-ulang.

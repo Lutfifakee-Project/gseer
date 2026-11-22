@@ -29,16 +29,36 @@ type Fetcher struct {
 	PayloadCapBytes  int64
 	// TempDir receives downloaded payloads (default: os.TempDir()).
 	TempDir string
+	// MaxRedirects bounds the redirect chain (R4 P0-5; default
+	// DefaultMaxRedirects).
+	MaxRedirects int
+	// TrustedRedirectHosts explicitly allows cross-host redirects to
+	// these hosts (config: dataset.trusted_redirect_hosts) — legitimate
+	// trusted CDN delivery; everything cross-host fails closed.
+	TrustedRedirectHosts []string
 }
 
-// NewFetcher builds a Fetcher with the default caps and a timeout-bounded
-// client.
+// NewFetcher builds a Fetcher with the default caps, a timeout-bounded
+// client, and the R4 P0-5 redirect policy (per-hop validation: limit, no
+// HTTPS downgrade, no prohibited destinations, explicit trusted-host
+// requirement for cross-host hops).  The policy's trusted-host list
+// starts at DefaultTrustedRedirectHosts — the GitHub release-asset CDN
+// the official channel redirects to — so the default install follows its
+// own channel's CDN hop; a configured dataset.trusted_redirect_hosts
+// list replaces the set wholesale (see datasetFetcherFromConfig).
 func NewFetcher() *Fetcher {
-	return &Fetcher{
-		Client:           &http.Client{Timeout: 90 * time.Second},
+	f := &Fetcher{
 		ManifestCapBytes: DefaultManifestCapBytes,
 		PayloadCapBytes:  DefaultPayloadCapBytes,
+		// Copy, never alias the package var: a caller mutating its
+		// fetcher's list must not re-shape every later fetcher.
+		TrustedRedirectHosts: append([]string(nil), DefaultTrustedRedirectHosts...),
 	}
+	f.Client = &http.Client{
+		Timeout:       90 * time.Second,
+		CheckRedirect: f.redirectPolicy,
+	}
+	return f
 }
 
 // redactURL strips userinfo from a URL for error display.
@@ -51,7 +71,10 @@ func redactURL(raw string) string {
 	return u.String()
 }
 
-// FetchManifest downloads + parses + validates the manifest.
+// FetchManifest downloads + parses + validates the manifest, then
+// verifies the Ed25519 signature against the EMBEDDED keyring —
+// fail-closed BEFORE any payload download (P0-1): an unsigned,
+// unknown-signed, or tampered manifest never leaves this function.
 func (f *Fetcher) FetchManifest(ctx context.Context, manifestURL string) (*Manifest, error) {
 	if err := ValidateManifestURL(manifestURL); err != nil {
 		return nil, err
@@ -62,6 +85,9 @@ func (f *Fetcher) FetchManifest(ctx context.Context, manifestURL string) (*Manif
 	}
 	m, err := ParseManifest(data)
 	if err != nil {
+		return nil, fmt.Errorf("dataset: %w", err)
+	}
+	if err := VerifyTrusted(m); err != nil {
 		return nil, fmt.Errorf("dataset: %w", err)
 	}
 	return m, nil
@@ -102,6 +128,10 @@ func (f *Fetcher) FetchPayload(ctx context.Context, manifestURL string, m *Manif
 		return "", fmt.Errorf("E_DATASET_UNREACHABLE: the dataset channel did not answer (%s): %v", redactURL(payloadURL), err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if verr := validateFinalResponse(resp); verr != nil {
+		cleanup()
+		return "", verr
+	}
 	if resp.StatusCode != http.StatusOK {
 		cleanup()
 		return "", fmt.Errorf("E_DATASET_UNREACHABLE: the dataset channel answered HTTP %d for %s (a fresh channel publishes the artifact; the owner runs the pipeline)",
@@ -157,6 +187,9 @@ func (f *Fetcher) fetchBytes(ctx context.Context, rawURL string, capBytes int64)
 		return nil, fmt.Errorf("E_DATASET_UNREACHABLE: the dataset channel did not answer (%s): %v", redactURL(rawURL), err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if verr := validateFinalResponse(resp); verr != nil {
+		return nil, verr
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("E_DATASET_UNREACHABLE: the dataset channel answered HTTP %d for %s (a fresh channel publishes the artifact; the owner runs the pipeline)",
 			resp.StatusCode, redactURL(rawURL))

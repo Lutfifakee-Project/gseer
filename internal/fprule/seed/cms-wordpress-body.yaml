@@ -1,0 +1,30 @@
+# WordPress via body markers — the CMS asset/content markers the
+# WordPress core emits on every stock page (theme + include paths).
+# Title-only detection (cms-wordpress) misses customized sites; the
+# stock asset paths survive almost every theme customization.
+id: cms-wordpress-body
+family: cms
+product: wordpress
+confidence: 0.8
+provenance: |
+  WordPress core ships its static assets under /wp-content/ and
+  /wp-includes/ on every stock installation (documented WordPress
+  directory layout); the paths appear verbatim in the served HTML as
+  script/link/src references.  Anchored to the path segments (not the
+  word "WordPress") so a blog ABOUT WordPress never matches.
+matches:
+  - field: http.body
+    pattern: '(src|href)="[^"]*/wp-content/'
+    weight: 0.85
+  - field: http.body
+    pattern: '(src|href)="[^"]*/wp-includes/'
+    weight: 0.85
+tests:
+  - evidence: {http: {body: '<link rel="stylesheet" href="https://example.test/wp-content/themes/twenty/style.css">'}}
+    match: true
+  - evidence: {http: {body: '<script src="/wp-includes/js/jquery.min.js"></script>'}}
+    match: true
+  - evidence: {http: {body: 'How to speed up WordPress sites: use a CDN'}}
+    match: false
+  - evidence: {http: {body: '<html><body>nginx welcome page</body></html>'}}
+    match: false

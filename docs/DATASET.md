@@ -1,9 +1,12 @@
-# GSEER — Central Internet Asset Dataset (v0.3.2 Rev 14)
+# GSEER — Central Internet Asset Dataset (v0.3.2: SIGNED distribution)
 
 The central dataset is the project's **scheduled passive discovery export**:
-a versioned, checksummed artifact of validated evidence that the project's
-GitHub Actions pipeline collects, validates, and publishes — and that your
-CLI downloads, verifies, and imports into your Local Index.
+a versioned, SIGNED artifact of validated evidence that the project's
+GitHub Actions pipeline collects, validates, signs, and publishes — and
+that your CLI downloads, signature-verifies, checksum-verifies, and
+imports into your Local Index (P0-1: the Ed25519 signature over the
+manifest's canonical core is MANDATORY — an unsigned or tampered manifest
+never reaches the import path).
 
 **Search stays LOCAL.** The dataset only FEEDS the index; GSEER has no
 shared-index query service, no API server, and no dashboard (Rev 8
@@ -26,8 +29,9 @@ downloading, or scanning.
 5. observes TLS `:443` on the seeds' web hostnames under an explicit,
    audited scope (the honesty contract reserves PORT facts to explicit
    observation — passive facts never invent ports);
-6. exports + validates the dataset (`gseer-dataset build` + `validate` —
-   validation is the publication gate);
+6. exports, SIGNS, and validates the dataset (`gseer-dataset build`
+   -key-file <seed> + `validate` — validation is the publication gate
+   and REQUIRES a passing Ed25519 signature; §5);
 7. publishes the artifact as the rolling `central-dataset` release
    (NON-latest; stable asset names) plus a per-run audit artifact.
 
@@ -82,12 +86,23 @@ need:
 | `freshness.oldest/newest_observed_at` | the REAL evidence age window |
 | `validator_version` | the validation ruleset that produced it |
 | `notes` | the honest coverage statement |
+| `signature` | Ed25519 over the canonical core (`algorithm`, `key_id`, base64 `value`) — §5 |
 
-Integrity model (deliberate, owner-reviewed): payload SHA-256 in the
-manifest + HTTPS transport. A checksum mismatch refuses the import
-outright (`E_DATASET_CHECKSUM`) and the database is not touched. There is
-no third-party signing ceremony (the Rev 8 owner decision that removed
-the shared-index key ceremony stands).
+Integrity model (P0-1, the owner-mandated "signed dataset distribution"):
+the manifest is SIGNED with Ed25519 — the signature covers the CANONICAL
+core of the manifest (schema version, dataset version, timestamps, the
+payload identity: filename + sha256 + size_bytes + records, the row
+counts, provenance, and freshness), so the payload bytes are bound
+unambiguously.  Verification is fail-closed at THREE layers: PARSE (an
+unsigned or malformed signature block never parses —
+`E_DATASET_UNSIGNED`), FETCH (the signature is verified against the key
+EMBEDDED in the CLI binary before any payload download —
+`E_DATASET_UNKNOWN_KEY` for an unlisted key ID,
+`E_DATASET_BAD_SIGNATURE` for a tampered/foreign-signed manifest), and
+IMPORT (re-verified at the import boundary, defense in depth).  A
+checksum mismatch (`E_DATASET_CHECKSUM`) still refuses the import
+outright, and the database is never touched.  HTTPS transport stays the
+delivery rule (plain http only for loopback hosts, local testing).
 
 Default channel:
 `https://github.com/Lutfifakee-Project/gseer/releases/download/central-dataset/gseer-dataset-manifest.json`
@@ -98,19 +113,83 @@ hosts (local testing).
 ## 4. The journey (what a user does)
 
 ```bash
-gseer setup                     # provisions personal mode + imports the dataset
+gseer search "apache"           # the ONE-command experience: the FIRST search
+                                # auto-imports the SIGNED dataset, then queries it
+gseer setup                     # provisions personal mode + bootstraps discovery + imports the dataset
 gseer search 'port=443'         # REAL results from the imported dataset
+gseer search 'port:443'         # simple field shorthand — the same row
 gseer dataset status            # installed version + freshness
 gseer dataset update            # refresh WITHOUT a re-setup
-gseer dataset check             # channel manifest only (no download/import)
+gseer dataset check             # channel manifest only (signature verified; no payload download)
 ```
 
-`gseer setup` auto-imports the latest dataset after the local discovery
-bootstrap. If the channel is unreachable, setup says so honestly
-(`[warn]`), keeps working with whatever local discovery produced, and
-still exits 0 — nothing is half-imported.
+`gseer setup` imports the latest dataset as its MANDATORY final stage
+(after the passive discovery bootstrap): the SIGNED manifest is fetched
+and verified against the embedded key, the payload is checksummed, and
+the import is atomic.  A failed fetch, signature, checksum, or import
+FAILS the setup (non-zero exit, `E_DATASET_SETUP_FAILED`) — the dataset
+is never reported as ready when it is not.  Search NEVER fetches
+anything: it stays query-only over the local index.  Explicit offline
+operation: `gseer setup --offline` skips the dataset stage and reports
+the dataset state as NOT INSTALLED.  Retry any time:
+`gseer dataset update`.
 
-## 5. Import atomicity, rollback, and recovery
+Redirects are validated on EVERY hop (limit, no HTTPS→HTTP downgrade,
+no private/loopback/link-local destinations) and a cross-host hop is
+refused unless the target host is explicitly trusted.  The official
+channel's hop (`github.com/…/releases/download/…` → the GitHub
+release-asset CDN `release-assets.githubusercontent.com`) is trusted by
+default; an explicit `dataset.trusted_redirect_hosts` list in the
+config replaces that default verbatim (exact hostnames only — an empty
+list trusts nothing).  Trust never weakens the download itself: the
+manifest signature, the payload size and SHA-256, and the HTTPS
+transport of every hop are enforced regardless of which host serves
+the bytes.
+
+## 5. Signing and key management (the ceremony)
+
+- **Key generation** — the owner runs `gseer-dataset keygen -out seed`:
+  a 32-byte Ed25519 seed is written to the seed file (0600 — the PRIVATE
+  half lives ONLY in the CI secret store `GSEER_DATASET_SIGNING_KEY`;
+  never in the repository, the source tree, or any artifact), and the
+  PUBLIC half + the stable key ID (`hex(sha256(pub)[:8])`) print for
+  embedding into `internal/dataset/keys.go` before the release is cut.
+- **Signing** — the pipeline signs each manifest at build time
+  (`gseer-dataset build -key-file <seed>`, or `gseer-dataset sign -dir
+  <artifact>` afterwards); the seed is consumed in memory only.  The
+  signature covers the canonical manifest core — including the payload
+  sha256/size/records — so the binding is unambiguous.
+- **The publication gate** — `gseer-dataset validate` refuses an
+  unsigned artifact: fail-closed by construction (no "publish now, sign
+  later").
+- **Verification (consumer)** — the CLI's keyring (`internal/dataset/
+  keys.go`) is EMBEDDED in the binary; the manifest's
+  `signature.key_id` selects the trusted key.  An unknown key ID is a
+  refusal, never a guess.
+
+## 6. Rotation and recovery
+
+- **Planned rotation** — generate a new keypair (`gseer-dataset
+  keygen`), ADD its public key + key ID to the embedded keyring (keep
+  the previous entry: in-flight manifests keep verifying), publish the
+  next dataset version signed with the new key, and remove the old
+  entry after the FOLLOWING version has shipped.  Key IDs are stable,
+  so both keys coexist inside one rotation window.
+- **Compromised key** — rotate immediately: publish the next version
+  signed with the new key and remove the compromised entry from the
+  ring in a released binary.  A compromised key can only inject
+  manifests until its entry is gone from the binary consumers run; the
+  monotonic version gate limits the damage on clients already holding a
+  newer version.
+- **Lost seed** — no data loss: installed datasets keep working (§7
+  freshness policy), and the pipeline generates a replacement keypair
+  through the ceremony above; consumers upgrade when the ring changes.
+- **Offline resilience** — an installed dataset keeps answering
+  searches regardless of channel availability; freshness is reported
+  honestly (`gseer dataset status`), and the automatic bootstrap paces
+  its retries so an offline machine never stalls.
+
+## 7. Import atomicity, rollback, and recovery
 
 The import is ALL-OR-NOTHING:
 
@@ -135,7 +214,7 @@ whose evidence is unchanged ALSO dedupes at the L2 fact identity (same
 content, same observed_at) — only genuinely new evidence lands. The
 version gate refuses older/equal versions without `--force`.
 
-## 6. Coverage honesty
+## 8. Coverage honesty
 
 Coverage has two layers, both stated honestly in the manifest's `notes`:
 
@@ -165,13 +244,16 @@ contacted by the discovery itself.  `gseer dataset check` prints the
 per-source provenance and freshness so the operator can see exactly what
 the channel offers.
 
-## 7. Commands reference
+## 9. Commands reference
 
 | Command | What it does | Exit codes |
 | --- | --- | --- |
-| `gseer dataset update [--manifest-url URL] [--force]` | download → verify → atomic import | 2 checksum/usage, 3 config, 4 unreachable/DB |
-| `gseer dataset check [--manifest-url URL]` | manifest-only: version, freshness, provenance | 2/3/4 |
+| `gseer dataset update [--manifest-url URL] [--force]` | fetch → SIGNATURE verify → checksum verify → atomic import | 2 signature/checksum/usage, 3 config, 4 unreachable/DB |
+| `gseer dataset check [--manifest-url URL]` | manifest-only: version, SIGNATURE, freshness, provenance | 2/3/4 |
 | `gseer dataset status` | installed version, imported_at, freshness window | 2/3/4 |
+
+`gseer-dataset` (maintainer-side) builds, signs, and validates the
+artifact: `keygen`, `build -key-file`, `sign -dir`, `validate -dir`.
 
 The dataset channel is a personal-Local-Index surface (the self-hosted
 PostgreSQL profile refuses it with an honest `E_USAGE` pointer).

@@ -14,6 +14,8 @@ package cli
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -29,8 +31,54 @@ import (
 
 // serveTestDataset spins a loopback channel serving a manifest + payload
 // built from records (http on loopback is the allowed local-testing
-// transport) and returns the manifest URL.
+// transport) and returns the manifest URL.  P0-1: the manifest is
+// SIGNED with an ephemeral publisher key registered as the verifier's
+// trust anchor — the CLI journey under test is the signed journey.
 func serveTestDataset(t *testing.T, version int64, recs []dataset.Record) string {
+	t.Helper()
+	payload := payloadBytes(t, recs)
+	sum := sha256.Sum256(payload)
+	manifestRaw := buildTestManifest(t, version, recs, hex.EncodeToString(sum[:]), false)
+	return serveTestChannel(t, manifestRaw, payload)
+}
+
+// buildTestManifest marshals the manifest for the given records; when
+// sign is true it is signed with an ephemeral key whose public half is
+// installed as the test trust anchor.
+func buildTestManifest(t *testing.T, version int64, recs []dataset.Record, sha string, _ bool) []byte {
+	t.Helper()
+	now := time.Now().UTC().Add(-time.Minute)
+	m := &dataset.Manifest{
+		SchemaVersion:  dataset.SchemaVersion,
+		DatasetVersion: version,
+		GeneratedAtUTC: now,
+		Payload: dataset.PayloadInfo{
+			Filename:  dataset.PayloadFilename,
+			SHA256:    sha,
+			SizeBytes: int64(len(payloadBytes(t, recs))),
+			Records:   int64(len(recs)),
+		},
+		Rows:             dataset.RowsInfo{Assets: int64(len(recs)), Services: int64(len(recs)) / 2, Observations: int64(len(recs))},
+		Provenance:       []dataset.ProvenanceSummary{{Source: "central-dns", Connector: "dns", Records: int64(len(recs))}, {Source: "central-scan", Connector: "scan-tls", Records: 1}},
+		Freshness:        dataset.FreshnessInfo{OldestObservedAt: now.Add(-time.Second), NewestObservedAt: now},
+		ValidatorVersion: "1",
+		Notes:            "test dataset (unit acceptance)",
+	}
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := priv.Public().(ed25519.PublicKey)
+	dataset.SetTestKeyring(dataset.Keyring{dataset.KeyID(pub): pub})
+	t.Cleanup(func() { dataset.SetTestKeyring(nil) })
+	signed, err := dataset.SignManifest(m, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signed
+}
+
+func payloadBytes(t *testing.T, recs []dataset.Record) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
@@ -43,35 +91,17 @@ func serveTestDataset(t *testing.T, version int64, recs []dataset.Record) string
 	if err := gz.Close(); err != nil {
 		t.Fatal(err)
 	}
-	sum := sha256.Sum256(buf.Bytes())
-	now := time.Now().UTC().Add(-time.Minute)
-	m := &dataset.Manifest{
-		SchemaVersion:  dataset.SchemaVersion,
-		DatasetVersion: version,
-		GeneratedAtUTC: now,
-		Payload: dataset.PayloadInfo{
-			Filename:  dataset.PayloadFilename,
-			SHA256:    hex.EncodeToString(sum[:]),
-			SizeBytes: int64(buf.Len()),
-			Records:   int64(len(recs)),
-		},
-		Rows:             dataset.RowsInfo{Assets: int64(len(recs)), Services: int64(len(recs)) / 2, Observations: int64(len(recs))},
-		Provenance:       []dataset.ProvenanceSummary{{Source: "central-dns", Connector: "dns", Records: int64(len(recs))}, {Source: "central-scan", Connector: "scan-tls", Records: 1}},
-		Freshness:        dataset.FreshnessInfo{OldestObservedAt: now.Add(-time.Second), NewestObservedAt: now},
-		ValidatorVersion: "1",
-		Notes:            "test dataset (unit acceptance)",
-	}
-	manifestRaw, err := json.Marshal(m)
-	if err != nil {
-		t.Fatal(err)
-	}
+	return buf.Bytes()
+}
 
+func serveTestChannel(t *testing.T, manifestRaw, payload []byte) string {
+	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, dataset.ManifestFilename):
 			_, _ = w.Write(manifestRaw)
 		case strings.HasSuffix(r.URL.Path, dataset.PayloadFilename):
-			_, _ = w.Write(buf.Bytes())
+			_, _ = w.Write(payload)
 		default:
 			http.NotFound(w, r)
 		}
@@ -122,8 +152,12 @@ func TestDatasetUpdateImportsAndSearchFindsIt(t *testing.T) {
 	if err := cmd.Flags().Set("manifest-url", channel); err != nil {
 		t.Fatal(err)
 	}
+	guard := pinExitFunc(t)
 	if err := cmd.RunE(cmd, nil); err != nil {
 		t.Fatalf("dataset update: %v\n%s", err, out.String())
+	}
+	if guard.called != nil {
+		t.Fatalf("dataset update exited via the seam (code=%d):\n%s", *guard.called, out.String())
 	}
 	if !strings.Contains(out.String(), "dataset v42 imported") {
 		t.Fatalf("update output missing the import line:\n%s", out.String())
@@ -219,16 +253,12 @@ func TestDatasetUpdateChecksumFailureLeavesDBUntouched(t *testing.T) {
 }
 
 // serveTamperedDataset serves a manifest whose payload checksum does not
-// match the payload it serves (simulating corruption/tamper).
+// match the payload it serves (simulating corruption/tamper).  P0-1: the
+// lying manifest is VALIDLY SIGNED — the checksum gate (not the
+// signature gate) must be the refusal layer this test pins.
 func serveTamperedDataset(t *testing.T, version int64, recs []dataset.Record) string {
 	t.Helper()
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	enc := json.NewEncoder(gz)
-	for _, r := range recs {
-		_ = enc.Encode(r)
-	}
-	_ = gz.Close()
+	payload := payloadBytes(t, recs)
 	now := time.Now().UTC().Add(-time.Minute)
 	m := &dataset.Manifest{
 		SchemaVersion:  dataset.SchemaVersion,
@@ -237,7 +267,7 @@ func serveTamperedDataset(t *testing.T, version int64, recs []dataset.Record) st
 		Payload: dataset.PayloadInfo{
 			Filename:  dataset.PayloadFilename,
 			SHA256:    strings.Repeat("de", 32), // a lie
-			SizeBytes: int64(buf.Len()),
+			SizeBytes: int64(len(payload)),
 			Records:   int64(len(recs)),
 		},
 		Rows:             dataset.RowsInfo{Assets: int64(len(recs)), Services: 0, Observations: int64(len(recs))},
@@ -245,16 +275,18 @@ func serveTamperedDataset(t *testing.T, version int64, recs []dataset.Record) st
 		Freshness:        dataset.FreshnessInfo{OldestObservedAt: now, NewestObservedAt: now},
 		ValidatorVersion: "1",
 	}
-	manifestRaw, _ := json.Marshal(m)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, dataset.ManifestFilename) {
-			_, _ = w.Write(manifestRaw)
-			return
-		}
-		_, _ = w.Write(buf.Bytes())
-	}))
-	t.Cleanup(srv.Close)
-	return srv.URL + "/" + dataset.ManifestFilename
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := priv.Public().(ed25519.PublicKey)
+	dataset.SetTestKeyring(dataset.Keyring{dataset.KeyID(pub): pub})
+	t.Cleanup(func() { dataset.SetTestKeyring(nil) })
+	manifestRaw, err := dataset.SignManifest(m, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return serveTestChannel(t, manifestRaw, payload)
 }
 
 func TestDatasetUpdateUnreachableHonest(t *testing.T) {

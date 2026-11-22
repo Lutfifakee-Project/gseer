@@ -229,6 +229,8 @@ var searchColumns = map[string]string{
 	"http.status":         "http_status",
 	"http.title":          "http_title",
 	"http.server":         "http_server",
+	"http.body":           "http_body",
+	"http.header":         "http_header",
 	"tls.version":         "tls_version",
 	"tls.cert_subject_cn": "cert_subject_cn",
 	"tls.cert_issuer_cn":  "cert_issuer_cn",
@@ -253,6 +255,7 @@ var sortableFields = map[string]bool{
 	"port": true, "transport": true, "protocol": true,
 	"name": true, "product": true, "version": true,
 	"http.status": true, "http.title": true, "http.server": true,
+	"http.body": true, "http.header": true,
 	"tls.version": true, "tls.cert_subject_cn": true, "tls.cert_issuer_cn": true,
 	"tls.cert_expiry": true, "tls.cert_serial": true, "tls.cert_sans_dns": true,
 	"first_seen": true, "last_seen": true, "observed_at": true,
@@ -266,7 +269,7 @@ var allSearchColumns = []string{
 	"ip", "domain", "hostname", "asn", "asn_org",
 	"geo_country", "geo_region", "geo_city",
 	"port", "transport", "protocol", "name", "product", "version",
-	"http_status", "http_title", "http_server",
+	"http_status", "http_title", "http_server", "http_body", "http_header",
 	"tls_version", "cert_subject_cn", "cert_issuer_cn", "cert_expiry",
 	"cert_serial", "cert_sans_dns",
 	"technologies", "sources", "first_seen", "last_seen", "observed_at", "stale",
@@ -511,6 +514,19 @@ func (b *builder) compileComparison(c *ast.Comparison, alias string, branch *pla
 		if isTimeField(c.Field) {
 			if sv, ok := c.Value.(*ast.StrValue); ok {
 				return fmt.Sprintf("gseer_ts(%s) %s gseer_ts(%s)", qcol, op, b.placeholder(sv.S))
+			}
+		}
+		// Text-surface fields (http.body / http.header): the value is a
+		// DOCUMENT, not a scalar, so equality is a substring match —
+		// `body="wp-content"` behaves like CONTAINS and `!=` is its
+		// negation (documented in docs/SEARCH-SYNTAX.md §3).  The
+		// empty-string case above keeps its IS NULL / '' semantics.
+		if c.Field == "http.body" || c.Field == "http.header" {
+			if _, isStr := c.Value.(*ast.StrValue); isStr {
+				if c.Op == ast.OpEq {
+					return b.compileContains(qcol, c.Value, c.Field)
+				}
+				return fmt.Sprintf("((NOT %s) OR %s IS NULL)", b.compileContains(qcol, c.Value, c.Field), qcol)
 			}
 		}
 		return b.simpleCompare(qcol, op, c.Value)

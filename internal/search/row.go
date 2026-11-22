@@ -55,6 +55,8 @@ type Row struct {
 	HTTPStatus *int    `json:"http_status,omitempty"`
 	HTTPTitle  *string `json:"http_title,omitempty"`
 	HTTPServer *string `json:"http_server,omitempty"`
+	HTTPBody   *string `json:"http_body,omitempty"`
+	HTTPHeader *string `json:"http_header,omitempty"`
 
 	TLSVersion       *string    `json:"tls_version,omitempty"`
 	TLSCertSubjectCN *string    `json:"tls_cert_subject_cn,omitempty"`
@@ -106,6 +108,8 @@ var stringSortFields = map[string]func(*Row) *string{
 	"version":             func(r *Row) *string { return r.Version },
 	"http.title":          func(r *Row) *string { return r.HTTPTitle },
 	"http.server":         func(r *Row) *string { return r.HTTPServer },
+	"http.body":           func(r *Row) *string { return r.HTTPBody },
+	"http.header":         func(r *Row) *string { return r.HTTPHeader },
 	"tls.version":         func(r *Row) *string { return r.TLSVersion },
 	"tls.cert_subject_cn": func(r *Row) *string { return r.TLSCertSubjectCN },
 	"tls.cert_issuer_cn":  func(r *Row) *string { return r.TLSCertIssuerCN },
@@ -190,6 +194,8 @@ var rowScanTargets = map[string]func(*Row) any{
 	"http_status":     func(r *Row) any { return &r.HTTPStatus },
 	"http_title":      func(r *Row) any { return &r.HTTPTitle },
 	"http_server":     func(r *Row) any { return &r.HTTPServer },
+	"http_body":       func(r *Row) any { return &r.HTTPBody },
+	"http_header":     func(r *Row) any { return &r.HTTPHeader },
 	"tls_version":     func(r *Row) any { return &r.TLSVersion },
 	"cert_subject_cn": func(r *Row) any { return &r.TLSCertSubjectCN },
 	"cert_issuer_cn":  func(r *Row) any { return &r.TLSCertIssuerCN },
@@ -271,6 +277,8 @@ var pruneColumnClearers = map[string]func(*Row){
 	"http_status":     func(r *Row) { r.HTTPStatus = nil },
 	"http_title":      func(r *Row) { r.HTTPTitle = nil },
 	"http_server":     func(r *Row) { r.HTTPServer = nil },
+	"http_body":       func(r *Row) { r.HTTPBody = nil },
+	"http_header":     func(r *Row) { r.HTTPHeader = nil },
 	"tls_version":     func(r *Row) { r.TLSVersion = nil },
 	"cert_subject_cn": func(r *Row) { r.TLSCertSubjectCN = nil },
 	"cert_issuer_cn":  func(r *Row) { r.TLSCertIssuerCN = nil },
@@ -360,6 +368,8 @@ var csvCellRenderers = map[string]func(*Row) string{
 	"http_status":     func(r *Row) string { return intPtrCell(r.HTTPStatus) },
 	"http_title":      func(r *Row) string { return derefStr(r.HTTPTitle) },
 	"http_server":     func(r *Row) string { return derefStr(r.HTTPServer) },
+	"http_body":       func(r *Row) string { return derefStr(r.HTTPBody) },
+	"http_header":     func(r *Row) string { return derefStr(r.HTTPHeader) },
 	"tls_version":     func(r *Row) string { return derefStr(r.TLSVersion) },
 	"cert_subject_cn": func(r *Row) string { return derefStr(r.TLSCertSubjectCN) },
 	"cert_issuer_cn":  func(r *Row) string { return derefStr(r.TLSCertIssuerCN) },
