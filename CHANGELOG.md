@@ -285,7 +285,7 @@ security boundary was weakened.
 
 ## [Unreleased] — Final remediation round (implementation complete; release pending)
 
-Final remediation mandate on the `GSEER-v032-GLM-BASELINE-20261115`
+Final remediation mandate on the 2026-11-15
 integration baseline.  Every change is additive or fail-closed-strengthening;
 no FIX5/FIX7 feature, security boundary, exit-code meaning, or public
 compatibility was altered.
