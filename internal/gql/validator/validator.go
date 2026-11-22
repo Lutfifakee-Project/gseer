@@ -114,6 +114,8 @@ var fields = map[string]*Field{
 	"http.status":         {Canonical: "http.status", Aliases: []string{"status", "status_code"}, Type: TypeInt, Ops: opOrdered},
 	"http.title":          {Canonical: "http.title", Aliases: []string{"title"}, Type: TypeString, Ops: opStrText},
 	"http.server":         {Canonical: "http.server", Aliases: []string{"server"}, Type: TypeString, Ops: opStrText},
+	"http.body":           {Canonical: "http.body", Aliases: []string{"body"}, Type: TypeString, Ops: opStrText},
+	"http.header":         {Canonical: "http.header", Aliases: []string{"header"}, Type: TypeString, Ops: opStrText},
 	"tls.version":         {Canonical: "tls.version", Aliases: []string{"tls_version"}, Type: TypeString, Ops: opEqNeqIn},
 	"tls.cert_subject_cn": {Canonical: "tls.cert_subject_cn", Aliases: []string{"cert_subject_cn", "cert_subject", "cert.subject", "cert.subject.cn"}, Type: TypeString, Ops: opStrText},
 	"tls.cert_issuer_cn":  {Canonical: "tls.cert_issuer_cn", Aliases: []string{"cert_issuer_cn", "cert_issuer", "cert.issuer", "cert.issuer.cn"}, Type: TypeString, Ops: opStrText},

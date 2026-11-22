@@ -45,6 +45,9 @@ const (
 	LPAREN // (
 	RPAREN // )
 	COMMA  // ,
+	COLON  // :  (asset-search shorthand `field:value` — the parser, which
+	//     owns the grammar, accepts it ONLY between a field and
+	//     its value; anywhere else it is a GQL_E_PARSE/LEX error)
 	LBRACE // {  (quantified-block delimiters; the parser, M6, decides
 	RBRACE // }   where they are legal — the lexer only tokenizes)
 
@@ -84,7 +87,8 @@ const (
 // kindNames powers Kind.String and the "did you mean"-style hints.
 var kindNames = map[Kind]string{
 	ILLEGAL: "ILLEGAL", EOF: "EOF", IDENT: "IDENT", INT: "INT", STRING: "STRING",
-	LPAREN: "LPAREN", RPAREN: "RPAREN", COMMA: "COMMA", LBRACE: "LBRACE", RBRACE: "RBRACE",
+	LPAREN: "LPAREN", RPAREN: "RPAREN", COMMA: "COMMA", COLON: "COLON",
+	LBRACE: "LBRACE", RBRACE: "RBRACE",
 	AND: "AND", OR: "OR", NOT: "NOT",
 	EQ: "EQ", NEQ: "NEQ", ASSIGN: "ASSIGN", LT: "LT", LE: "LE", GT: "GT", GE: "GE",
 	KwAnd: "KwAnd", KwOr: "KwOr", KwNot: "KwNot", KwIn: "KwIn",
@@ -238,6 +242,7 @@ var singleCharOps = map[rune]struct {
 	'(': {kind: LPAREN, text: "("},
 	')': {kind: RPAREN, text: ")"},
 	',': {kind: COMMA, text: ","},
+	':': {kind: COLON, text: ":"},
 	'{': {kind: LBRACE, text: "{"},
 	'}': {kind: RBRACE, text: "}"},
 	'!': {kind: NOT, text: "!"},
@@ -465,7 +470,9 @@ func hintForChar(r rune) string {
 		return "negative numbers are not GQL literals; quote the value as a string if it is text"
 	case '.':
 		return "a bare '.' appears in field paths (a.b); IP addresses and other dotted values must be double-quoted strings"
-	case ':', ';', '[', ']':
+	case ':':
+		return "GQL supports the shorthand field:value (e.g. port:443); ':' outside a field:value shorthand is not part of the GQL grammar (SPEC-04 §2)"
+	case ';', '[', ']':
 		return "the character is not part of the GQL grammar (SPEC-04 §2)"
 	default:
 		return "remove the character or quote the value as a double-quoted string"

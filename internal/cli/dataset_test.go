@@ -152,7 +152,7 @@ func TestDatasetUpdateImportsAndSearchFindsIt(t *testing.T) {
 	if err := cmd.Flags().Set("manifest-url", channel); err != nil {
 		t.Fatal(err)
 	}
-	guard := pinExitFunc(t)
+	guard := pinExitSeamFunc(t)
 	if err := cmd.RunE(cmd, nil); err != nil {
 		t.Fatalf("dataset update: %v\n%s", err, out.String())
 	}
@@ -233,7 +233,7 @@ func TestDatasetUpdateChecksumFailureLeavesDBUntouched(t *testing.T) {
 	cmd.SetOut(out2)
 	_ = cmd.Flags().Set("manifest-url", tampered)
 
-	guard := pinExitFunc(t)
+	guard := pinExitSeamFunc(t)
 	if err := cmd.RunE(cmd, nil); err != nil {
 		t.Fatalf("update returned an error (must exit via the seam): %v", err)
 	}
@@ -311,7 +311,7 @@ func TestDatasetUpdateUnreachableHonest(t *testing.T) {
 	cmd, _, _ := RootCmd.Find([]string{"dataset", "update"})
 	cmd.SetOut(out2)
 	_ = cmd.Flags().Set("manifest-url", deadURL+"/gseer-dataset-manifest.json")
-	guard := pinExitFunc(t)
+	guard := pinExitSeamFunc(t)
 	_ = cmd.RunE(cmd, nil)
 	if guard.called == nil || *guard.called != ExitUnavailable {
 		t.Fatalf("unreachable must exit 4 via the seam, got called=%v", guard.called)
