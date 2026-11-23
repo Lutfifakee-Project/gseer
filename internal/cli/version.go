@@ -28,7 +28,7 @@ func registerVersionCmd(root *cobra.Command) {
 The version, commit, and built_at fields are injected at build time via
 -ldflags; an un-injected binary (e.g. 'go run') reports 'dev' and
 'unknown' rather than fabricating values.  'gseer doctor' prints the
-running binary's SHA-256 for checksum verification (SPEC-03 §4).`,
+running binary's SHA-256 for checksum verification.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, err := fmt.Fprint(cmd.OutOrStdout(), version.Current().String())

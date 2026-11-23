@@ -32,11 +32,11 @@ type Error struct {
 	Next string
 }
 
-// Error renders the error per the SPEC-03 §7 style guide:
+// Error renders the error per the project style guide:
 //
 //	E_CONFIG_UNKNOWN_KEY: unknown key "policy.active.enabled" in config.
-//	Why: active collection is not part of any release until its gates close.
-//	Try: remove the key; see docs/ROADMAP.md for v0.0.2 planning.
+//	Why: active collection is not part of any release until its authorization gates close.
+//	Try: remove the key; see .env.example for the rejected-key policy.
 func (e *Error) Error() string {
 	var b strings.Builder
 	if e.Code != "" {
@@ -134,8 +134,8 @@ func errUnknownKey(path string) *Error {
 
 func errPolicyActiveRejected(key string) *Error {
 	return newError(CodeConfigPolicyActiveRejected, fmt.Sprintf("key %q is rejected", key)).
-		withWhy("active collection (P2/PAC) is not part of any release until its gates close; PD-2..PD-7 are approved as engineering defaults only, not authorization to scan.").
-		withNext("remove the key; see docs/ROADMAP.md for v0.0.2 planning")
+		withWhy("active collection is not part of any release until its authorization gates close; shipped defaults are engineering values only, not authorization to scan.").
+		withNext("remove the key; see .env.example for the rejected-key policy")
 }
 
 func errInsecure(key string) *Error {

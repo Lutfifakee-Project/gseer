@@ -1,6 +1,6 @@
 # GSEER — Authorized Active Observation (`gseer scope` / `gseer scan`)
 
-> v0.3.2 (the P2/PAC regime).  This document is the operating manual for
+> v0.3.2.  This document is the operating manual for
 > GSEER's active HTTP/TLS observation.  Read it before your first scan:
 > running a scan asserts that you own — or are otherwise authorized to
 > observe — the target.  GSEER never infers ownership and never probes

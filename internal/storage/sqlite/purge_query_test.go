@@ -57,17 +57,17 @@ func TestPurgeQueryBuildersVaryOnlyInPlaceholders(t *testing.T) {
 				if got := strings.Count(q, "?"); got != n+b.fixedQ {
 					t.Fatalf("%s(%d): %d bind placeholders, want %d", b.name, n, got, n+b.fixedQ)
 				}
-			// Normalization needs a UNIQUE marker: a one-placeholder IN
-			// list ("?") is not distinguishable from the builder's fixed
-			// bind placeholders, so the byte-identity check starts at n=2.
-			// The count check above already covers n=1.
-			if n < 2 {
-				continue
-			}
-			ph := intPlaceholders(n)
-			if strings.Count(q, ph) != 1 {
-				t.Fatalf("%s(%d): IN-list placeholder %q appears %d times, want 1", b.name, n, ph, strings.Count(q, ph))
-			}
+				// Normalization needs a UNIQUE marker: a one-placeholder IN
+				// list ("?") is not distinguishable from the builder's fixed
+				// bind placeholders, so the byte-identity check starts at n=2.
+				// The count check above already covers n=1.
+				if n < 2 {
+					continue
+				}
+				ph := intPlaceholders(n)
+				if strings.Count(q, ph) != 1 {
+					t.Fatalf("%s(%d): IN-list placeholder %q appears %d times, want 1", b.name, n, ph, strings.Count(q, ph))
+				}
 				norm := strings.Replace(q, ph, "@@", 1)
 				if normalized == "" {
 					normalized = norm

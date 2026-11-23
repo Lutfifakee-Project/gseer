@@ -21,42 +21,39 @@ model. It covers three things operators keep asking about:
 3. **The PostgreSQL version policy** — what is required and what has
    actually been verified.
 
-Every claim carries an evidence class:
+Verification status:
 
-- **VERIFIED (real binary)** — exercised against the v0.3.1 binary in
-  this repository during the v0.3.1 release-readiness rounds
-  (PostgreSQL 16.15 live this cycle: the full hardened order → doctor
-  6 PASS → startup gates → health → stop; PostgreSQL 17.11: the
-  `-tags integration` battery, 24/24 packages; earlier rounds verified
-  PostgreSQL 16.15 and 17.2 end-to-end the same way, plus a v0.1.0 →
-  v0.2.0 upgrade rehearsal).
-- **OWNER-APPROVED CONTRACT** — normative decisions OD-1…OD-7 from the
-  owner's task book of 2026-11-05, implemented in this release as
-  approved. The five Rev 6.7.2 SQL artifacts are embedded byte-for-byte
-  and hash-enforced by the test suite (§5).
+- **Verified live** — the full hardened order → doctor 6 PASS →
+  startup gates → health → stop on PostgreSQL 16.15; the
+  `-tags integration` battery, 24/24 packages, on PostgreSQL 16.15 and
+  17.11; PostgreSQL 16.15 and 17.2 verified end-to-end the same way,
+  plus a v0.1.0 → v0.2.0 upgrade rehearsal.
+- **Embedded artifacts hash-enforced** — the five Rev 6.7.2 SQL
+  artifacts are embedded byte-for-byte and hash-enforced by the test
+  suite (§5).
 
 ---
 
 ## 1. Which model am I running?
 
-The hardened model shipped in v0.2.0 and is unchanged through v0.3.1 —
+The hardened model shipped in v0.2.0 and is unchanged through v0.3.2 —
 the v0.1.0 single-credential model was its development baseline and
 remains runnable by the v0.1.0 binary on an unchanged `GSEER_DB_*`
 configuration.
 
-| Aspect | Hardened model (shipped v0.2.0, unchanged in v0.3.1) — VERIFIED (v0.3.1 binary) |
+| Aspect | Hardened model (shipped v0.2.0, unchanged through v0.3.2) |
 | --- | --- |
 | Database roles | **Three**: the operator credential (whatever the DSN names; database owner / migration executor), `gseer_policy_owner` (NOLOGIN; owns the suppression-policy layer), and `gseer_app` (LOGIN; the **only** credential the server uses at runtime, least-privilege). |
-| Schema migration | Embedded migrations 0001–0006 + **0016** (`gseer_policy` enforcement layer; refusal-first) + **0017** (search safe-casts). Versions 0007–0015 are permanently reserved (OD-4) — they do not exist and never will. Applied by `gseer setup --self-hosted` under the operator credential. |
-| Fail-closed privilege audit | **In-binary and mandatory.** `gseer setup --self-hosted` runs the fail-closed effective-privilege audit under `gseer_app` as the final deployment step, and `gseer doctor` re-runs it read-only; a failure refuses (exit 5) with the complete failure list. There is no bypass, flag, or override (OD-5). (Historically the audit also gated `gseer server start` before the port bound — the server was removed with the CLI-only decision.) |
+| Schema migration | Embedded migrations 0001–0006 + **0016** (`gseer_policy` enforcement layer; refusal-first) + **0017** (search safe-casts). Versions 0007–0015 are permanently reserved — they do not exist and never will. Applied by `gseer setup --self-hosted` under the operator credential. |
+| Fail-closed privilege audit | **In-binary and mandatory.** `gseer setup --self-hosted` runs the fail-closed effective-privilege audit under `gseer_app` as the final deployment step, and `gseer doctor` re-runs it read-only; a failure refuses (exit 5) with the complete failure list. There is no bypass, flag, or override. (Historically the audit also gated `gseer server start` before the port bound — the server was removed in the CLI-only architecture.) |
 | Runtime credential enforcement | Data-plane commands prefer `database.runtime_dsn` / `GSEER_DB_RUNTIME_DSN` and the audit verifies the connecting user IS `gseer_app` (`E_RUNTIME_CREDENTIAL_MISMATCH`, exit 5, otherwise). CLI data-plane commands print an explicit notice when they fall back to the operator credential — never silently. |
-| PostgreSQL floor | **16** (OD-7; enforced by `gseer setup` and `gseer doctor`). Verified end-to-end on 16.15 and 17.2. |
+| PostgreSQL floor | **16** (enforced by `gseer setup` and `gseer doctor`). Verified end-to-end on 16.15 and 17.2. |
 
 ---
 
 ## 2. The credential model
 
-### 2.1 Operator vs runtime — VERIFIED
+### 2.1 Operator vs runtime
 
 - **Operator credential** — `GSEER_DB_DSN` / `database.dsn` (or the
   DSN components). Runs `gseer setup --self-hosted` (bootstrap,
@@ -74,14 +71,14 @@ configuration.
   order is described.  The former contract: `GSEER_TOKEN`
   protected the REST API; it was hashed in memory and required for any
   non-loopback server bind (`E_CONFIG_INSECURE` — enforced in the
-  config layer and again in `server start`). VERIFIED.
+  config layer and again in `server start`).
 - **Rotation.** `gseer setup --self-hosted --reset-runtime-password`
   rotates the `gseer_app` password and prints the new runtime DSN
   once. The bootstrap script itself never contains or generates
   credentials.
 - **`gseer doctor` is strictly read-only.** It never migrates and never
   repairs; it reports `PASS / FAIL / HINT` (and `-` for skipped) with a
-  fix line per check. VERIFIED: a fresh install reports `6 PASS, 0
+  fix line per check. A fresh install reports `6 PASS, 0
   FAIL` with the index honestly reported as `EMPTY` (a HINT, not a
   failure), and a fixture-loaded index is labeled
   `SYNTHETIC EVALUATION DATA` rather than passed off as real data.
@@ -105,7 +102,7 @@ configuration.
   privilege) to make a doctor check "pass" would widen the runtime
   boundary and is explicitly not a supported repair.
 
-### 2.2 The `gseer_app` runtime grant matrix — VERIFIED (embedded, hash-pinned)
+### 2.2 The `gseer_app` runtime grant matrix (embedded, hash-pinned)
 
 Rev 6.7.2 §5.2 fixes the full runtime grant matrix; the idempotent
 script ships embedded (`deploy/sql/gseer_v0672_runtime_grants_setup.sql`)
@@ -114,11 +111,11 @@ boundary (the script is the normative source):
 
 | Granted to `gseer_app` | Deliberately NOT granted |
 | --- | --- |
-| `CONNECT, TEMPORARY` on the database (both explicit, OD-2 Choice A — the retraction path needs `CREATE TEMP TABLE … ON COMMIT DROP`) | Any sequence privilege (IDENTITY inserts use `nextval_internal()`; no ACL check — verified on 17.2 during Rev 6.7.2's run) |
+| `CONNECT, TEMPORARY` on the database (both explicit — the retraction path needs `CREATE TEMP TABLE … ON COMMIT DROP`) | Any sequence privilege (IDENTITY inserts use `nextval_internal()`; no ACL check — verified on 17.2 during Rev 6.7.2's run) |
 | `USAGE` on schemas `public` and `gseer_policy` | `CREATE` on any schema |
 | `SELECT, INSERT, UPDATE, DELETE` on `assets`, `services` | **Any DML on `public.suppressions`** — the runtime path is `SELECT`-only (granted by migration 0016); inserts/updates/deletes go through the `gseer_policy` SECURITY DEFINER functions only |
 | `SELECT, INSERT, DELETE` on `observations` (no UPDATE path exists in the code, so none is granted) | `schema_migrations` (driver-owned ledger — operator-credential territory) |
-| `SELECT, INSERT, UPDATE` on `data_sources` (no DELETE path exists), `collection_jobs`, `source_checkpoints`, `ingestion_dead_letter` | `scopes` (no runtime path; P2 registry) |
+| `SELECT, INSERT, UPDATE` on `data_sources` (no DELETE path exists), `collection_jobs`, `source_checkpoints`, `ingestion_dead_letter` | `scopes` (no runtime path; scope registry) |
 | `SELECT, INSERT` on `suppression_applications` (append-only audit surface) | Ownership of anything in `public` |
 | `SELECT` on the search views (`latest_http`, `latest_tls`, `latest_fingerprints`, `search_index`) and `EXECUTE` on the three `gseer_policy` suppression functions | `SUPERUSER` / `CREATEDB` / `CREATEROLE` / `BYPASSRLS` — the bootstrap script refuses to create or keep a role with any of these |
 
@@ -126,7 +123,7 @@ Suppression writes go through the policy functions in every code path
 (since v0.2.0): `gseer suppress add|remove` call
 `gseer_policy.suppression_insert` / `suppression_delete` inside one
 transaction that first takes the same advisory lock the 0016 statement
-trigger takes (the GSER/POL1 keys, OD-6) — which is what keeps the
+trigger takes (the GSER/POL1 keys) — which is what keeps the
 re-add detection (`existed`) exact under concurrency. Direct DML on
 `public.suppressions` is refused by the policy gate (ERRCODE `GSUP2`)
 for every role.
@@ -136,7 +133,7 @@ refuse-first: if `gseer_policy_owner` or `gseer_app` already exists
 with an unsafe attribute set, it fails with an explicit remediation
 message instead of "fixing" anything silently. If a pre-existing
 `gseer_policy` schema is encountered, migration 0016 refuses rather
-than adopting it (OD-3, refusal-first; the only soft path is verified
+than adopting it (refusal-first; the only soft path is verified
 adoption named by the guard's own error message).
 
 **The least-privilege direction is one-way.** If a check or audit
@@ -148,10 +145,10 @@ shortcut would defeat the exact boundary the audit exists to prove.
 
 ## 3. The hardened startup sequence and the fail-closed privilege audit
 
-### 3.1 The deployment order — VERIFIED (automated by `gseer setup --self-hosted`)
+### 3.1 The deployment order (automated by `gseer setup --self-hosted`)
 
 1. **Bootstrap the roles** — the embedded bootstrap script
-   (creates/validates `gseer_policy_owner` and `gseer_app`; D-47
+   (creates/validates `gseer_policy_owner` and `gseer_app`; the
    membership for the migration executor).
 2. **Migrate to head** — migrations end at **0017**; the ledger must
    read `(17, false)`. An incomplete or dirty migration state is *not*
@@ -167,9 +164,9 @@ shortcut would defeat the exact boundary the audit exists to prove.
 
 `gseer setup --self-hosted` runs steps 1–4 in order and refuses at the
 first failure. The bootstrap runs BEFORE the migrations because the
-0016 refusal guard verifies the roles and the D-47 membership.
+0016 refusal guard verifies the roles and that membership.
 
-### 3.2 What the audit checks — VERIFIED (embedded, hash-pinned)
+### 3.2 What the audit checks (embedded, hash-pinned)
 
 The audit evaluates **effective** privileges, not just the grant
 tables: it walks the **full membership closure from `gseer_app`** —
@@ -193,17 +190,17 @@ walk is deliberately false-positive-lean. It fails closed on any of:
 
 `has_table_privilege()` / `has_function_privilege()` follow the
 privileges-of-role closure internally, so the point checks and the
-closure walk double-cover each other. Rev 6.7.2's verification run
-included three decoy roles that prove each escalation class (INHERIT
+closure walk double-cover each other. The audit's verification suite
+includes three decoy roles that prove each escalation class (INHERIT
 path, SET-only path with `INHERIT FALSE`, superuser-membership path)
 is caught. The audit is runnable by the operator **or** by `gseer_app`
 itself — and `gseer setup --self-hosted` / `gseer doctor` run it **as `gseer_app`**, so a
 passing startup audit simultaneously proves the deployment state and
 the runtime credential's own reach.
 
-### 3.3 Why the audit runs before any runtime traffic (OD-5)
+### 3.3 Why the audit runs before any runtime traffic
 
-OD-5 (owner-approved): *fail-closed privilege audit before application
+The contract: *fail-closed privilege audit before application
 runtime traffic*. The ordering is the security property: a server that
 binds its port first would serve search/ingest traffic with
 **unproven** privileges, and an escalation present in the membership
@@ -214,17 +211,13 @@ does not start at all.
 
 ### 3.4 What a refusal means — and what exit code 5 means
 
-- **In-binary gate (VERIFIED, real binary):** the hardened setup and doctor audit
+- **In-binary gate:** the hardened setup and doctor audit
   refuses with `E_PRIVILEGE_AUDIT_FAILED`, the complete failure list,
-  and **exit code 5** on any audit failure. Reproduced live: revoking
-  `SELECT` on `public.assets` from `gseer_app` makes the next start
-  print `gseer_app lacks SELECT on public.assets` and exit 5; granting
-  `INSERT` on `public.suppressions` to `gseer_app` is caught twice
-  (ACL walk + point check) and exits 5. There is no flag, env var, or
+  and **exit code 5** on any audit failure. There is no flag, env var, or
   config key that skips the gate.
 - **Exit code 5 = security/privilege refusal.** The stable table:
 
-| Code | Meaning (v0.3.1 binary) |
+| Code | Meaning |
 | --- | --- |
 | 0 | Success (including a zero-result search) |
 | 1 | Generic error returned by a command's error path (formatted per the error style guide; the specific classes below exit 2/3/4/5) |
@@ -234,17 +227,6 @@ does not start at all.
 | 5 | Security/privilege refusal: failed privilege audit, runtime-credential identity mismatch |
 | 64 | Usage error / planned-command pointer (`gseer scan`, `gseer asset`) |
 | 70 | Internal error |
-
-Reproduced live this cycle against PostgreSQL 16.15 with the v0.3.1
-binary: 0 (zero-result search), 1 (`collect status`, `source list` and
-`collect run --all` against a dead database — these data-plane commands
-refuse at the pre-query reachability gate with `E_DB_UNREACHABLE` and
-take the generic error path), 2 (`search --validate` parse refusal),
-3 (missing runtime credential), 4 (`search` and `doctor` against a
-dead database, and `collect status` / `source list` / `collect run
---all` query failures against a reachable database whose schema is not
-provisioned), 5 (runtime-credential mismatch and revoked-grant audit
-failure), and 64 (`gseer scan` pointer).
 
 - **Common refusals and the safe repair:**
 
@@ -280,11 +262,10 @@ by fixing the deployment, never by re-interpreting the check.
 
 ---
 
-## 4. Startup gates in the v0.3.1 binary — VERIFIED
+## 4. Startup gates
 
-Live this cycle: gates 3–5 reproduce their refusals with exit 3/5/5
-against PostgreSQL 16.15 (missing runtime credential, operator-DSN
-mismatch, revoked `assets` grant).
+Gates 3–5 refuse with exit 3/5/5 (missing runtime credential,
+operator-DSN mismatch, revoked `assets` grant).
 
 The gates the hardened runtime model applies, in order:
 
@@ -332,7 +313,7 @@ the build's test suite. The 0017 pair is hash-pinned the same way.
 | `gseer_v0672_bootstrap_roles.sql` | `ff31bdeadb4ffbf97600786248a2fb2d09919e635e1d3a2fd9dcaa4bd1e9e2f4` | Step 1 — role bootstrap (refuse-first) |
 | `gseer_v0672_runtime_grants_setup.sql` | `fd816c8ca8b6e86d1517d58971f32b19ebe903fe79841396b5eafdcc7f1ad979` | Step 3 — the §5.2 grant matrix |
 | `gseer_v0672_effective_privilege_audit.sql` | `d11a4167c4b1905072c74f2f5d7234ee8010dc22245198c7f5a9435ddf84dffe` | Step 4 — the fail-closed audit (read-only) |
-| `0017_search_safe_casts.up.sql` | `723e2c786d62515b85248c19b15b29ec0a27ffafef79a79eb2ace4cd265c867d` | GAP-1 safe-cast migration (pinned at M-H) |
+| `0017_search_safe_casts.up.sql` | `723e2c786d62515b85248c19b15b29ec0a27ffafef79a79eb2ace4cd265c867d` | Search safe-cast migration (hash-pinned) |
 | `0017_search_safe_casts.down.sql` | `1074545a68e48e324b1816117c40664d1e9e453ffcd1e154d9e0c074f40711b4` | Ordered rollback for 0017 (ledger returns to `(16, false)`) |
 
 The same files stay runnable by hand with `psql` for deployments that
@@ -343,22 +324,21 @@ provisioning is safe (everything is idempotent) but unnecessary.
 
 ## 6. PostgreSQL version policy
 
-- **Floor since v0.2.0: PostgreSQL 16** (OD-7, owner-approved). `gseer
+- **Floor since v0.2.0: PostgreSQL 16**. `gseer
   setup` and `gseer doctor` enforce and report it
   (`PG version: PostgreSQL N (minimum 16)`); the pinned migrations
   carry their own PG16 floor guards. The Rev 6.7.2 privilege model
   (membership `SET`/`INHERIT` options, the closure-walking audit) is
   only expressible on PG16+.
-- **Verified (v0.3.1 release-readiness rounds, real v0.3.1 binary +
-  full integration suite): PostgreSQL 16.15** — hardened setup →
+- **Verified live: PostgreSQL 16.15** — hardened setup →
   doctor (`6 PASS, 0 FAIL`) → startup gates (mismatch/missing/audit-
   failure refusals exit 5/3/5) → hardened setup (audit under
-  `gseer_app`) → health → stop all pass live this cycle; the
+  `gseer_app`) → health → stop; the
   `-tags integration` battery passes on **16.15 and 17.11** (24/24
-  packages on each); earlier rounds verified 16.15 and 17.2 end-to-end
+  packages on each); **17.2** was verified end-to-end
   the same way, and the v0.1.0 → v0.2.0 upgrade path (ledger
   `(6, false)` → `(17, false)`) is an automated test.
-- **v0.1.0 (historical):** floor was PostgreSQL 15 (PD-8), retained by
+- **v0.1.0 (historical):** floor was PostgreSQL 15, retained by
   the v0.1.0 binary.
 
 ---
@@ -378,12 +358,12 @@ provisioning is safe (everything is idempotent) but unnecessary.
   IN_DOMAIN …`) to find name assets; the ip assets surface via
   `sources`/facets.
 - Suppression IDENTITY sequence gaps are cosmetic (migration 0016's
-  in-migration refusal probes consume sequence values; register R7).
+  in-migration refusal probes consume sequence values).
 - **No hosted signed-update channel yet** (the updater stays honest
   about an unconfigured/unreachable channel; `gseer update` verifies
   Ed25519-signed manifests but there is no hosted update manifest, no
   hosted/global dataset, and no public search service —
-  docs/ROADMAP.md).  Prebuilt binaries themselves ship per release:
+  CHANGELOG.md records per-release scope).  Prebuilt binaries themselves ship per release:
   the goreleaser pipeline is draft-gated — it produces artifacts only
   on a tag push and publishes nothing automatically — and the
   published v0.3.1 release carries prebuilt platform binaries

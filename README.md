@@ -152,7 +152,7 @@ Every command has `--help`; `gseer --help` lists the live command set.
 - [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) — common errors and recovery
 - [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — self-hosted PostgreSQL deployment
 - [`docs/DOCKER.md`](docs/DOCKER.md) — the Docker self-hosted stack
-- [`docs/ROADMAP.md`](docs/ROADMAP.md) — release register and honest non-goals
+- [`docs/CLI.md`](docs/CLI.md) — command reference (what each command does; flags via `gseer <command> --help`)
 - [`CHANGELOG.md`](CHANGELOG.md) — per-release changes
 
 ## License

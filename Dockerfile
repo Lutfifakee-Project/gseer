@@ -5,7 +5,7 @@
 # (`gseer collect run` is manual by design).
 #
 # Build:
-#   docker build --build-arg VERSION=v0.1.0 --build-arg COMMIT=$(git rev-parse HEAD) -t gseer:local .
+#   docker build --build-arg VERSION=v0.3.2 --build-arg COMMIT=$(git rev-parse HEAD) -t gseer:local .
 #
 # The updater (`gseer update`) is for bare-metal installs; container
 # deployments upgrade by building/pulling a new image (the container's
@@ -39,8 +39,6 @@ COPY --from=build /out/gseer /usr/local/bin/gseer
 # Non-root runtime user; the data lives in PostgreSQL (external volume),
 # so the container itself needs no writable state.
 USER gseer
-
-# The API + dashboard listen address (GSEER_LISTEN overrides).
 
 # CLI-only image: no long-running server — the binary is the product.
 ENTRYPOINT ["gseer"]

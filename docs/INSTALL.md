@@ -32,7 +32,7 @@ Note on `version` output: `go install` builds carry no VCS metadata, so
 | Component | Requirement |
 | --- | --- |
 | Go | 1.26+ (per `go.mod`) |
-| PostgreSQL | **16+** ONLY for the developer self-hosting internals (NOT the official product path — the CLI needs nothing but the binary; OD-7 floor enforced by `gseer setup` and `gseer doctor`; verified end-to-end on **16.15 and 17.2**; the compose files ship `postgres:17-alpine`) |
+| PostgreSQL | **16+** only for the self-hosted profile (the CLI needs nothing but the binary; the 16+ floor is enforced by `gseer setup` and `gseer doctor`; verified end-to-end on **16.15 and 17.2**; the compose files ship `postgres:17-alpine`) |
 | OS | Linux (AMD64 required; ARM64 best-effort) |
 
 ```bash

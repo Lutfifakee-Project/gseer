@@ -50,8 +50,8 @@ type rootFlags struct {
 	showVer    bool
 }
 
-// RootCmd is the top-level `gseer` command.  Help text matches SPEC-03 §2
-// verbatim (the "Coming later" pointer line is normative; AC-5.1 parses it).
+// RootCmd is the top-level `gseer` command.  The "Coming later" pointer
+// line is normative — tests parse it.
 var RootCmd = &cobra.Command{
 	Use:   "gseer",
 	Short: "GSEER — internet-asset search engine",
@@ -67,7 +67,7 @@ Quick start:
 Authorized observation (docs/SCANNING.md — default-deny gateway, explicit only):
   gseer scope add cidr 127.0.0.1/32 --protocols http,tls --ports 8080,8443
   gseer scan http --target localhost --port 8080
-Coming later (not in this release — see docs/ROADMAP.md):
+Coming later (not in this release — see CHANGELOG.md):
   asset
 License: MIT — https://github.com/Lutfifakee-Project/gseer`,
 	// Disable the cobra completion subcommand's auto-help banner; we
@@ -76,7 +76,7 @@ License: MIT — https://github.com/Lutfifakee-Project/gseer`,
 		DisableDefaultCmd: false,
 	},
 	// Silence cobra's default error printing — the cli layer formats
-	// errors per the style guide (AC-5.9: what failed → why → next cmd).
+	// errors per the style guide (what failed → why → next cmd).
 	SilenceErrors: true,
 	SilenceUsage:  true,
 	// Bare `gseer` is the zero-configuration entry point (v0.3.0):

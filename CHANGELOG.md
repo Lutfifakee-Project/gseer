@@ -102,6 +102,15 @@ run).
 - `gseer source add --seeds` accepts comma- OR whitespace-separated
   seed lists (the pipeline passes space-separated lists as a single
   argument); regression tests included.
+- Repository documentation finalized for the CLI-only product:
+  docs/ROADMAP.md removed (the `gseer --help` pointer line and
+  config-error hints now reference CHANGELOG.md / .env.example), a
+  command reference (`docs/CLI.md`) added, and remaining process labels
+  cleaned from docs, help text, and the infrastructure files
+  (Dockerfile, docker-compose.yml, .env.example, THIRD-PARTY-NOTICES.md
+  — the last corrected: yaml.v3 is MIT AND Apache-2.0 dual-licensed,
+  embedded MIT texts now carry their copyright lines, and license
+  pointers resolve to the upstream sources).
 
 ### Fixed
 

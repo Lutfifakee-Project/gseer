@@ -64,8 +64,8 @@ func TestErrorCodesStable(t *testing.T) {
 }
 
 // TestErrorMessageSnapshots verifies the exact rendered output for each
-// error constructor (AC-5.9: every documented E_* renders a suggestion
-// line).  These snapshots pin the wording so that doc/drsift is caught.
+// error constructor (every documented E_* renders a suggestion
+// line).  These snapshots pin the wording so that doc drift is caught.
 func TestErrorMessageSnapshots(t *testing.T) {
 	cases := []struct {
 		name string
@@ -76,7 +76,7 @@ func TestErrorMessageSnapshots(t *testing.T) {
 		{
 			name:  "policy.active rejected",
 			err:   errPolicyActiveRejected("policy.active.enabled"),
-			wants: []string{"E_CONFIG_POLICY_ACTIVE_REJECTED", "v0.0.2", "Why:", "Try:"},
+			wants: []string{"E_CONFIG_POLICY_ACTIVE_REJECTED", ".env.example", "Why:", "Try:"},
 		},
 		{
 			name:  "unknown key",

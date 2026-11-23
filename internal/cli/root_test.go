@@ -56,10 +56,10 @@ func TestRootHelpListsCommands(t *testing.T) {
 		}
 	}
 
-	// The "Coming later" pointer line is normative (SPEC-03 §2).  The
+	// The "Coming later" pointer line is normative.  The
 	// v0.1.0 release promoted update/export to real commands; scan and
 	// asset remain planned.
-	for _, w := range []string{"Coming later", "scan", "asset", "docs/ROADMAP.md", "export"} {
+	for _, w := range []string{"Coming later", "scan", "asset", "CHANGELOG.md", "export"} {
 		if !strings.Contains(help, w) {
 			t.Errorf("help missing pointer-line element %q\n--- help output ---\n%s", w, help)
 		}

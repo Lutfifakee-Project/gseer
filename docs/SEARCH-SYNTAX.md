@@ -1,7 +1,7 @@
 # GSEER Search Syntax — Official GQL Reference
 
-GSEER's query language is **GQL** (the GSEER Query Language), specified in
-SPEC-04 §3. This document is the official, grammar-true syntax reference:
+GSEER's query language is **GQL** (the GSEER Query Language).  This
+document is the official, grammar-true syntax reference:
 every example below is verified against the grammar implementation and —
 where marked **[v1]** — against the real central dataset v1 release
 artifact (269 observations, 202 asset rows) through the CLI journey
@@ -287,4 +287,4 @@ Computed predicates — no dedicated column, no extra data:
    other a scope position).
 
 See `gseer search --help` for the live field registry and the normative
-grammar (SPEC-04).
+grammar.
