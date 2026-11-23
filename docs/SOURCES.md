@@ -1,6 +1,6 @@
 # GSEER — Passive Data Source Review Register
 
-> v0.0.2 Passive Intelligence (owner directive §2).  This document is the
+> This document is the
 > review register every connector's `Review()` verdict anchors to.  A
 > connector may only carry the verdict `reviewed-enabled` when the
 > provider's terms clearly permit automated collection AND indexing of
@@ -17,9 +17,9 @@
 | `dns` | operator-configured resolver (system default) | **reviewed-enabled** | standard DNS recursion; the operator names every target; answers are protocol facts |
 | `ip2asn` | Team Cymru IP-to-ASN (DNS interface) | **reviewed-enabled** | explicitly free community service; DNS interface requested "at volume"; conservative rates + caching |
 | `ptr` | operator-configured resolver (system default) | **reviewed-enabled** | standard reverse-DNS (PTR) recursion; same basis as `dns` — operator-named addresses, protocol facts |
-| `ctlog` | public CT logs from the official log list (default: Cloudflare Nimbus2026) | **reviewed-enabled** (§G, Rev 14) | RFC 9162 mandates public `get-sth`/`get-entries`; seed-free tip-following read of a bounded window; certificates are public data; the log is the only endpoint touched |
+| `ctlog` | public CT logs from the official log list (default: Cloudflare Nimbus2026) | **reviewed-enabled** (§G) | RFC 9162 mandates public `get-sth`/`get-entries`; seed-free tip-following read of a bounded window; certificates are public data; the log is the only endpoint touched |
 | `egress-echo` | api.ipify.org (public HTTPS echo, bootstrap context probe only) | **reviewed-enabled** (§F) | one bounded request at setup; returns the caller's own public IP; free service without per-use terms restrictions; provenance `egress-echo` |
-| central dataset | the project's scheduled pipeline over the reviewed-enabled connectors above (§C/§D/§E + scoped TLS observation of the seeds register) | **reviewed-enabled** (Rev 9) | rows produced ONLY by reviewed-enabled connectors; validated before publication (gseer-dataset validate) and re-validated at import; provenance preserved per record — `docs/DATASET.md` |
+| central dataset | the project's scheduled pipeline over the reviewed-enabled connectors above (§C/§D/§E + scoped TLS observation of the seeds register) | **reviewed-enabled** | rows produced ONLY by reviewed-enabled connectors; validated before publication (gseer-dataset validate) and re-validated at import; provenance preserved per record — `docs/DATASET.md` |
 | `rdap` | RIR registration data (ARIN/RIPE NCC et al.) | **disabled** | terms do not grant indexing/redistribution; needs written authorization |
 | `ct` | crt.sh (Sectigo CT aggregation) | **disabled** | no published terms covering automated collection or indexing/reuse |
 
@@ -68,8 +68,8 @@ into third-party search products.
     precertificate/certificate duplication, wildcard names need
     normalization, no liveness or IP data, CT only covers
     publicly-trusted certificates.
-12. **Verdict: `disabled`** — unclear permission for indexing/reuse
-    (owner directive §2: keep disabled).  The connector is implemented
+12. **Verdict: `disabled`** — unclear permission for indexing/reuse;
+    keep disabled.  The connector is implemented
     and unit-tested; flipping `Review()` is a one-line, owner-visible
     change after the terms question is settled (or after switching to a
     provider with explicit API terms — e.g. an account-based CT API with
@@ -317,7 +317,7 @@ factual reasons below are what matters for any future re-review:
   of the echo endpoint, or any expansion of what the bootstrap queries
   from it.
 
-## §G CT log walking — public Certificate Transparency logs (connector `ctlog`, Rev 14)
+## §G CT log walking — public Certificate Transparency logs (connector `ctlog`)
 
 - **Provider / endpoint:** any log from the official public log list
   (`https://www.gstatic.com/ct/log_list/v3/log_list.json`); the connector
@@ -357,7 +357,7 @@ factual reasons below are what matters for any future re-review:
   `dns` connector's separate, terms-reviewed job); pre-certificates and
   RFC 9162 v2 leaves are skipped honestly (counted in the run stats);
   names are sightings, not liveness.
-- **Verdict: `reviewed-enabled`** (Rev 14, owner-scoped).  Re-review
+- **Verdict: `reviewed-enabled`** (owner-scoped).  Re-review
   triggers: any log operator's terms change that restricts public read
   access, a move off the official log list, or any attempt to raise the
   read volume beyond the bounded window.

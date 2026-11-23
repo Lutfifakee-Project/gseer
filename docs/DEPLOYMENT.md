@@ -1,6 +1,6 @@
 # GSEER — Deployment, Credentials, and the Hardened Runtime Model
 
-> **v0.3.2 CLI-only architecture (owner decision):** GSEER ships NO API
+> **v0.3.2 CLI-only architecture:** GSEER ships NO API
 > server, dashboard, or website.  The hardened deployment order below
 > runs in `gseer setup --self-hosted` and is re-verified read-only by
 > `gseer doctor` (the in-binary fail-closed privilege audit under

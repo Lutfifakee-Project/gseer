@@ -23,7 +23,7 @@ Install once, then run:
 > `gseer source add …` — initializes personal mode the same way when no
 > configuration exists yet.  Nothing to provision by hand.
 
-> **The path to real data (v0.3.2 Rev 9):** `gseer setup` provisions
+> **The path to real data (v0.3.2):** `gseer setup` provisions
 > personal mode AND imports the CENTRAL DATASET — a versioned, checksummed
 > export of validated passive discovery evidence published by the
 > project's scheduled pipeline (`docs/DATASET.md`).  On top of that it

@@ -1,8 +1,7 @@
 # GSEER — Installation (v0.3.2, Linux-only)
 
-Platform policy (v0.3.2 architecture decision): **Linux only** — AMD64 is
-the required product platform, ARM64 ships best-effort.  There are no
-Windows or macOS binaries, packages, or acceptance requirements.
+**Linux only** — AMD64 is the required product platform, ARM64 ships
+best-effort.  There are no Windows or macOS binaries or packages.
 
 ## Install method: `go install` (recommended)
 
