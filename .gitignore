@@ -40,11 +40,27 @@ coverage.html
 /pgdata/
 
 # Personal-mode SQLite runtime DB (default lives in ~/.gseer outside the
-# repo; this guards the relative fallback and any --db-path inside the repo).
+# repo; this guards the relative fallback and any --db-path inside the repo),
+# plus any other local database copies and scratch databases.
 /.gseer/
 gseer.db
 gseer.db-wal
 gseer.db-shm
+*.db
+*.db-wal
+*.db-shm
+
+# Logs, temporaries, editor droppings.
+*.log
+*.tmp
+*.bak
+
+# Signing keys and credentials — NEVER commit.  `gseer-dataset keygen`
+# writes the Ed25519 seed to an operator-chosen file (0600); the
+# repository carries only the PUBLIC key (internal/dataset/keys.go).
+*.pem
+*.key
+/secrets/
 
 # OS-specific installer staging (release tooling; not in v0.0.1).
 /staging/
