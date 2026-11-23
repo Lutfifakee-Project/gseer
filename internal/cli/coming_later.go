@@ -13,9 +13,9 @@ import (
 )
 
 // registerComingLaterCmds registers the planned-but-absent command
-// `asset` (SPEC-03 §2).  It is registered so that `gseer asset` does
+// `asset`.  It is registered so that `gseer asset` does
 // not fall through to cobra's generic "unknown command" suggestion;
-// instead it prints the honest pointer line and exits 64 (AC-5.7–5.8).
+// instead it prints the honest pointer line and exits 64.
 //
 // (`scan` graduated to a real command in v0.3.2 — scan.go, behind the
 // default-deny gateway; it is no longer a coming-later stub.)
@@ -27,7 +27,7 @@ func registerComingLaterCmds(root *cobra.Command) {
 	for _, name := range []string{"asset"} {
 		cmd := &cobra.Command{
 			Use:    name,
-			Short:  "Planned, not in this release — see docs/ROADMAP.md",
+			Short:  "Planned, not in this release — see CHANGELOG.md",
 			Hidden: true, // not in the top-level Commands: listing
 			// DisableFlagParsing so any flag (e.g. `gseer update --check`,
 			// `gseer scan --target ...`) reaches RunE rather than tripping
@@ -45,7 +45,7 @@ func registerComingLaterCmds(root *cobra.Command) {
 					"E_NOT_IMPLEMENTED: \"gseer %s\" is planned, not in this release.\n",
 					cmd.Name())
 				if cmd.Name() == "asset" {
-					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Asset detail view is planned for a later release — see docs/ROADMAP.md.")
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Asset detail view is planned for a later release — see CHANGELOG.md for what each release shipped.")
 				}
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Exit code 64.")
 				exitFunc(ExitUsagePlanned)

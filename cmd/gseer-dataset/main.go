@@ -483,6 +483,9 @@ func signCmd(args []string) {
 	if _, err := dataset.ParseManifest(signed); err != nil {
 		fatal("sign FAILED: the signed manifest does not re-validate: %v", err)
 	}
+	// #nosec G703 -- manifestPath is filepath.Join(*dir, dataset.ManifestFilename):
+	// the operator-provided -dir with a pinned constant filename; a local,
+	// single-user maintainer flow, same dataflow as the nosec above.
 	if err := os.WriteFile(manifestPath, signed, 0o600); err != nil {
 		fatal("sign FAILED: cannot write the signed manifest: %v", err)
 	}

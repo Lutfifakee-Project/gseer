@@ -1,7 +1,7 @@
 # GSEER — Quickstart (v0.3.2, Linux-only / CLI-only)
 
-> Canonical fresh-install workflow.  Every command below was executed
-> against the real binary during the release-readiness rounds.  The
+> Canonical fresh-install workflow.  Every command below is verified
+> against the shipped binary.  The
 > OFFICIAL product path is the CLI only (INSTALL → SETUP → SEARCH):
 >
 > - **Path A — personal mode (default, zero-config):** one embedded
@@ -9,11 +9,10 @@
 >   service.  `gseer setup` provisions it AND bootstraps local passive
 >   discovery from your own egress context — real internet assets land
 >   in your Local Index.
-> - **Path B — developer self-hosting internals (PostgreSQL 16+):** a
->   maintained internal capability (hardened deployment order, credential
->   model in `docs/DEPLOYMENT.md`) — NOT an official product
->   installation or usage path, and never required for the CLI
->   product.  Headless: GSEER ships no API server, dashboard, or website.
+> - **Path B — self-hosted PostgreSQL profile (16+):** the hardened
+>   deployment order and credential model in `docs/DEPLOYMENT.md`, for
+>   server deployments — never required for the personal CLI product.
+>   Headless: GSEER ships no API server, dashboard, or website.
 
 ## Path A — personal mode (zero-config)
 
@@ -23,7 +22,7 @@ Install once, then run:
 > `gseer source add …` — initializes personal mode the same way when no
 > configuration exists yet.  Nothing to provision by hand.
 
-> **The path to real data (v0.3.2 Rev 9):** `gseer setup` provisions
+> **The path to real data (v0.3.2):** `gseer setup` provisions
 > personal mode AND imports the CENTRAL DATASET — a versioned, checksummed
 > export of validated passive discovery evidence published by the
 > project's scheduled pipeline (`docs/DATASET.md`).  On top of that it
@@ -55,7 +54,7 @@ gseer setup --personal
 gseer doctor
 #   index reported EMPTY (that is honest)
 
-# Evaluation data (labeled SYNTHETIC everywhere; QS-6 consent gate):
+# Evaluation data (labeled SYNTHETIC everywhere; explicit consent gate):
 gseer setup --load-fixtures
 gseer search 'port==443 && title CONTAINS "login"'
 
@@ -150,10 +149,10 @@ gseer source add my-asn --type ip2asn --seed-mode index --seed-kind ip --enable 
 
 ---
 
-## Path B — developer self-hosting internals (PostgreSQL 16+)
+## Path B — self-hosted PostgreSQL profile (16+)
 
-> Historical engineering capability, retained and tested internally; the
-> official product is the CLI in Path A.  Nothing below is required to
+> The hardened self-hosted profile for server deployments; the official
+> product interface is the CLI in Path A.  Nothing below is required to
 > INSTALL → SETUP → SEARCH GSEER.  Headless: no API server, no
 > dashboard — the CLI talks to PostgreSQL directly.
 
@@ -162,7 +161,7 @@ gseer source add my-asn --type ip2asn --seed-mode index --seed-kind ip --enable 
 | Component | Requirement |
 | --- | --- |
 | Go | 1.26+ (only for building from source — `go.mod` requires 1.26) |
-| PostgreSQL | **16+ (OD-7, enforced by `gseer setup` and `gseer doctor`); verified end-to-end on 16.15 and 17.2** |
+| PostgreSQL | **16+ (enforced by `gseer setup` and `gseer doctor`); verified end-to-end on 16.15 and 17.2** |
 | Docker + Compose | easiest way to run PostgreSQL (`postgres:17-alpine` template) — or use any PostgreSQL 16+ you already run |
 | OS | Linux (AMD64 required; ARM64 best-effort) |
 
@@ -199,14 +198,14 @@ database owner / migration executor; `docs/DEPLOYMENT.md` §2).
 ```bash
 gseer setup --self-hosted --db-url "$(grep '^GSEER_DSN=' .env | cut -d= -f2-)"
 #   [ ok  ] DB reachable at postgres://127.0.0.1:5432/gseer?sslmode=disable
-#   [ ok  ] PG version: 17 (minimum 16, OD-7)
+#   [ ok  ] PG version: 17 (minimum 16)
 #   [boot] bootstrap: created role gseer_policy_owner (NOLOGIN)
 #   [boot] bootstrap: created role gseer_app (LOGIN; password injected by the deployment procedure)
-#   [boot] bootstrap: granted gseer_policy_owner membership to gseer (D-47, SET TRUE INHERIT TRUE)
+#   [boot] bootstrap: granted gseer_policy_owner membership to gseer (SET TRUE INHERIT TRUE)
 #   [ ok  ] migrations: 8 applied, schema at head v17
 #   [ ok  ] runtime credential: password set for gseer_app (rotate anytime: …)
 #   [audt] EFFECTIVE-PRIVILEGE AUDIT PASSED: …
-#   [ ok  ] privilege audit: PASSED (fail-closed gate, OD-5)
+#   [ ok  ] privilege audit: PASSED (fail-closed gate)
 ```
 
 All embedded migrations (0001–0006 + 0016 + 0017; versions 0007–0015
@@ -248,7 +247,7 @@ gseer doctor
 #   [ PASS ] DB reachable: postgres://127.0.0.1:5432/gseer?sslmode=disable
 #   [ PASS ] PG version: PostgreSQL 17 (minimum 16)
 #   [ PASS ] migrations: at head v17
-#   [ PASS ] privilege audit: fail-closed effective-privilege audit passed under the gseer_app runtime credential (OD-5)
+#   [ PASS ] privilege audit: fail-closed effective-privilege audit passed under the gseer_app runtime credential
 #   [ HINT ] index: EMPTY — no assets or services ingested yet
 #         Try: for evaluation data run: gseer setup --load-fixtures
 #
@@ -260,7 +259,7 @@ empty index up as healthy.  Doctor is read-only: it never migrates and
 never repairs.  Without the runtime credential the audit line is an
 honest `HINT` (provision with `gseer setup --self-hosted`).
 
-Optional evaluation data (labeled SYNTHETIC everywhere; QS-6 consent
+Optional evaluation data (labeled SYNTHETIC everywhere; explicit consent
 gate — set `GSEER_POLICY_EVALUATION_FIXTURES=true` or answer `y`):
 
 ```bash
@@ -386,4 +385,6 @@ Search never triggers scanning; `scan` never runs without a live scope.
 - `docs/UPDATE.md` — signed updates and the in-place binary upgrade path.
 - `docs/SOURCES.md` — connector terms register.  `docs/RULES.md` —
   fingerprint rule contributions.
-- `docs/ROADMAP.md` — what is live per release.
+- `docs/CLI.md` — command reference (what each command does; flags via
+  `gseer <command> --help`).
+- `CHANGELOG.md` — what changed per release.

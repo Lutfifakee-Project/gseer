@@ -39,7 +39,7 @@ func registerScanCmd(root *cobra.Command) {
 		Args:  cobra.NoArgs,
 		Long: `Observe one target you are authorized to observe.
 
-Active observation is the P2 regime (docs/SCANNING.md): by running a
+Authorized active observation (docs/SCANNING.md): by running a
 scan you assert you own or control the target.  Every connection passes
 the default-deny gateway:
 

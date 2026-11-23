@@ -4,7 +4,7 @@
 manifest**.  Trust is anchored in an Ed25519 public key **embedded in
 the binary** — never in the URL a manifest came from.  An unsigned or
 wrongly-signed manifest is refused no matter how familiar the download
-URL looks (owner directive §5).
+URL looks.
 
 ## 1. The update chain (in enforcement order)
 

@@ -9,9 +9,8 @@ manifest's canonical core is MANDATORY — an unsigned or tampered manifest
 never reaches the import path).
 
 **Search stays LOCAL.** The dataset only FEEDS the index; GSEER has no
-shared-index query service, no API server, and no dashboard (Rev 8
-architecture decision, unchanged). Search never triggers discovery,
-downloading, or scanning.
+shared-index query service, no API server, and no dashboard.  Search
+never triggers discovery, downloading, or scanning.
 
 ## 1. The pipeline (owner-side)
 

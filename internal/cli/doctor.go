@@ -48,10 +48,10 @@ func registerDoctorCmd(root *cobra.Command) {
 		Short: "Diagnose config, connectivity, database, and index health",
 		Long: `Diagnose config, connectivity, database, and index health.
 
-Reports PASS/FAIL/HINT with a fix line for each check (QS-4).
+Reports PASS/FAIL/HINT with a fix line for each check.
 Wired:
   - config validity
-  - DB reachable + PG version compatible (PostgreSQL 16+, OD-7)
+  - DB reachable + PG version compatible (PostgreSQL 16+)
   - migrations at head (dirty state → gseer db migrate diagnose)
   - binary version / OS-arch / SHA-256 (self-reported; compare with the
     corresponding published release checksum when a binary release is
@@ -59,15 +59,15 @@ Wired:
   - index contents: EMPTY | counts | fixture-labeled honesty label
   - discovery freshness (per-source registry state + last successful
     collection job age)
-  - runtime credential + fail-closed privilege audit (self-hosted, v0.2.0
-    OD-5: PASS names the verified grants; FAIL names the failures;
+  - runtime credential + fail-closed privilege audit (self-hosted:
+    PASS names the verified grants; FAIL names the failures;
     HINT when the runtime credential is not provisioned yet)
   - personal mode (v0.2.1): database file + permissions, SQLite migration
     state, and the same index-contents honesty contract (read-only: the
     doctor never creates or migrates the personal database)
 
 Doctor MUST NOT show a generic "healthy" that hides an empty or fixture-
-filled index (QS-4 normative).  Doctor is read-only: it never migrates.`,
+filled index.  Doctor is read-only: it never migrates.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cmd.OutOrStdout()

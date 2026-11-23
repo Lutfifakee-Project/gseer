@@ -1,6 +1,6 @@
 # GSEER — Authorized Active Observation (`gseer scope` / `gseer scan`)
 
-> v0.3.2 (the P2/PAC regime).  This document is the operating manual for
+> v0.3.2.  This document is the operating manual for
 > GSEER's active HTTP/TLS observation.  Read it before your first scan:
 > running a scan asserts that you own — or are otherwise authorized to
 > observe — the target.  GSEER never infers ownership and never probes
@@ -189,6 +189,6 @@ migrate → grants → audit.
 2. Nothing observes uninvoked: no scheduler, no daemon — `gseer scan`
    is an explicit command, exactly like `gseer collect`.
 3. A successful build, a passing mocked test, or a CLI command existing
-   is not proof of real observation — the acceptance battery drives a
-   real local server and verifies the stored evidence.
+   is not proof of real observation — verification drives a real local
+   server and checks the stored evidence.
 4. Never claim an asset is absent because a probe failed.

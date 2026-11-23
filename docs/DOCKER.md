@@ -1,15 +1,11 @@
-# GSEER — Self-Hosted Docker Stack (developer internals)
+# GSEER — Self-Hosted Docker Stack
 
-> **Developer internals (historical capability — NOT an official product
-> installation or usage path).**  The official GSEER product is the CLI:
-> INSTALL → SETUP → SEARCH (`gseer setup` provisions personal mode and
-> bootstraps local passive discovery).  This document describes a
-> maintained internal engineering stack; nothing here is required to run
-> GSEER.
->
-> v0.3.2 CLI-only architecture: there is NO API/dashboard server
-> container — the stack is PostgreSQL plus a one-shot hardened
-> provisioning container, and the headless CLI is the product.
+> **Fully self-hosted, CLI-only.**  The GSEER CLI talks to PostgreSQL
+> directly; there is NO API/dashboard server container.  This document
+> describes the Docker deployment of the self-hosted PostgreSQL
+> profile: PostgreSQL plus a one-shot hardened provisioning container.
+> Personal mode (the zero-config default) needs none of this — one
+> SQLite file.
 
 The full stack is **two services**: PostgreSQL 17 (compose-internal,
 no host port) and a one-shot `provision` container that runs the

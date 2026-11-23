@@ -56,7 +56,7 @@ func TestLoadValidSelfHosted(t *testing.T) {
 	}
 }
 
-// TestLoadPolicyActiveRejected verifies AC-7.x: any policy.active.*
+// TestLoadPolicyActiveRejected verifies that any policy.active.*
 // key is rejected with E_CONFIG_POLICY_ACTIVE_REJECTED.
 func TestLoadPolicyActiveRejected(t *testing.T) {
 	_, e := loadFixture(t, "invalid-policy-active.yaml")
@@ -66,9 +66,9 @@ func TestLoadPolicyActiveRejected(t *testing.T) {
 	if e.Code != CodeConfigPolicyActiveRejected {
 		t.Errorf("Code: want %q, got %q", CodeConfigPolicyActiveRejected, e.Code)
 	}
-	// The error must point to v0.0.2 (AC-7.x pointer requirement).
-	if !contains(e.Error(), "v0.0.2") && !contains(e.Why, "v0.0.1") {
-		t.Errorf("error must explain v0.0.1 scope; got: %v", e)
+	// The error must point the operator at the rejected-key policy.
+	if !contains(e.Error(), ".env.example") {
+		t.Errorf("error must point at .env.example (rejected-key policy); got: %v", e)
 	}
 }
 
