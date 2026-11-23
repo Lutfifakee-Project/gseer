@@ -686,124 +686,208 @@ func (s *Store) PurgeFixtures(ctx context.Context) (PurgeStats, error) {
 	}
 	if len(svcIDs) > 0 {
 		if err := selectIDsInto(ctx, tx, &assetIDs,
-			`SELECT DISTINCT asset_id FROM services WHERE id IN (`+intPlaceholders(len(svcIDs))+`)`,
-			idArgs(svcIDs)...); err != nil {
+			qFixtureAssetsOfServices(len(svcIDs)), idArgs(svcIDs)...); err != nil {
 			rollback()
 			return stats, fmt.Errorf("sqlite: fixture service-asset snapshot: %w", err)
 		}
 	}
 
-	// 1. fixture observations of the fixture source only.
-	if err := tx.QueryRowContext(ctx,
-		`SELECT count(*) FROM observations WHERE provenance = 'fixture' AND source_id = ?`, fsID).Scan(&stats.ObservationsRemoved); err != nil {
+	// 1..4 — the four purge layers.  Any failure rolls the whole
+	// transaction back: atomicity is the purge's contract.
+	if stats.ObservationsRemoved, err = purgeFixtureObservations(ctx, tx, fsID); err != nil {
 		rollback()
 		return stats, err
 	}
-	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM observations WHERE provenance = 'fixture' AND source_id = ?`, fsID); err != nil {
+	if stats.ServicesRemoved, err = purgeOrphanedServices(ctx, tx, svcIDs); err != nil {
 		rollback()
 		return stats, err
 	}
-	// 2. services the fixture observations referenced — only those now
-	//    orphaned (a shared service still has non-fixture observations).
-	if len(svcIDs) > 0 {
-		q := `SELECT count(*) FROM services WHERE id IN (` + intPlaceholders(len(svcIDs)) + `)
-		      AND NOT EXISTS (SELECT 1 FROM observations o WHERE o.service_id = services.id)`
-		if err := tx.QueryRowContext(ctx, q, idArgs(svcIDs)...).Scan(&stats.ServicesRemoved); err != nil {
-			rollback()
-			return stats, err
-		}
-		q = `DELETE FROM services WHERE id IN (` + intPlaceholders(len(svcIDs)) + `)
-		    AND NOT EXISTS (SELECT 1 FROM observations o WHERE o.service_id = services.id)`
-		if _, err := tx.ExecContext(ctx, q, idArgs(svcIDs)...); err != nil {
-			rollback()
-			return stats, err
-		}
+	if stats.AssetsRemoved, err = purgeDetachedAssets(ctx, tx, assetIDs); err != nil {
+		rollback()
+		return stats, err
 	}
-	// 3. assets that carried fixture relations — only those now fully
-	//    detached (no observation, no service — fixture OR otherwise —
-	//    and no sources left, where "no sources" also covers an asset
-	//    whose ONLY source tag is the fixture source itself: the corpus
-	//    stamps Sources=['fixture'], a fixture trace rather than a
-	//    non-fixture relation).
-	if len(assetIDs) > 0 {
-		detached := `AND NOT EXISTS (SELECT 1 FROM observations o WHERE o.asset_id = assets.id)
-		    AND NOT EXISTS (SELECT 1 FROM services s WHERE s.asset_id = assets.id)
-		    AND (assets.sources = '[]' OR json_array_length(assets.sources) = 0
-		         OR (json_array_length(assets.sources) = 1
-		             AND json_extract(assets.sources, '$[0]') = ?))`
-		q := `SELECT count(*) FROM assets WHERE id IN (` + intPlaceholders(len(assetIDs)) + `)` + detached
-		args := append(idArgs(assetIDs), storage.FixtureSourceName)
-		if err := tx.QueryRowContext(ctx, q, args...).Scan(&stats.AssetsRemoved); err != nil {
-			rollback()
-			return stats, err
-		}
-		q = `DELETE FROM assets WHERE id IN (` + intPlaceholders(len(assetIDs)) + `)` + detached
-		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
-			rollback()
-			return stats, err
-		}
-	}
-	// 4. strip the fixture source tag from the assets that SURVIVED the
-	//    purge (same semantics as RetractSuppressed's source-name strip):
-	//    a detached-but-shared asset must not keep pointing at the
-	//    fixture source it no longer carries data from.
-	if len(assetIDs) > 0 {
-		rows, err := tx.QueryContext(ctx,
-			`SELECT id, sources FROM assets WHERE id IN (`+intPlaceholders(len(assetIDs))+`)
-		     AND sources LIKE '%"'||?||'"%'`, append(idArgs(assetIDs), storage.FixtureSourceName)...)
-		if err != nil {
-			rollback()
-			return stats, err
-		}
-		type stripped struct {
-			id      int64
-			sources string
-		}
-		var victims []stripped
-		for rows.Next() {
-			var v stripped
-			if err := rows.Scan(&v.id, &v.sources); err != nil {
-				_ = rows.Close()
-				rollback()
-				return stats, err
-			}
-			victims = append(victims, v)
-		}
-		if err := rows.Err(); err != nil {
-			_ = rows.Close()
-			rollback()
-			return stats, err
-		}
-		_ = rows.Close()
-		for _, v := range victims {
-			var tags []string
-			if err := json.Unmarshal([]byte(v.sources), &tags); err != nil {
-				rollback()
-				return stats, fmt.Errorf("sqlite: purge cannot parse asset sources %q: %w", v.sources, err)
-			}
-			kept := make([]string, 0, len(tags))
-			for _, tag := range tags {
-				if tag != storage.FixtureSourceName {
-					kept = append(kept, tag)
-				}
-			}
-			out, merr := json.Marshal(kept)
-			if merr != nil {
-				rollback()
-				return stats, fmt.Errorf("sqlite: purge cannot re-encode asset sources: %w", merr)
-			}
-			if _, err := tx.ExecContext(ctx, `UPDATE assets SET sources = ? WHERE id = ?`, string(out), v.id); err != nil {
-				rollback()
-				return stats, err
-			}
-		}
+	if err = stripFixtureSourceTags(ctx, tx, assetIDs); err != nil {
+		rollback()
+		return stats, err
 	}
 	if err := tx.Commit(); err != nil {
 		rollback()
 		return stats, fmt.Errorf("sqlite: cannot commit the fixture purge: %w", err)
 	}
 	return stats, nil
+}
+
+// purgeFixtureObservations counts then deletes the fixture observations
+// of the fixture source only (purge layer 1).
+func purgeFixtureObservations(ctx context.Context, tx *sql.Tx, fsID int64) (int64, error) {
+	var removed int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT count(*) FROM observations WHERE provenance = 'fixture' AND source_id = ?`, fsID).Scan(&removed); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM observations WHERE provenance = 'fixture' AND source_id = ?`, fsID); err != nil {
+		return 0, err
+	}
+	return removed, nil
+}
+
+// purgeOrphanedServices removes the services the fixture observations
+// referenced — only those now orphaned (a shared service still has
+// non-fixture observations) — and reports how many went away (layer 2).
+func purgeOrphanedServices(ctx context.Context, tx *sql.Tx, svcIDs []int64) (int64, error) {
+	if len(svcIDs) == 0 {
+		return 0, nil
+	}
+	var removed int64
+	if err := tx.QueryRowContext(ctx, qCountOrphanedServices(len(svcIDs)), idArgs(svcIDs)...).Scan(&removed); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, qDeleteOrphanedServices(len(svcIDs)), idArgs(svcIDs)...); err != nil {
+		return 0, err
+	}
+	return removed, nil
+}
+
+// purgeDetachedAssets removes assets that carried fixture relations —
+// only those now fully detached (no observation, no service — fixture
+// OR otherwise — and no sources left, where "no sources" also covers an
+// asset whose ONLY source tag is the fixture source itself: the corpus
+// stamps Sources=['fixture'], a fixture trace rather than a non-fixture
+// relation) — and reports how many went away (layer 3).
+func purgeDetachedAssets(ctx context.Context, tx *sql.Tx, assetIDs []int64) (int64, error) {
+	if len(assetIDs) == 0 {
+		return 0, nil
+	}
+	args := append(idArgs(assetIDs), storage.FixtureSourceName)
+	var removed int64
+	if err := tx.QueryRowContext(ctx, qCountDetachedAssets(len(assetIDs)), args...).Scan(&removed); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, qDeleteDetachedAssets(len(assetIDs)), args...); err != nil {
+		return 0, err
+	}
+	return removed, nil
+}
+
+// strippedAsset is one surviving asset whose sources still name the
+// fixture source.
+type strippedAsset struct {
+	id      int64
+	sources string
+}
+
+// selectTaggedAssets reads the surviving assets that still carry the
+// fixture source tag.  The result rows are closed (deferred) before the
+// function returns, so no read cursor is held open over the same
+// transaction once the rewrites below begin.
+func selectTaggedAssets(ctx context.Context, tx *sql.Tx, assetIDs []int64) ([]strippedAsset, error) {
+	rows, err := tx.QueryContext(ctx, qSelectTaggedAssets(len(assetIDs)), append(idArgs(assetIDs), storage.FixtureSourceName)...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var victims []strippedAsset
+	for rows.Next() {
+		var v strippedAsset
+		if err := rows.Scan(&v.id, &v.sources); err != nil {
+			return nil, err
+		}
+		victims = append(victims, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return victims, nil
+}
+
+// stripFixtureSourceTags strips the fixture source tag from the assets
+// that SURVIVED the purge (same semantics as RetractSuppressed's
+// source-name strip): a detached-but-shared asset must not keep
+// pointing at the fixture source it no longer carries data from (layer 4).
+func stripFixtureSourceTags(ctx context.Context, tx *sql.Tx, assetIDs []int64) error {
+	if len(assetIDs) == 0 {
+		return nil
+	}
+	victims, err := selectTaggedAssets(ctx, tx, assetIDs)
+	if err != nil {
+		return err
+	}
+	for _, v := range victims {
+		var tags []string
+		if err := json.Unmarshal([]byte(v.sources), &tags); err != nil {
+			return fmt.Errorf("sqlite: purge cannot parse asset sources %q: %w", v.sources, err)
+		}
+		kept := make([]string, 0, len(tags))
+		for _, tag := range tags {
+			if tag != storage.FixtureSourceName {
+				kept = append(kept, tag)
+			}
+		}
+		out, merr := json.Marshal(kept)
+		if merr != nil {
+			return fmt.Errorf("sqlite: purge cannot re-encode asset sources: %w", merr)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE assets SET sources = ? WHERE id = ?`, string(out), v.id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// --- fixture-purge query builders -------------------------------------------------
+//
+// The ONLY dynamic content in every builder is the "?,?,…" placeholder
+// list produced by intPlaceholders(n) — guarded by
+// TestIntPlaceholdersSyntax and
+// TestPurgeQueryBuildersVaryOnlyInPlaceholders to be punctuation-only
+// and invariant for every n, so no id or source name can ever be
+// interpolated into the statement text.  Bound values travel as query
+// arguments at the call sites above.
+
+// qFixtureAssetsOfServices snapshots the assets referenced by services.
+func qFixtureAssetsOfServices(n int) string {
+	return `SELECT DISTINCT asset_id FROM services WHERE id IN (` + intPlaceholders(n) + `)`
+}
+
+// qCountOrphanedServices counts the services that would be purged.
+func qCountOrphanedServices(n int) string {
+	return `SELECT count(*) FROM services WHERE id IN (` + intPlaceholders(n) + `)
+	      AND NOT EXISTS (SELECT 1 FROM observations o WHERE o.service_id = services.id)`
+}
+
+// qDeleteOrphanedServices deletes those same services.
+func qDeleteOrphanedServices(n int) string {
+	return `DELETE FROM services WHERE id IN (` + intPlaceholders(n) + `)
+	    AND NOT EXISTS (SELECT 1 FROM observations o WHERE o.service_id = services.id)`
+}
+
+// detachedAssetClause matches assets with NO observation, NO service and
+// no sources left; the trailing ? binds the fixture source name (an
+// asset whose ONLY source tag is the fixture source itself counts as
+// detached — a fixture trace, not a non-fixture relation).
+const detachedAssetClause = `AND NOT EXISTS (SELECT 1 FROM observations o WHERE o.asset_id = assets.id)
+    AND NOT EXISTS (SELECT 1 FROM services s WHERE s.asset_id = assets.id)
+    AND (assets.sources = '[]' OR json_array_length(assets.sources) = 0
+         OR (json_array_length(assets.sources) = 1
+             AND json_extract(assets.sources, '$[0]') = ?))`
+
+// qCountDetachedAssets counts the assets that would be purged.
+func qCountDetachedAssets(n int) string {
+	return `SELECT count(*) FROM assets WHERE id IN (` + intPlaceholders(n) + `) ` + detachedAssetClause
+}
+
+// qDeleteDetachedAssets deletes those same assets.
+func qDeleteDetachedAssets(n int) string {
+	return `DELETE FROM assets WHERE id IN (` + intPlaceholders(n) + `) ` + detachedAssetClause
+}
+
+// qSelectTaggedAssets selects surviving assets that still carry the
+// fixture source tag among their sources (the ? binds the fixture
+// source name twice-rounded by the LIKE guard).
+func qSelectTaggedAssets(n int) string {
+	return `SELECT id, sources FROM assets WHERE id IN (` + intPlaceholders(n) + `)
+     AND sources LIKE '%"'||?||'"%'`
 }
 
 // selectIDsInto runs a single-column integer query into ids (purge

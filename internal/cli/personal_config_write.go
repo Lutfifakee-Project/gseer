@@ -22,9 +22,6 @@ import (
 //
 // This file adds the surgical alternative:
 //
-//   - resolveConfigWritePath mirrors the loader's own resolution
-//     (--config flag > GSEER_CONFIG > platform default, loader.go) so
-//     setup updates the SAME file every following command loads;
 //   - upsertPersonalConfig edits an existing, loadable config line by
 //     line, touching ONLY the `profile:` scalar and the `database:` /
 //     `dsn:` scalar — every other key, comment, quoting style and
@@ -37,17 +34,17 @@ import (
 // edit is exact; flow-style `database: {…}` mappings are refused with
 // a manual instruction instead of being guessed at.
 
-// resolveConfigWritePath returns the config file setup may update:
-// the same resolution order the loader uses, so the file written here
-// is the file `gseer status`/`gseer doctor`/engine commands read.
-func resolveConfigWritePath() string {
-	if flags.configPath != "" {
-		return flags.configPath
-	}
-	if v, ok := os.LookupEnv("GSEER_CONFIG"); ok && v != "" {
-		return v
-	}
-	return defaultConfigPath()
+// resolveConfigWritePath and the QS-6/R3 wiring above it are gone: the
+// setup flow resolves the operator's config path through the loader
+// directly, so the file edited here is still the file every following
+// command loads.
+
+// personalConfigScan records what one scan pass learned about the
+// existing config file.
+type personalConfigScan struct {
+	foundProfile  bool
+	foundDatabase bool
+	foundDSN      bool
 }
 
 // upsertPersonalConfig updates an EXISTING config file in place with
@@ -63,6 +60,10 @@ func resolveConfigWritePath() string {
 //   - the file mode is preserved (writePersonalConfig's 0600 policy
 //     governs the fresh-file path, not this one).
 func upsertPersonalConfig(path string, dbPath string) error {
+	// #nosec G304 -- the operator-chosen config path (--config flag >
+	// GSEER_CONFIG > platform default) is the feature itself (QS-6/R3):
+	// a local, single-user dataflow with no remote or cross-user input.
+	// Restricting the path would change documented CLI behavior.
 	raw, rerr := os.ReadFile(path)
 	if rerr != nil {
 		return fmt.Errorf("cannot read the config %s: %w", path, rerr)
@@ -73,9 +74,30 @@ func upsertPersonalConfig(path string, dbPath string) error {
 	}
 	lines := strings.Split(string(raw), "\n")
 
-	foundProfile := false
-	foundDatabase := false
-	foundDSN := false
+	scan, err := scanPersonalConfigLines(lines, path, dbPath)
+	if err != nil {
+		return err
+	}
+	if scan.foundDatabase && !scan.foundDSN {
+		lines = insertMissingDSN(lines, dbPath)
+	}
+	lines = applyMissingBlocks(lines, scan, dbPath)
+
+	// #nosec G703 -- the same operator-chosen config path as above; no
+	// remote or cross-user input reaches this write (QS-6/R3 design).
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), mode); err != nil {
+		return fmt.Errorf("cannot write the config %s: %w", path, err)
+	}
+	return nil
+}
+
+// scanPersonalConfigLines rewrites the profile/dsn lines it recognizes
+// IN PLACE (index-addressed, so indentation survives) and reports what
+// the file already contains.  A flow-style `database: {…}` mapping is
+// refused instead of guessed at.  The line grammar is the loader's own
+// schema: scalar profile, block-or-scalar database.dsn.
+func scanPersonalConfigLines(lines []string, path string, dbPath string) (personalConfigScan, error) {
+	var scan personalConfigScan
 	inDatabase := false
 
 	for i, ln := range lines {
@@ -89,48 +111,58 @@ func upsertPersonalConfig(path string, dbPath string) error {
 			} else if !comment && strings.HasPrefix(trimmed, "dsn:") {
 				indent := ln[:len(ln)-len(strings.TrimLeft(ln, " \t"))]
 				lines[i] = indent + "dsn: " + yamlQuote(dbPath)
-				foundDSN = true
+				scan.foundDSN = true
 				continue
 			}
 		}
 		if topLevel && !comment {
 			if strings.HasPrefix(trimmed, "database:") {
 				if rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "database:")); rest != "" {
-					return fmt.Errorf("the config %s uses a flow-style database mapping; add "+
+					return scan, fmt.Errorf("the config %s uses a flow-style database mapping; add "+
 						"`dsn: %s` under database: manually — setup refuses to edit it programmatically",
 						path, dbPath)
 				}
 				inDatabase = true
-				foundDatabase = true
+				scan.foundDatabase = true
 				continue
 			}
 			if strings.HasPrefix(trimmed, "profile:") {
 				lines[i] = "profile: personal"
-				foundProfile = true
+				scan.foundProfile = true
 				continue
 			}
 		}
 	}
+	return scan, nil
+}
 
-	if foundDatabase && !foundDSN {
-		for i, ln := range lines {
-			if strings.TrimSpace(ln) == "database:" {
-				head := append([]string{}, lines[:i+1]...)
-				tail := append([]string{}, lines[i+1:]...)
-				lines = append(head, append([]string{"  dsn: " + yamlQuote(dbPath)}, tail...)...)
-				break
-			}
+// insertMissingDSN inserts `  dsn: <dbPath>` right after the first
+// exact `database:` header line (caller: the scan saw a block whose dsn
+// scalar is absent).  Rebuilt via fresh appends so no aliasing surprise
+// can alias the input slice (gocritic appendAssign).
+func insertMissingDSN(lines []string, dbPath string) []string {
+	for i, ln := range lines {
+		if strings.TrimSpace(ln) != "database:" {
+			continue
 		}
+		rebuilt := make([]string, 0, len(lines)+1)
+		rebuilt = append(rebuilt, lines[:i+1]...)
+		rebuilt = append(rebuilt, "  dsn: "+yamlQuote(dbPath))
+		rebuilt = append(rebuilt, lines[i+1:]...)
+		return rebuilt
 	}
-	if !foundDatabase {
+	return lines
+}
+
+// applyMissingBlocks appends a fresh `database:` block when the file
+// has none and prepends `profile: personal` when no profile scalar
+// exists — in that order, matching the historical single-pass order.
+func applyMissingBlocks(lines []string, scan personalConfigScan, dbPath string) []string {
+	if !scan.foundDatabase {
 		lines = append(lines, "", "database:", "  dsn: "+yamlQuote(dbPath))
 	}
-	if !foundProfile {
+	if !scan.foundProfile {
 		lines = append([]string{"profile: personal"}, lines...)
 	}
-
-	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), mode); err != nil {
-		return fmt.Errorf("cannot write the config %s: %w", path, err)
-	}
-	return nil
+	return lines
 }

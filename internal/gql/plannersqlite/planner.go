@@ -475,59 +475,21 @@ func (b *builder) compileComparison(c *ast.Comparison, alias string, branch *pla
 	switch c.Op {
 	case ast.OpEq, ast.OpNeq, ast.OpLt, ast.OpLe, ast.OpGt, ast.OpGe:
 		op := opSQL(c.Op)
-		// Empty-value semantics identical to the PG planner.
-		if sv, isEmpty := c.Value.(*ast.StrValue); isEmpty && sv.S == "" {
-			if c.Op == ast.OpEq {
-				return fmt.Sprintf("(%s IS NULL OR %s = '')", qcol, qcol)
-			}
-			return fmt.Sprintf("(%s IS NOT NULL AND %s <> '')", qcol, qcol)
+		// The special cases run in a FIXED order — empty value → stale
+		// boolean → time normalization → document fields — before the
+		// generic scalar compare; each helper below carries the original
+		// semantics and rationale unchanged.
+		if sql, ok := compileEmptyScalarCompare(c, qcol); ok {
+			return sql
 		}
-		// Boolean columns bind as SQL literals, not string params — the
-		// SQLite mirror of the PG planner's v0.3.2 fix: a TEXT "false"
-		// param never equals the INTEGER 0/1 stale column (the owner
-		// evidence hit exactly this: stale=="false" → 0 rows on personal
-		// mode over a fresh index).  TRUE/FALSE are portable SQLite
-		// literals; the validator only admits the two bool literals.
-		if c.Field == "stale" {
-			if want, ok := boolValue(c.Value); ok {
-				if c.Op == ast.OpNeq {
-					if want {
-						return fmt.Sprintf("(%s IS NOT NULL AND %s <> TRUE)", qcol, qcol)
-					}
-					return fmt.Sprintf("(%s IS NOT NULL AND %s <> FALSE)", qcol, qcol)
-				}
-				if want {
-					return fmt.Sprintf("%s = TRUE", qcol)
-				}
-				return fmt.Sprintf("%s = FALSE", qcol)
-			}
+		if sql, ok := compileStaleBoolCompare(c, qcol); ok {
+			return sql
 		}
-		// Time columns compare through the gseer_ts normalizer on BOTH
-		// sides: stored values are fixed-width UTC micro strings (SQ-02)
-		// while a user value is plain RFC 3339 — lexicographic compare of
-		// the raw forms breaks on same-second boundaries ("…00.000000Z"
-		// sorts BEFORE "…00Z" because '.' < 'Z'), so `observed_at <
-		// "2026-01-15T00:00:00Z"` wrongly matched the boundary row.
-		// gseer_ts is a registered deterministic scalar function that
-		// normalizes any RFC 3339 / date-only text to the fixed-width
-		// micro form; NULL on either side stays a NULL (filtered) result.
-		if isTimeField(c.Field) {
-			if sv, ok := c.Value.(*ast.StrValue); ok {
-				return fmt.Sprintf("gseer_ts(%s) %s gseer_ts(%s)", qcol, op, b.placeholder(sv.S))
-			}
+		if sql, ok := b.compileNormalizedTimeCompare(c, qcol, op); ok {
+			return sql
 		}
-		// Text-surface fields (http.body / http.header): the value is a
-		// DOCUMENT, not a scalar, so equality is a substring match —
-		// `body="wp-content"` behaves like CONTAINS and `!=` is its
-		// negation (documented in docs/SEARCH-SYNTAX.md §3).  The
-		// empty-string case above keeps its IS NULL / '' semantics.
-		if c.Field == "http.body" || c.Field == "http.header" {
-			if _, isStr := c.Value.(*ast.StrValue); isStr {
-				if c.Op == ast.OpEq {
-					return b.compileContains(qcol, c.Value, c.Field)
-				}
-				return fmt.Sprintf("((NOT %s) OR %s IS NULL)", b.compileContains(qcol, c.Value, c.Field), qcol)
-			}
+		if sql, ok := b.compileDocumentFieldCompare(c, qcol); ok {
+			return sql
 		}
 		return b.simpleCompare(qcol, op, c.Value)
 	case ast.OpIn:
@@ -542,6 +504,82 @@ func (b *builder) compileComparison(c *ast.Comparison, alias string, branch *pla
 		return b.compileMatch(qcol, c.Value)
 	}
 	return "TRUE"
+}
+
+// compileEmptyScalarCompare lowers the empty-string comparison —
+// empty-value semantics identical to the PG planner (” matches NULL and
+// empty alike for '=', and neither for every other operator).
+func compileEmptyScalarCompare(c *ast.Comparison, qcol string) (string, bool) {
+	if sv, isEmpty := c.Value.(*ast.StrValue); isEmpty && sv.S == "" {
+		if c.Op == ast.OpEq {
+			return fmt.Sprintf("(%s IS NULL OR %s = '')", qcol, qcol), true
+		}
+		return fmt.Sprintf("(%s IS NOT NULL AND %s <> '')", qcol, qcol), true
+	}
+	return "", false
+}
+
+// compileStaleBoolCompare binds boolean comparisons as SQL literals, not
+// string params — the SQLite mirror of the PG planner's v0.3.2 fix: a
+// TEXT "false" param never equals the INTEGER 0/1 stale column (the
+// owner evidence hit exactly this: stale=="false" → 0 rows on personal
+// mode over a fresh index).  TRUE/FALSE are portable SQLite literals;
+// the validator only admits the two bool literals.
+func compileStaleBoolCompare(c *ast.Comparison, qcol string) (string, bool) {
+	if c.Field != "stale" {
+		return "", false
+	}
+	want, ok := boolValue(c.Value)
+	if !ok {
+		return "", false
+	}
+	if c.Op == ast.OpNeq {
+		if want {
+			return fmt.Sprintf("(%s IS NOT NULL AND %s <> TRUE)", qcol, qcol), true
+		}
+		return fmt.Sprintf("(%s IS NOT NULL AND %s <> FALSE)", qcol, qcol), true
+	}
+	if want {
+		return fmt.Sprintf("%s = TRUE", qcol), true
+	}
+	return fmt.Sprintf("%s = FALSE", qcol), true
+}
+
+// compileNormalizedTimeCompare routes time columns through the gseer_ts
+// normalizer on BOTH sides: stored values are fixed-width UTC micro
+// strings (SQ-02) while a user value is plain RFC 3339 — lexicographic
+// compare of the raw forms breaks on same-second boundaries
+// ("…00.000000Z" sorts BEFORE "…00Z" because '.' < 'Z'), so
+// `observed_at < "2026-01-15T00:00:00Z"` wrongly matched the boundary
+// row.  gseer_ts is a registered deterministic scalar function that
+// normalizes any RFC 3339 / date-only text to the fixed-width micro
+// form; NULL on either side stays a NULL (filtered) result.
+func (b *builder) compileNormalizedTimeCompare(c *ast.Comparison, qcol, op string) (string, bool) {
+	if !isTimeField(c.Field) {
+		return "", false
+	}
+	if sv, ok := c.Value.(*ast.StrValue); ok {
+		return fmt.Sprintf("gseer_ts(%s) %s gseer_ts(%s)", qcol, op, b.placeholder(sv.S)), true
+	}
+	return "", false
+}
+
+// compileDocumentFieldCompare treats the text-surface fields
+// (http.body / http.header) as DOCUMENTS, not scalars: equality is a
+// substring match — `body="wp-content"` behaves like CONTAINS and `!=`
+// is its negation (documented in docs/SEARCH-SYNTAX.md §3).  The
+// empty-string case above keeps its IS NULL / ” semantics.
+func (b *builder) compileDocumentFieldCompare(c *ast.Comparison, qcol string) (string, bool) {
+	if c.Field != "http.body" && c.Field != "http.header" {
+		return "", false
+	}
+	if _, isStr := c.Value.(*ast.StrValue); isStr {
+		if c.Op == ast.OpEq {
+			return b.compileContains(qcol, c.Value, c.Field), true
+		}
+		return fmt.Sprintf("((NOT %s) OR %s IS NULL)", b.compileContains(qcol, c.Value, c.Field), qcol), true
+	}
+	return "", false
 }
 
 // compileDerived lowers the compatibility boolean fields — same

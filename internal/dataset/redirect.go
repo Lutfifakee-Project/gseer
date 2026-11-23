@@ -138,7 +138,7 @@ func validateFinalResponse(resp *http.Response) error {
 		return fmt.Errorf("E_DATASET_REDIRECT: response carries no final URL")
 	}
 	u := resp.Request.URL
-	if u.Scheme != "https" && !(u.Scheme == "http" && isLoopbackHost(u.Hostname())) {
+	if u.Scheme != "https" && (u.Scheme != "http" || !isLoopbackHost(u.Hostname())) {
 		return fmt.Errorf("E_DATASET_REDIRECT: final URL %s violates the transport rule (https, or loopback http for local testing)", redactURL(u.String()))
 	}
 	return nil
