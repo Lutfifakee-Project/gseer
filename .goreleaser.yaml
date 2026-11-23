@@ -91,10 +91,10 @@ archives:
     files:
       # License and compliance docs travel with every archive; nothing
       # else — keep the artifact surface minimal and auditable.
-      # R3.2.1: THIRD-PARTY-NOTICES.md joins the archive set, next to
-      # LICENSE and LICENSE-AUDIT.md (LICENSE* covers both LICENSE
-      # files).  All three documents live at the repository root, so
-      # archive contents audit directly against checked-in files.
+      # THIRD-PARTY-NOTICES.md joins the archive set, next to LICENSE
+      # (LICENSE* covers the LICENSE document).  Both documents live at
+      # the repository root, so archive contents audit directly against
+      # checked-in files.
       - LICENSE*
       - README*
       - CHANGELOG*

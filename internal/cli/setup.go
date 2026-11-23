@@ -128,12 +128,11 @@ Fixture dataset (QS-6, labeled synthetic evaluation data):
     fixture dataset — synthetic observations for evaluation; NOT real internet data
 
 The fresh-install workflow is documented in docs/QUICKSTART.md
-(canonical) and verified END-TO-END on Linux AMD64 by the acceptance
-journey harness (pipeline/acceptance-journey.sh): fresh install, setup
-with central-dataset import, port/domain/hostname search, provenance,
-x509 + tamper rejection, offline search, and the honest production-URL
-state — the ALL_STEPS_PASSED verdict and raw step logs ship inside this
-package (acceptance13/journey-final/).
+(canonical): fresh install, setup with central-dataset import,
+port/domain/hostname search, provenance, x509 + tamper rejection,
+offline search, and the honest production-URL state — verified by the
+repository's automated test suite (unit, integration, and clean-room
+gates) on every commit.
 
 Wired: --self-hosted provisioning (M3), --load-fixtures/--purge-fixtures
 (M4), --with-compose compose + .env generation (M11; --full writes the
