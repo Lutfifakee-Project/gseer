@@ -206,7 +206,7 @@ func collectStatusView() statusView {
 
 func renderStatusTable(out interface{ Write([]byte) (int, error) }, v statusView) {
 	printf(out, "GSEER status\n")
-	printf(out, "  binary       : gseer v%s (commit %s, built %s) sha256=%s\n",
+	printf(out, "  binary       : gseer %s (commit %s, built %s) sha256=%s\n",
 		v.Binary.Version, v.Binary.Commit, v.Binary.BuiltAt, v.Binary.SHA256)
 	if v.Profile.NotedAs != "" {
 		printf(out, "  profile      : %s (%s)\n", v.Profile.Name, v.Profile.NotedAs)

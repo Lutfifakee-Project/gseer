@@ -10,6 +10,40 @@ first.  Versions follow semver (three-component).
 > shipped with; pending sections and all active documentation follow
 > the register-only policy.
 
+## [v0.3.3-rc2] — 2026-11-28: release remediation (docs & status output)
+
+Owner-accepted v0.3.3-rc1 + audited remediation R01–R06, dengan
+regression & compatibility evidence lengkap (Phase 2 report).  Identity:
+`gseer v0.3.3-rc2`.
+
+### Fixed
+- **Status version prefix (R06):** `gseer status` tidak lagi mencetak
+  prefiks "v" ganda (`gseer vv0.3.3-rc1` → `gseer v0.3.3-rc1`); fallback
+  dev tetap jujur (`gseer dev`).  Dikunci unit test baru
+  `internal/cli/status_format_test.go` (release candidate, stable tag,
+  dev fallback).
+- **Bentuk command resmi (R01):** README-RELEASE menampilkan flag
+  sebagaimana CLI membacanya (`--sort` DI LUAR kutip GQL); deskripsi
+  `setup` menyatakan head schema (v15) dan bahwa doctor mencetaknya.
+- **Contoh search (R02):** seluruh contoh terverifikasi pada korpus
+  fixtures berlabel (1 hasil per contoh, exit 0).
+- **Audit referensi versi (R03):** instruksi v0.3.2 basi dihapus dari
+  dokumen aktif; anotasi historis dipertahankan sengaja.
+- **Kode error troubleshooting (R04):** kode `E_DATASET_*` di
+  docs/TROUBLESHOOTING.md konsisten dengan implementasi (sign.go +
+  fetch.go).
+- **Pin instalasi eksplisit (R05):** dokumen instalasi mengepin rilis
+  persis (`go install …@v0.3.3-rc1` terverifikasi di GOBIN bersih).
+- **Sample PG doctor (Phase 2 item 12):** sample QUICKSTART kini
+  `at head v30` (head embedded aktual; head personal SQLite = v15).
+
+### Compatibility
+- `go test ./...` 27 paket ok (termasuk governance AGPL header),
+  race clean di internal/cli, gofmt bersih; baseline RC1 yang
+  dibangun ulang dari pristine mereproduksi bug lama, build rc2
+  memperbaikinya; output `version`/`doctor` tidak berubah selain fix;
+  dataset LIVE (v25) import/verify, search, setup/migrasi terverifikasi.
+
 ## [v0.3.3-rc1] — 2026-11-27: resilient pipeline, layered sources, measured quality
 
 Extends the accepted v0.3.2-rc2 state per the expanded master mandate

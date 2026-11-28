@@ -1,8 +1,17 @@
-# GSEER v0.3.3-rc1 — Official Release Candidate (README RELEASE)
+# GSEER v0.3.3-rc2 — Official Release Candidate (README RELEASE)
 
 GSEER adalah mesin pencari aset internet berbasis GQL yang berjalan
 personal/local (SQLite) dengan backend PostgreSQL sebagai opsi. Paket
-ini dibangun dari state r23 yang telah di-accept owner — satu arsip
+ini dibangun dari v0.3.3-rc1 yang telah di-accept owner, ditambah
+remediasi rilis ter-audit R01–R06 (bentuk command resmi + fix output
+`status`; lihat `CHANGELOG.md` entri `[v0.3.3-rc2]`), revisi
+dokumentasi docfix1 atas temuan Owner Acceptance (judul Quickstart,
+pin instalasi eksplisit, provenance dataset channel), dan revisi
+docfix2 atas blocker instalasi Owner Acceptance docfix1: tag Git
+`v0.3.3-rc2` belum ada, sehingga seluruh dokumen kini memisahkan
+jalur RC prerelease (ZIP → verifikasi SHA-256 → extract → `make
+build` → verify version) dari jalur `go install` yang hanya berlaku
+untuk versi yang SUDAH memiliki tag — satu arsip
 mandiri berisi sumber produk lengkap; tidak ada patch atau kit
 tambahan yang perlu diterapkan.
 
@@ -14,14 +23,22 @@ tambahan yang perlu diterapkan.
 ## Instalasi & verifikasi (alur resmi)
 ```bash
 # 0. cek integritas paket
-sha256sum -c gseer-v0.3.3-rc1.zip.sha256        # di folder distribusi
-unzip gseer-v0.3.3-rc1.zip && cd gseer-v0.3.3-rc1
+sha256sum -c gseer-v0.3.3-rc2-docfix2.zip.sha256 # di folder distribusi
+unzip gseer-v0.3.3-rc2-docfix2.zip && cd gseer-v0.3.3-rc2
 
-# 1. install/build (versi tercetak otomatis = v0.3.3-rc1)
+# 1. install/build (versi tercetak otomatis = v0.3.3-rc2)
 make build
 
 # 2. verify version
-./bin/gseer version          # harus mencetak: gseer v0.3.3-rc1
+./bin/gseer version          # harus mencetak: gseer v0.3.3-rc2
+
+# CATATAN JALUR (docfix2): ini adalah jalur PRERELEASE RC — tag Git
+# v0.3.3-rc2 belum ada, jadi `go install …@v0.3.3-rc2` TIDAK tersedia
+# ("invalid version: unknown revision"), `@latest` hanya me-resolve tag
+# non-prerelease, dan `go install ./cmd/gseer` jujur mencetak
+# `gseer dev`.  `go install github.com/Lutfifakee-Project/gseer/
+# cmd/gseer@<tag>` adalah jalur untuk versi yang SUDAH memiliki tag
+# (saat ini tertinggi: v0.3.3-rc1) — bukan untuk memasang RC2.
 
 # 2b. (RC2) jalur dataset kini WAJIB bertanda tangan Ed25519 — manifest
 #     live diverifikasi terhadap keyring yang tertanam di binary
@@ -33,14 +50,15 @@ make build
 
 # 3. setup & inisialisasi (personal mode: satu file SQLite lokal)
 ./bin/gseer setup            # membuat ~/.gseer (GSEER_HOME), migrasi
-                             # schema ke head (migrasi v1..v29)
+                             # schema ke head (saat ini head v15;
+                             # doctor mencetak versinya)
 
 # 4. search — index terisi dari DATASET; untuk evaluasi, muat
 #    korpus fixtures sintetis berlabel:
 ./bin/gseer setup --load-fixtures
-./bin/gseer search 'product CONTAINS "nginx"'
-./bin/gseer search 'product CONTAINS "nginx" --sort relevance:asc'   # paksa ranking
-./bin/gseer search 'hostname *= "www*"'        # wildcard
+./bin/gseer search 'product CONTAINS "OpenSSH"'
+./bin/gseer search 'product CONTAINS "OpenSSH"' --sort relevance:asc   # paksa ranking (flag di LUAR kutip GQL)
+./bin/gseer search 'product *= "OpenSSH"'      # wildcard
 ./bin/gseer search 'tls.version != ""'         # TLS (bila data TLS ada)
 ./bin/gseer search 'ct.entry_type != ""'       # CT (bila data CT ada)
 

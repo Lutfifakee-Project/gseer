@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/v033-acceptance.sh — REAL-CONDITION ACCEPTANCE DRIVER (GSEER v0.3.3-rc1).
+# scripts/v033-acceptance.sh — REAL-CONDITION ACCEPTANCE DRIVER (GSEER v0.3.3-rc2).
 #
 # Mandat R6: acceptance wajib menguji kondisi nyata — alur lengkap
 # install → version → setup → dataset update (LIVE) → dataset status →
@@ -33,7 +33,7 @@ export GSEER_HOME="$H/.gseer"
 BIN="$REPO_ROOT/bin/gseer"
 export GOPATH="${GSEER_GOPATH:-$W/gopath}" GOCACHE="${GSEER_GOCACHE:-$W/gocache}"
 
-echo "== GSEER v0.3.3-rc1 REAL-CONDITION ACCEPTANCE $(date -u +%FT%TZ) =="
+echo "== GSEER v0.3.3-rc2 REAL-CONDITION ACCEPTANCE $(date -u +%FT%TZ) =="
 echo " workdir: $W  home: $GSEER_HOME"
 
 echo "== [A] build & vet =="
@@ -42,7 +42,7 @@ echo "== [A] build & vet =="
 make build >/dev/null 2>&1; mark "make build" $?
 
 echo "== [B] identity & clean-dir install =="
-"$BIN" version | grep -q "gseer v0.3.3-rc1"; mark "version == v0.3.3-rc1" $?
+"$BIN" version | grep -q "gseer v0.3.3-rc2"; mark "version == v0.3.3-rc2" $?
 
 echo "== [C] full journey: setup → update(LIVE) → status → search → export → selfcheck =="
 "$BIN" setup --personal > "$W/j-setup.log" 2>&1; mark "setup --personal (GSEER_HOME bersih)" $?

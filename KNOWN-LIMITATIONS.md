@@ -1,4 +1,4 @@
-# GSEER v0.3.3-rc1 — Known Limitations (jujur, tanpa klaim berlebih)
+# GSEER v0.3.3-rc2 — Known Limitations (jujur, tanpa klaim berlebih)
 
 1. **Cakupan pencarian = cakupan dataset.** GSEER adalah mesin
    pencari aset internet yang hasilnya bergantung pada dataset yang
@@ -33,7 +33,7 @@
 7. **GSEER_HOME env leakage**: menjalankan `go test` dengan GSEER_HOME
    ter-set merusak isolasi beberapa test (first-run/profile). Suite
    dijalankan tanpa GSEER_HOME; CLI produksi tidak terdampak.
-8. **Ini release candidate v0.3.3-rc1** (pending owner acceptance):
+8. **Ini release candidate v0.3.3-rc2** (pending owner acceptance):
    perubahan breaking pada GQL/schema dapat terjadi hingga GA.
 9. **Provider pdns free-tier dibatasi pihak provider.** Connector
    `pdns` (SOURCES §J) memakai antarmuka publik gratis HackerTarget dan

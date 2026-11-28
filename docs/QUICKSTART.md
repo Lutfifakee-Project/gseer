@@ -1,4 +1,4 @@
-# GSEER — Quickstart (v0.3.2, Linux-only / CLI-only)
+# GSEER — Quickstart (v0.3.3-rc2, Linux-only / CLI-only)
 
 > Canonical fresh-install workflow.  Every command below was executed
 > against the real binary during the release-readiness rounds.  The
@@ -32,7 +32,14 @@ Install once, then run:
 > channel degrades honestly.  Refresh any time: `gseer dataset update`.
 
 ```bash
-go install github.com/Lutfifakee-Project/gseer/cmd/gseer@latest
+# Install (RC prerelease): the Git tag v0.3.3-rc2 does not exist yet, so
+# the go-install path `go install github.com/Lutfifakee-Project/gseer/cmd/gseer@v0.3.3-rc2`
+# cannot resolve (invalid version: unknown revision) — `go install
+# github.com/Lutfifakee-Project/gseer/cmd/gseer@<tag>` only works for
+# versions that ALREADY have a Git tag.  For rc2 use the release ZIP
+# (docs/INSTALL.md):
+#   sha256sum -c gseer-v0.3.3-rc2-docfix2.zip.sha256
+#   unzip gseer-v0.3.3-rc2-docfix2.zip && cd gseer-v0.3.3-rc2 && make build
 gseer setup
 #   Fresh install — configuring PERSONAL MODE + local discovery bootstrap.
 #   [ ok  ] personal database: ~/.gseer/gseer.db      (one SQLite file, 0600)
@@ -171,12 +178,15 @@ index and searches exactly what you collect into it.
 
 ## 1. Build
 
+Build from the extracted RC package — v0.3.3-rc2 has no Git tag, so a
+`git clone` of `main` is the development state, not the RC2 source
+snapshot:
+
 ```bash
-git clone https://github.com/Lutfifakee-Project/gseer.git
-cd gseer
-make build VERSION=v0.3.2
+cd gseer-v0.3.3-rc2           # the extracted, SHA-256-verified release ZIP
+make build                    # VERSION defaults to v0.3.3-rc2 in the package
 ./bin/gseer version
-#   gseer v0.3.2
+#   gseer v0.3.3-rc2
 # (optional: sudo cp bin/gseer /usr/local/bin/ so `gseer` is on PATH)
 ```
 
@@ -244,10 +254,10 @@ variables above or pass `--profile self-hosted`.
 ```bash
 gseer doctor
 #   [ PASS ] config validity: loaded env-only (profile=self-hosted)
-#   [ PASS ] binary: version v0.3.2, …, sha256=…
+#   [ PASS ] binary: version v0.3.3-rc2, …, sha256=…
 #   [ PASS ] DB reachable: postgres://127.0.0.1:5432/gseer?sslmode=disable
 #   [ PASS ] PG version: PostgreSQL 17 (minimum 16)
-#   [ PASS ] migrations: at head v17
+#   [ PASS ] migrations: at head v30
 #   [ PASS ] privilege audit: fail-closed effective-privilege audit passed under the gseer_app runtime credential (OD-5)
 #   [ HINT ] index: EMPTY — no assets or services ingested yet
 #         Try: for evaluation data run: gseer setup --load-fixtures

@@ -32,15 +32,26 @@ required, ARM64 best-effort).  Windows and macOS are not product platforms.
 
 ## 2. Installation
 
-Install Go (latest version), then one command:
+**v0.3.3-rc2 is a release candidate distributed as a source ZIP.**  Its
+Git tag does not exist yet (`go list -m -versions` tops out at
+v0.3.3-rc1), so `go install …@v0.3.3-rc2` cannot resolve
+(`invalid version: unknown revision`).  The official RC install path is
+download → verify → extract → build:
 
 ```bash
-go install -v github.com/Lutfifakee-Project/gseer/cmd/gseer@latest
+sha256sum -c gseer-v0.3.3-rc2-docfix2.zip.sha256   # verify the download (distribution folder)
+unzip gseer-v0.3.3-rc2-docfix2.zip && cd gseer-v0.3.3-rc2
+make build                                        # stamps VERSION=v0.3.3-rc2 via ldflags
+./bin/gseer version                               # must print: gseer v0.3.3-rc2
 ```
 
-That is the whole install.  The binary lands in `$(go env GOPATH)/bin` —
-make sure that directory is on your `PATH`.  Details and checksum-verified
-release downloads: [`docs/INSTALL.md`](docs/INSTALL.md).
+`go install github.com/Lutfifakee-Project/gseer/cmd/gseer@<tag>` is the
+install path for versions that ALREADY have a Git tag (today: up to
+v0.3.3-rc1); `@latest` only ever resolves the newest NON-prerelease tag
+and can never install a release candidate.  Do not use
+`go install ./cmd/gseer` as an RC install either — an un-stamped build
+honestly reports `gseer dev`.  Details and all install methods:
+[`docs/INSTALL.md`](docs/INSTALL.md).
 
 Requirements for the default (personal) mode: **none beyond the Go-built
 binary**.  No database server, no Docker, no config files to write.

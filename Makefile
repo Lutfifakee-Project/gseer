@@ -39,11 +39,11 @@ LDFLAGS  = -X $(MODULE)/internal/version.Version=$(VERSION) \
 	    -X $(MODULE)/internal/version.BuiltAt=$(BUILT_AT)
 
 # Default version metadata: honest defaults rather than fabricated values.
-# CI overrides VERSION/COMMIT/BUILT_AT via the environment; `make build`
-# with no overrides produces a binary that says "dev"/"unknown".
-# v0.3.2 = the official release identity (built from the owner-accepted
-# r23 state); a plain `make build` stamps it (CI may still override).
-VERSION  ?= v0.3.3-rc1
+# CI overrides VERSION/COMMIT/BUILT_AT via the environment; COMMIT/BUILT_AT
+# left empty print "unknown" (honest).  VERSION defaults to the official
+# release identity below, so a plain `make build` stamps it (CI may still
+# override).
+VERSION  ?= v0.3.3-rc2
 COMMIT   ?=
 BUILT_AT ?=
 
