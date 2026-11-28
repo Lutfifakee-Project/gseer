@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package postgres
 
@@ -11,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -400,6 +411,15 @@ func insertObservationCore(ctx context.Context, q querier, o *storage.Observatio
 		o.PayloadHash, o.SourceCursor, provenance, evidence,
 	).Scan(&id)
 	if err == nil {
+		// R44: keep the maintained latest-per-service projection in sync
+		// INSIDE the same transaction as the observation write (SPEC-05
+		// §2 "maintained on write"; migration 0026).  Asset-only
+		// observations (no service) never touch the projection.  A
+		// failure here fails the fact — the projection can never
+		// silently diverge from the observation log on the ingest path.
+		if merr := maintainLatest(ctx, q, evidence, o.ServiceID, o.AssetID, o.ObservedAt, id); merr != nil {
+			return 0, false, merr
+		}
 		return id, true, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
@@ -715,4 +735,235 @@ WHERE source_id = $1 AND provenance = $2 AND service_id IS NOT NULL`,
 
 	stats.FixtureSourcePresent = true
 	return stats, nil
+}
+
+// ---------------------------------------------------------------------------
+// Maintained latest-per-service projection (R44, migration 0026).
+// ---------------------------------------------------------------------------
+
+// maintainLatest upserts the maintained latest-per-service rows
+// (latest_http_t / latest_tls_t / latest_fingerprints_t, migration 0027)
+// and latest-per-asset rows (latest_ip2asn_t / latest_ctlog_t /
+// latest_dns_t, migration 0028) for one freshly inserted observation.
+// The winner rule mirrors the pre-0027/0028 DISTINCT ON views exactly:
+// newest observed_at wins, ties break on the higher observation id.
+// Field values come from the SAME enriched evidence JSON the observation
+// row stores (already marshaled by the caller), so the projection can
+// never carry values the row does not.  Service-level families run only
+// when the observation carries a service; asset-level families always
+// run.
+func maintainLatest(ctx context.Context, q querier, evidence []byte, serviceID *int64, assetID int64, observedAt time.Time, obsID int64) error {
+	var doc map[string]any
+	if err := json.Unmarshal(evidence, &doc); err != nil {
+		return newDBError(CodeDBUsage, "maintain latest_* projection: stored evidence is not valid JSON").
+			withWhy(err.Error())
+	}
+	if serviceID != nil {
+		if err := maintainLatestService(ctx, q, doc, *serviceID, observedAt, obsID); err != nil {
+			return err
+		}
+	}
+	return maintainLatestAsset(ctx, q, doc, assetID, observedAt, obsID)
+}
+
+// maintainLatestService applies the service-granular projection rows
+// (migration 0027).
+func maintainLatestService(ctx context.Context, q querier, doc map[string]any, serviceID int64, observedAt time.Time, obsID int64) error {
+
+	if hm, ok := doc["http"].(map[string]any); ok {
+		var status any
+		if f, ok := hm["status"].(float64); ok {
+			status = int64(f)
+		}
+		// http_headers: only a JSON object projects (the 0023 rule).
+		var headers any
+		if hobj, ok := hm["headers"].(map[string]any); ok {
+			headers = hobj
+		}
+		_, err := q.Exec(ctx, `INSERT INTO latest_http_t (service_id, status, title, server, http_headers, observed_at, obs_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)
+			ON CONFLICT (service_id) DO UPDATE SET
+			  status       = excluded.status,
+			  title        = excluded.title,
+			  server       = excluded.server,
+			  http_headers = excluded.http_headers,
+			  observed_at  = excluded.observed_at,
+			  obs_id       = excluded.obs_id
+			WHERE excluded.observed_at > latest_http_t.observed_at
+			   OR (excluded.observed_at = latest_http_t.observed_at
+			       AND excluded.obs_id > latest_http_t.obs_id)`,
+			serviceID, status, textOrNull(hm["title"]), textOrNull(hm["server"]), headers, observedAt, obsID)
+		if err != nil {
+			return fmt.Errorf("maintain latest_http_t: %w", err)
+		}
+	}
+
+	if tm, ok := doc["tls"].(map[string]any); ok {
+		// timestamptz columns mirror the gseer_safe_timestamptz cast the
+		// views used: an unparseable value projects as NULL, never an
+		// ingest failure.
+		expiry := tsOrNull(tm["cert_expiry"])
+		notBefore := tsOrNull(tm["cert_not_before"])
+		// cert_sans_dns: a JSON array projects as the comma-joined element
+		// list (the 0023 string_agg rule); a string passes through as-is.
+		var sans any
+		switch v := tm["cert_sans_dns"].(type) {
+		case []any:
+			parts := make([]string, 0, len(v))
+			for _, e := range v {
+				if s, ok := e.(string); ok {
+					parts = append(parts, s)
+				}
+			}
+			sans = strings.Join(parts, ",")
+		case string:
+			sans = v
+		}
+		_, err := q.Exec(ctx, `INSERT INTO latest_tls_t (service_id, tls_version, cert_subject_cn, cert_issuer_cn, cert_issuer_org, cert_expiry, cert_serial, cert_sans_dns, cert_not_before, observed_at, obs_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			ON CONFLICT (service_id) DO UPDATE SET
+			  tls_version     = excluded.tls_version,
+			  cert_subject_cn = excluded.cert_subject_cn,
+			  cert_issuer_cn  = excluded.cert_issuer_cn,
+			  cert_issuer_org = excluded.cert_issuer_org,
+			  cert_expiry     = excluded.cert_expiry,
+			  cert_serial     = excluded.cert_serial,
+			  cert_sans_dns   = excluded.cert_sans_dns,
+			  cert_not_before = excluded.cert_not_before,
+			  observed_at     = excluded.observed_at,
+			  obs_id          = excluded.obs_id
+			WHERE excluded.observed_at > latest_tls_t.observed_at
+			   OR (excluded.observed_at = latest_tls_t.observed_at
+			       AND excluded.obs_id > latest_tls_t.obs_id)`,
+			serviceID,
+			textOrNull(tm["version"]), textOrNull(tm["cert_subject_cn"]),
+			textOrNull(tm["cert_issuer_cn"]), textOrNull(tm["cert_issuer_org"]),
+			expiry, textOrNull(tm["cert_serial"]), sans, notBefore,
+			observedAt, obsID)
+		if err != nil {
+			return fmt.Errorf("maintain latest_tls_t: %w", err)
+		}
+	}
+
+	if fm, ok := doc["fingerprint"].(map[string]any); ok {
+		var tech any
+		if arr, ok := fm["technologies"].([]any); ok {
+			strs := make([]string, 0, len(arr))
+			for _, v := range arr {
+				if s, ok := v.(string); ok {
+					strs = append(strs, s)
+				}
+			}
+			tech = strs
+		}
+		// banner comes from the $.ssh.banner shape (the 0023 projection),
+		// not from the fingerprint payload itself.
+		var banner any
+		if sm, ok := doc["ssh"].(map[string]any); ok {
+			banner = textOrNull(sm["banner"])
+		}
+		_, err := q.Exec(ctx, `INSERT INTO latest_fingerprints_t (service_id, technologies, banner, observed_at, obs_id)
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (service_id) DO UPDATE SET
+			  technologies = excluded.technologies,
+			  banner       = excluded.banner,
+			  observed_at  = excluded.observed_at,
+			  obs_id       = excluded.obs_id
+			WHERE excluded.observed_at > latest_fingerprints_t.observed_at
+			   OR (excluded.observed_at = latest_fingerprints_t.observed_at
+			       AND excluded.obs_id > latest_fingerprints_t.obs_id)`,
+			serviceID, tech, banner, observedAt, obsID)
+		if err != nil {
+			return fmt.Errorf("maintain latest_fingerprints_t: %w", err)
+		}
+	}
+	return nil
+}
+
+// maintainLatestAsset applies the asset-granular projection rows
+// (migration 0028): ip2asn attribution prefix, CT log record, DNS record.
+func maintainLatestAsset(ctx context.Context, q querier, doc map[string]any, assetID int64, observedAt time.Time, obsID int64) error {
+	if im, ok := doc["ip2asn"].(map[string]any); ok {
+		if prefix := textOrNull(im["prefix"]); prefix != nil {
+			_, err := q.Exec(ctx, `INSERT INTO latest_ip2asn_t (asset_id, prefix, observed_at, obs_id)
+				VALUES ($1, $2, $3, $4)
+				ON CONFLICT (asset_id) DO UPDATE SET
+				  prefix      = excluded.prefix,
+				  observed_at = excluded.observed_at,
+				  obs_id      = excluded.obs_id
+				WHERE excluded.observed_at > latest_ip2asn_t.observed_at
+				   OR (excluded.observed_at = latest_ip2asn_t.observed_at
+				       AND excluded.obs_id > latest_ip2asn_t.obs_id)`,
+				assetID, prefix, observedAt, obsID)
+			if err != nil {
+				return fmt.Errorf("maintain latest_ip2asn_t: %w", err)
+			}
+		}
+	}
+
+	if cm, ok := doc["ctlog"].(map[string]any); ok {
+		_, err := q.Exec(ctx, `INSERT INTO latest_ctlog_t (asset_id, "log", entry_type, subject_cn, issuer, not_before, not_after, leaf_sha256, cert_timestamp, observed_at, obs_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			ON CONFLICT (asset_id) DO UPDATE SET
+			  "log"          = excluded."log",
+			  entry_type     = excluded.entry_type,
+			  subject_cn     = excluded.subject_cn,
+			  issuer         = excluded.issuer,
+			  not_before     = excluded.not_before,
+			  not_after      = excluded.not_after,
+			  leaf_sha256    = excluded.leaf_sha256,
+			  cert_timestamp = excluded.cert_timestamp,
+			  observed_at    = excluded.observed_at,
+			  obs_id         = excluded.obs_id
+			WHERE excluded.observed_at > latest_ctlog_t.observed_at
+			   OR (excluded.observed_at = latest_ctlog_t.observed_at
+			       AND excluded.obs_id > latest_ctlog_t.obs_id)`,
+			assetID,
+			textOrNull(cm["log"]), textOrNull(cm["entry_type"]),
+			textOrNull(cm["subject_cn"]), textOrNull(cm["issuer"]),
+			tsOrNull(cm["not_before"]), tsOrNull(cm["not_after"]),
+			textOrNull(cm["leaf_sha256"]), tsOrNull(cm["cert_timestamp"]),
+			observedAt, obsID)
+		if err != nil {
+			return fmt.Errorf("maintain latest_ctlog_t: %w", err)
+		}
+	}
+
+	if dm, ok := doc["dns"].(map[string]any); ok {
+		_, err := q.Exec(ctx, `INSERT INTO latest_dns_t (asset_id, dns_record, observed_at, obs_id)
+			VALUES ($1, $2, $3, $4)
+			ON CONFLICT (asset_id) DO UPDATE SET
+			  dns_record  = excluded.dns_record,
+			  observed_at = excluded.observed_at,
+			  obs_id      = excluded.obs_id
+			WHERE excluded.observed_at > latest_dns_t.observed_at
+			   OR (excluded.observed_at = latest_dns_t.observed_at
+			       AND excluded.obs_id > latest_dns_t.obs_id)`,
+			assetID, dm, observedAt, obsID)
+		if err != nil {
+			return fmt.Errorf("maintain latest_dns_t: %w", err)
+		}
+	}
+	return nil
+}
+
+// textOrNull renders a decoded JSON scalar as SQL text (nil for anything
+// that is not a string), matching the jsonb ->> view reads.
+func textOrNull(v any) any {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return nil
+}
+
+// tsOrNull parses a JSON string as an RFC3339 timestamp for the
+// timestamptz projection columns; nil on anything unparseable — the same
+// "safe cast" contract the views used (gseer_safe_timestamptz).
+func tsOrNull(v any) any {
+	if s, ok := v.(string); ok && s != "" {
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			return t
+		}
+	}
+	return nil
 }

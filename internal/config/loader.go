@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package config
 
@@ -193,35 +203,6 @@ func DefaultDir() string {
 // $GSEER_HOME/config.yaml when GSEER_HOME is set, else ~/.gseer/config.yaml.
 func DefaultConfigPath() string {
 	return filepath.Join(DefaultDir(), "config.yaml")
-}
-
-// DefaultStateDir resolves the persistent personal-database state
-// directory per the XDG state convention: $XDG_STATE_HOME/gseer when
-// XDG_STATE_HOME is set and absolute, else $HOME/.local/state/gseer.
-//
-// FIX (Rev16 personal DB portability): this is the DEFAULT location for
-// the personal database FILE, so it deliberately ignores GSEER_HOME and
-// TMPDIR.  The old default (~/.gseer/gseer.db, and before that whatever
-// a harness pointed GSEER_HOME at — e.g. the /tmp/asdlc-rollback/store.db
-// in the owner-acceptance finding, seeded by the v0.3.1-era shared-index
-// acceptance scripts) could end up on a recycled tmpfs: the database
-// vanished between sessions and looked like a corruption.  A state
-// directory under XDG_STATE_HOME or the home directory survives reboots
-// and tmpfs cleanup, and nothing in this resolution can ever produce a
-// /tmp path.  GSEER_HOME remains an EXPLICIT portable-install override
-// (respected wherever it points — the default-DB code only consults
-// this function when GSEER_HOME is unset).
-func DefaultStateDir() string {
-	if v := strings.TrimSpace(os.Getenv("XDG_STATE_HOME")); v != "" && filepath.IsAbs(v) {
-		return filepath.Join(v, "gseer")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		// Same honest last resort as DefaultDir: a HOME-less environment
-		// is a broken install; keep the CLI runnable instead of panicking.
-		return ".gseer"
-	}
-	return filepath.Join(home, ".local", "state", "gseer")
 }
 
 // extractFieldName parses the yaml.v3 TypeError message to extract the

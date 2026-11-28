@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package cli
 
@@ -128,11 +138,12 @@ Fixture dataset (QS-6, labeled synthetic evaluation data):
     fixture dataset — synthetic observations for evaluation; NOT real internet data
 
 The fresh-install workflow is documented in docs/QUICKSTART.md
-(canonical): fresh install, setup with central-dataset import,
-port/domain/hostname search, provenance, x509 + tamper rejection,
-offline search, and the honest production-URL state — verified by the
-repository's automated test suite (unit, integration, and clean-room
-gates) on every commit.
+(canonical) and verified END-TO-END on Linux AMD64 by the acceptance
+journey harness (pipeline/acceptance-journey.sh): fresh install, setup
+with central-dataset import, port/domain/hostname search, provenance,
+x509 + tamper rejection, offline search, and the honest production-URL
+state — the ALL_STEPS_PASSED verdict and raw step logs ship inside this
+package (acceptance13/journey-final/).
 
 Wired: --self-hosted provisioning (M3), --load-fixtures/--purge-fixtures
 (M4), --with-compose compose + .env generation (M11; --full writes the

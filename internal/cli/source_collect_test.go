@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package cli
 
@@ -129,10 +139,10 @@ func TestHelpListsV002Commands(t *testing.T) {
 // pin that the CLI's verdict source is the SAME registry the runner uses.
 func TestSourceCommandsUseRunnerRegistry(t *testing.T) {
 	reg := collect.Registry()
-	if len(reg) != 6 {
-		t.Errorf("expected 6 registered connectors, got %d", len(reg))
+	if len(reg) != 10 {
+		t.Errorf("expected 10 registered connectors (incl. routeviews+delegated+topdomains+pdns), got %d", len(reg))
 	}
-	for _, kind := range []string{"dns", "ip2asn", "ptr", "ctlog", "rdap", "ct"} {
+	for _, kind := range []string{"dns", "ip2asn", "ptr", "ctlog", "rdap", "ct", "routeviews", "delegated", "topdomains", "pdns"} {
 		if _, ok := reg[kind]; !ok {
 			t.Errorf("connector %q missing from the shared registry", kind)
 		}

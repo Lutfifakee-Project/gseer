@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package collect
 
@@ -47,6 +57,14 @@ type Ctx struct {
 	// IndexSeeds loads seed identifiers already in the index (seed_mode
 	// "index"): no third-party target lists are ever used.
 	IndexSeeds func(kind string, limit int) ([]string, error)
+	// IndexSeedsAfter pages the seed walk in stable value order (P2):
+	// strictly after `after`; empty `after` starts from the smallest.
+	IndexSeedsAfter func(kind, after string, limit int) ([]string, error)
+	// IndexSeedsFamilyAfter is the R37 family-aware seed walk: pages
+	// ONE address family (IPv6 when v6) of the given kind in stable
+	// value order, strictly after `after`.  Optional: when nil the
+	// connector falls back to the scan-window approximation.
+	IndexSeedsFamilyAfter func(kind, after string, limit int, v6 bool) ([]string, error)
 	// Now is injectable for tests.
 	Now func() time.Time
 }
@@ -61,6 +79,16 @@ type SourceRef struct {
 type SourceConfig struct {
 	// Endpoint is the provider's API base URL (HTTP connectors).
 	Endpoint string `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
+	// Provider selects the provider variant of a multi-provider
+	// connector ("pdns": "hackertarget" | "wayback"; empty = default).
+	Provider string `json:"provider,omitempty" yaml:"provider,omitempty"`
+	// Layout selects the archive family for the routing connector
+	// ("routeviews" | "ris"); empty = auto-detected from the endpoint.
+	Layout string `json:"layout,omitempty" yaml:"layout,omitempty"`
+	// Logs lists MULTIPLE public log endpoints for multi-log connectors
+	// (ctlog, Rev 16 / P1): every log walks independently per run with
+	// its own checkpoint and per-log failure isolation.
+	Logs []string `json:"logs,omitempty" yaml:"logs,omitempty"`
 	// Seeds are operator-configured identifiers (seed_mode "config").
 	Seeds []string `json:"seeds,omitempty" yaml:"seeds,omitempty"`
 	// SeedMode: "config" (use Seeds), "index" (use identifiers already

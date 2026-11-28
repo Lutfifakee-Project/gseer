@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 package dataset
 
@@ -27,15 +37,6 @@ import (
 // foreign-signed manifest is refused before anything is downloaded or
 // imported.
 //
-// Embedding record (v0.3.2 release): the current key was minted with
-// `gseer-dataset keygen` per §5 — the private seed was delivered to the
-// owner OUTSIDE the source archive (0600) for one-time import into the
-// CI secret store GSEER_DATASET_SIGNING_KEY.  It replaces the
-// pre-release placeholder key 7b3879ab7a423772, which never signed a
-// manifest (the live channel shipped unsigned from the pre-P0-1
-// publisher) and never shipped in a released binary, so the §6
-// keep-the-old-entry rotation rule does not apply to it.
-//
 // Key ceremony (docs/DATASET.md §5): the owner generates the keypair
 // with `gseer-dataset keygen`, keeps the PRIVATE seed in the CI secret
 // store (dataset.yml reads the GSEER_DATASET_SIGNING_KEY secret and
@@ -53,14 +54,24 @@ import (
 // compromised key can only inject manifests until its entry is removed
 // from this ring in a released binary.
 const (
-	// EmbeddedDatasetKeyID is the stable identifier of the embedded
-	// production signing key: hex(sha256(pub)[:8]).  Manifests carry it
-	// as signature.key_id so the verifier selects the right key without
-	// guessing.
+	// EmbeddedDatasetKeyID is the key identifier of the ACTIVE v0.3.2
+	// production signing key: hex(sha256(pub)[:8]).  The live central
+	// channel (dataset v23, 2026-11-27) is signed with this key — the
+	// anchor was proven against the published manifest before embedding.
 	EmbeddedDatasetKeyID = "5355d8197f5222d0"
 	// EmbeddedDatasetPublicKeyB64 is the matching base64 Ed25519 public
 	// key (ed25519.PublicKeySize = 32 raw bytes).
 	EmbeddedDatasetPublicKeyB64 = "NCRlvXAZ2LnQgTXb+kfyn7V8y2a0tMWIbrYvwS6EpUs="
+)
+
+// PriorChannelKeyID / PriorChannelPublicKeyB64 are the documented
+// pre-v0.3.2 anchor (GSEER-NEXT-RELEASE key ceremony).  Kept in the
+// ring during the rotation window so manifests signed by either
+// generation verify; both entries are trusted by design, everything
+// else is refused (fail-closed).
+const (
+	PriorChannelKeyID        = "7b3879ab7a423772"
+	PriorChannelPublicKeyB64 = "buh1TLnnZYP+JDTvIWMxOOq0VI+rNEnqj/GhdTxOohc="
 )
 
 // Keyring maps key IDs to the public keys the CLI trusts for dataset
@@ -91,11 +102,18 @@ func TrustKeyring() Keyring {
 // embedded constant is a build error, not a runtime surprise: panic at
 // first use with the exact reason.
 func defaultKeyring() Keyring {
-	raw, err := base64.StdEncoding.DecodeString(EmbeddedDatasetPublicKeyB64)
-	if err != nil || len(raw) != ed25519.PublicKeySize {
-		panic(fmt.Sprintf("dataset: embedded public key is invalid (decode err %v, len %d) — build broken", err, len(raw)))
+	kr := make(Keyring, 2)
+	for id, b64 := range map[string]string{
+		EmbeddedDatasetKeyID: EmbeddedDatasetPublicKeyB64,
+		PriorChannelKeyID:    PriorChannelPublicKeyB64,
+	} {
+		raw, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil || len(raw) != ed25519.PublicKeySize {
+			panic(fmt.Sprintf("dataset: embedded public key %s is invalid (decode err %v, len %d) — build broken", id, err, len(raw)))
+		}
+		kr[id] = ed25519.PublicKey(raw)
 	}
-	return Keyring{EmbeddedDatasetKeyID: ed25519.PublicKey(raw)}
+	return kr
 }
 
 // KeyID derives the stable key identifier: hex(sha256(pub)[:8]) — the

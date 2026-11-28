@@ -1,8 +1,18 @@
 # GSEER — internet-asset search engine.
-# Copyright (c) 2026 Lutfifakee Project
+# Copyright (C) 2026  The GSEER Authors
 #
-# SPDX-License-Identifier: MIT
-# This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 # GoReleaser v2 configuration for GSEER (EU-3: prebuilt binaries).
 #
@@ -50,16 +60,14 @@ builds:
     env:
       - CGO_ENABLED=0
     # Platform policy (owner v0.3.2 architecture decision): Linux ONLY.
-    # Linux AMD64 is the ONLY release platform — the release set, and
-    # therefore release/checksums.txt, must reference exactly the
-    # artifacts that ship.  Linux ARM64 is a separate cross-compile
-    # build-only proof (kept OUTSIDE the release manifest) until it is
-    # runtime-validated by the owner.  Windows and macOS are NOT
+    # Linux AMD64 is the required product platform; Linux ARM64 ships
+    # best-effort (same policy as CI).  Windows and macOS are NOT
     # product platforms — no release artifacts are built for them.
     goos:
       - linux
     goarch:
       - amd64
+      - arm64
     flags:
       - -trimpath
       - -buildvcs=false
@@ -69,12 +77,6 @@ builds:
       # an unsubstantiated value.  (The shared-index trust anchor was
       # removed with the shared-index channel; there is no key
       # ceremony in the release anymore.)
-      # Rev16: {{ .Version }} is injected VERBATIM — a tag carries its
-      # leading "v" and snapshot version templates may add another, so
-      # the CLI normalizes the prefix in ONE place
-      # (internal/version.normalizeVersion): no surface can render a
-      # doubled "vv…" and tagged/dev/snapshot builds all display one
-      # canonical form.
       - -s -w
         -X github.com/Lutfifakee-Project/gseer/internal/version.Version={{ .Version }}
         -X github.com/Lutfifakee-Project/gseer/internal/version.Commit={{ .FullCommit }}
@@ -89,16 +91,11 @@ archives:
     formats:
       - tar.gz
     files:
-      # License and compliance docs travel with every archive; nothing
-      # else — keep the artifact surface minimal and auditable.
-      # THIRD-PARTY-NOTICES.md joins the archive set, next to LICENSE
-      # (LICENSE* covers the LICENSE document).  Both documents live at
-      # the repository root, so archive contents audit directly against
-      # checked-in files.
+      # License and docs travel with every archive; nothing else —
+      # keep the artifact surface minimal and auditable.
       - LICENSE*
       - README*
       - CHANGELOG*
-      - THIRD-PARTY-NOTICES.md
 
 checksum:
   # SHA-256, artifact-per-artifact — the same algorithm `gseer doctor`

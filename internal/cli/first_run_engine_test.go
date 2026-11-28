@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package cli
 
@@ -78,11 +88,8 @@ func TestZeroConfigFirstEngineCommands(t *testing.T) {
 		if rerr != nil || !strings.Contains(string(cfg), "profile: personal") {
 			t.Errorf("auto-init config missing/invalid: err=%v\n%s", rerr, cfg)
 		}
-		// Rev16: the personal DATABASE defaults to the persistent XDG
-		// state dir ($HOME/.local/state/gseer — the XDG_STATE_HOME
-		// fallback); the CONFIG stays at ~/.gseer/config.yaml.
-		if _, serr := os.Stat(filepath.Join(home, ".local", "state", "gseer", "gseer.db")); serr != nil {
-			t.Errorf("personal database not created in the XDG state dir: %v", serr)
+		if _, serr := os.Stat(filepath.Join(home, ".gseer", "gseer.db")); serr != nil {
+			t.Errorf("personal database not created: %v", serr)
 		}
 	})
 
@@ -123,7 +130,7 @@ func TestZeroConfigFirstEngineCommands(t *testing.T) {
 			}
 		}
 		// Doctor is read-only: it must NOT provision anything.
-		if _, serr := os.Stat(filepath.Join(home, ".local", "state", "gseer", "gseer.db")); serr == nil {
+		if _, serr := os.Stat(filepath.Join(home, ".gseer", "gseer.db")); serr == nil {
 			t.Errorf("doctor created the personal database (read-only contract violated)")
 		}
 	})
@@ -141,7 +148,7 @@ func TestZeroConfigFirstEngineCommands(t *testing.T) {
 			t.Errorf("an explicit --profile choice must never trigger the personal auto-init:\n%s", out)
 		}
 		// And nothing was provisioned behind the operator's back.
-		if _, serr := os.Stat(filepath.Join(home, ".local", "state", "gseer", "gseer.db")); serr == nil {
+		if _, serr := os.Stat(filepath.Join(home, ".gseer", "gseer.db")); serr == nil {
 			t.Errorf("self-hosted refusal created a personal database")
 		}
 	})
@@ -156,7 +163,7 @@ func TestZeroConfigFirstEngineCommands(t *testing.T) {
 			t.Errorf("search --validate output unexpected:\n%s", out)
 		}
 		// Compile-only: nothing is provisioned.
-		if _, serr := os.Stat(filepath.Join(home, ".local", "state", "gseer", "gseer.db")); serr == nil {
+		if _, serr := os.Stat(filepath.Join(home, ".gseer", "gseer.db")); serr == nil {
 			t.Errorf("search --validate must not create the personal database")
 		}
 	})

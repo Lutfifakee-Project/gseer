@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 // Package ast holds the typed GQL tree + visitor + explain rendering
 // (SPEC-04 §4).
@@ -150,17 +160,29 @@ type StrValue struct{ S string }
 // IntValue is an integer literal.
 type IntValue struct{ N int64 }
 
+// BoolValue is a bare boolean literal (true/false) — R38 P7: the
+// derived boolean fields (is_ipv6, stale) accept unquoted literals.
+type BoolValue struct{ B bool }
+
 // ListValue is the parenthesized list of an IN comparison (the parser
 // bounds its length; the AST does not).
 type ListValue struct{ Items []Value }
 
 func (*StrValue) isValue()  {}
 func (*IntValue) isValue()  {}
+func (*BoolValue) isValue() {}
 func (*ListValue) isValue() {}
 
 // String renders `"…"`, re-escaped per the canonical quoting rules
 // (quoteGQL).
 func (v *StrValue) String() string { return quoteGQL(v.S) }
+
+func (v *BoolValue) String() string {
+	if v.B {
+		return "true"
+	}
+	return "false"
+}
 
 // String renders the integer in base 10.
 func (v *IntValue) String() string { return fmt.Sprintf("%d", v.N) }

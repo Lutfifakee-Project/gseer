@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package cli
 
@@ -56,8 +66,14 @@ collectors already put in the index, nothing else.`,
 		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE:              runHost,
 	}
+	cmd.Flags().BoolVar(&hostHistoryFlag, "history", false, "show the observation timeline and detected changes instead of the current-state report (R56)")
 	root.AddCommand(cmd)
 }
+
+// hostHistoryFlag carries the --history flag into runHost (the command
+// builder closure owns the var; runHost reads it like the other CLI
+// singletons).
+var hostHistoryFlag bool
 
 // hostAsset is the JSON/table shape of the asset row.
 type hostAsset struct {
@@ -143,7 +159,18 @@ func runHost(cmd *cobra.Command, args []string) error {
 				identifier, identifier)
 			return nil
 		}
+		if hostHistoryFlag {
+			// R56: the historical view — observation timeline + detected
+			// changes, all from stored evidence (no inferred history).
+			return hostHistory(commandContext(cmd), res.DB, identifier, out)
+		}
 		return emitHostReport(out, rep)
+	}
+
+	if hostHistoryFlag {
+		printf(out, "E_PROFILE_UNSUPPORTED: --history currently runs on the personal (SQLite) store only\nWhy: the self-hosted history renderer is not implemented in this release\nTry: gseer host %s --history in personal mode\n", identifier)
+		exitWith(ExitConfig)
+		return nil
 	}
 
 	pool, err := openAppPool(cmd, cfg)

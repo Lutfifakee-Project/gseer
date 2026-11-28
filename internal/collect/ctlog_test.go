@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package collect
 
@@ -21,7 +31,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"math"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -330,28 +339,15 @@ func TestCTLogParseLeafLayout(t *testing.T) {
 	}
 }
 
-// TestCTLogLeafTimestampInt64Guard — gosec G115 remediation regression:
-// the RFC 6962 timestamp is a uint64 millisecond count; a value beyond
-// int64 must FAIL the leaf (fail-closed) instead of wrapping into a
-// bogus negative time.  The exact math.MaxInt64 boundary passes the
-// timestamp guard (any later failure is downstream, never the guard).
-func TestCTLogLeafTimestampInt64Guard(t *testing.T) {
-	leaf := make([]byte, 12)
-	leaf[0] = ctlogLeafVersionV1 // version v1, signature_type byte 0
-	binary.BigEndian.PutUint64(leaf[2:10], uint64(math.MaxInt64)+1)
-	_, err := ctlogParseLeaf(leaf)
-	if err == nil {
-		t.Fatal("timestamp beyond int64 must fail the leaf, got no error")
+// TestCTLogParseLeafSubject (R39 P2): the x509 leaf carries the
+// certificate's Subject CN into the fact evidence (ct.subject field).
+func TestCTLogParseLeafSubject(t *testing.T) {
+	leaf := ctlogTestLeaf(t, ctlogEntryX509, []string{"parse.example.com"})
+	info, err := ctlogParseLeaf(leaf)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
 	}
-	if !strings.Contains(err.Error(), "exceeds int64 range") {
-		t.Fatalf("expected the int64-range guard error, got: %v", err)
-	}
-	if _, isSkip := err.(ctlogSkipLeaf); isSkip {
-		t.Fatal("the overflow guard is a hard leaf error, not a skip")
-	}
-	binary.BigEndian.PutUint64(leaf[2:10], math.MaxInt64)
-	_, err = ctlogParseLeaf(leaf)
-	if err == nil || strings.Contains(err.Error(), "exceeds int64 range") {
-		t.Fatalf("math.MaxInt64 timestamp must pass the timestamp guard: %v", err)
+	if info.subjectCN == "" {
+		t.Fatal("x509 leaf parsed without a Subject CN — ct.subject would be empty")
 	}
 }

@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package fprule
 
@@ -225,7 +235,7 @@ tests:
 		{"confidence high", strings.Replace(base, "confidence: 0.9", "confidence: 1.5", 1), "outside [0,1]"},
 		{"confidence negative", strings.Replace(base, "confidence: 0.9", "confidence: -0.1", 1), "outside [0,1]"},
 		{"no provenance", strings.Replace(base, "provenance: test-only valid rule used as the lint baseline", "provenance: \"\"", 1), "provenance is empty"},
-		{"unknown field", strings.Replace(base, "field: http.server", "field: http.status_code", 1), "unknown field"},
+		{"unknown field", strings.Replace(base, "field: http.server", "field: http.body", 1), "unknown field"},
 		{"bad pattern", strings.Replace(base, "pattern: '^ok$'", "pattern: '(unclosed'", 1), "does not compile"},
 		{"version group out of range", strings.Replace(base, "pattern: '^ok$'", "pattern: '^ok$'\n    version_group: 3", 1), "exceeds pattern's"},
 		{"weight out of range", strings.Replace(base, "pattern: '^ok$'", "pattern: '^ok$'\n    weight: 1.5", 1), "weight 1.5 outside"},

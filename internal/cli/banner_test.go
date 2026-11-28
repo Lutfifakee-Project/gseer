@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package cli
 
@@ -53,18 +63,15 @@ func TestBannerTemplateMatchesCanonical(t *testing.T) {
 }
 
 // TestBannerVersionDevFallback verifies that when Version is empty
-// (no ldflags injection), bannerVersion returns "  dev" — the Rev16
-// cross-surface contract: the dev/no-metadata label displays as "dev"
-// on EVERY surface (banner, `gseer version`, status, doctor), never a
-// banner-only "vdev" (the old local prepend) and never a double prefix
-// like "vvdev".
+// (no ldflags injection), bannerVersion returns "  vdev" (two spaces +
+// fallback) and never a double prefix like "vvdev".
 func TestBannerVersionDevFallback(t *testing.T) {
 	orig := version.Version
 	defer func() { version.Version = orig }()
 
 	version.Version = ""
-	if got := bannerVersion(); got != "  dev" {
-		t.Errorf("bannerVersion() = %q, want %q (dev fallback with two spaces)", got, "  dev")
+	if got := bannerVersion(); got != "  vdev" {
+		t.Errorf("bannerVersion() = %q, want %q (fallback with two spaces)", got, "  vdev")
 	}
 	if strings.HasPrefix(bannerVersion(), "vv") {
 		t.Errorf("bannerVersion() has double 'v' prefix: %q", bannerVersion())

@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 // lexer.go — the scanning implementation (the package-level contract
 // lives in doc.go; the error type in errors.go).
@@ -45,9 +55,6 @@ const (
 	LPAREN // (
 	RPAREN // )
 	COMMA  // ,
-	COLON  // :  (asset-search shorthand `field:value` — the parser, which
-	//     owns the grammar, accepts it ONLY between a field and
-	//     its value; anywhere else it is a GQL_E_PARSE/LEX error)
 	LBRACE // {  (quantified-block delimiters; the parser, M6, decides
 	RBRACE // }   where they are legal — the lexer only tokenizes)
 
@@ -87,8 +94,7 @@ const (
 // kindNames powers Kind.String and the "did you mean"-style hints.
 var kindNames = map[Kind]string{
 	ILLEGAL: "ILLEGAL", EOF: "EOF", IDENT: "IDENT", INT: "INT", STRING: "STRING",
-	LPAREN: "LPAREN", RPAREN: "RPAREN", COMMA: "COMMA", COLON: "COLON",
-	LBRACE: "LBRACE", RBRACE: "RBRACE",
+	LPAREN: "LPAREN", RPAREN: "RPAREN", COMMA: "COMMA", LBRACE: "LBRACE", RBRACE: "RBRACE",
 	AND: "AND", OR: "OR", NOT: "NOT",
 	EQ: "EQ", NEQ: "NEQ", ASSIGN: "ASSIGN", LT: "LT", LE: "LE", GT: "GT", GE: "GE",
 	KwAnd: "KwAnd", KwOr: "KwOr", KwNot: "KwNot", KwIn: "KwIn",
@@ -242,7 +248,6 @@ var singleCharOps = map[rune]struct {
 	'(': {kind: LPAREN, text: "("},
 	')': {kind: RPAREN, text: ")"},
 	',': {kind: COMMA, text: ","},
-	':': {kind: COLON, text: ":"},
 	'{': {kind: LBRACE, text: "{"},
 	'}': {kind: RBRACE, text: "}"},
 	'!': {kind: NOT, text: "!"},
@@ -339,6 +344,13 @@ func (lx *lexer) scanIdent() Token {
 		if r == '.' && isIdentStart(lx.peek2()) {
 			lx.advance() // dot
 			lx.advance() // next segment head
+			continue
+		}
+		// R37: a hyphen INSIDE a word continues it (http.header.x-powered-by,
+		// bare date values).  A hyphen must be followed by an identifier
+		// head so a standalone '-' stays the lexical error it always was.
+		if r == '-' && isIdentPart(lx.peek2()) {
+			lx.advance()
 			continue
 		}
 		break
@@ -470,9 +482,7 @@ func hintForChar(r rune) string {
 		return "negative numbers are not GQL literals; quote the value as a string if it is text"
 	case '.':
 		return "a bare '.' appears in field paths (a.b); IP addresses and other dotted values must be double-quoted strings"
-	case ':':
-		return "GQL supports the shorthand field:value (e.g. port:443); ':' outside a field:value shorthand is not part of the GQL grammar (SPEC-04 §2)"
-	case ';', '[', ']':
+	case ':', ';', '[', ']':
 		return "the character is not part of the GQL grammar (SPEC-04 §2)"
 	default:
 		return "remove the character or quote the value as a double-quoted string"

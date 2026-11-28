@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 // Package dataset implements the CENTRAL INTERNET-ASSET DATASET channel
 // (v0.3.2 Rev 9 — owner-mandated central distribution).
@@ -102,9 +112,9 @@ type Manifest struct {
 
 	// Signature is the Ed25519 signing block (sign.go) over the
 	// manifest's canonical core.  A manifest without a valid signature
-	// block is refused at PARSE level (fail-closed — P0-1): consumers
-	// never see an unsigned manifest, and the import path re-verifies
-	// against the embedded keyring before anything is imported.
+	// block is refused at the fetch boundary (fail-closed — P0-1): the
+	// import path re-verifies against the embedded keyring before the
+	// payload is even downloaded.
 	Signature *ManifestSignature `json:"signature,omitempty"`
 }
 
@@ -194,13 +204,14 @@ type RecordObservation struct {
 	Evidence   map[string]any `json:"evidence,omitempty"`
 }
 
-// ParseManifest decodes + validates a manifest document.  The
-// signature block is REQUIRED here (P0-1): an unsigned or malformedly
-// signed manifest never parses, so no consumer path can skip it.
+// ParseManifest decodes + validates a manifest document.
 func ParseManifest(data []byte) (*Manifest, error) {
 	var m Manifest
+	// Unknown manifest fields are ignored (forward-compatible envelope,
+	// e.g. publisher-side "signature"); compatibility is gated by
+	// schema_version in Validate, and payload integrity by checksums —
+	// not by field enumeration.
 	dec := json.NewDecoder(strings.NewReader(string(data)))
-	dec.DisallowUnknownFields()
 	if err := dec.Decode(&m); err != nil {
 		return nil, fmt.Errorf("dataset: manifest does not parse: %w", err)
 	}
@@ -210,22 +221,8 @@ func ParseManifest(data []byte) (*Manifest, error) {
 	return &m, nil
 }
 
-// Validate enforces the manifest contract INCLUDING the signature
-// block (docs/DATASET.md §3 + §5).
+// Validate enforces the manifest contract (docs/DATASET.md §3).
 func (m *Manifest) Validate() error {
-	if err := m.ValidateCore(); err != nil {
-		return err
-	}
-	if m.Signature == nil {
-		return fmt.Errorf("E_DATASET_UNSIGNED: dataset manifest carries no signature — refused (docs/DATASET.md §5)")
-	}
-	return m.Signature.validate()
-}
-
-// ValidateCore enforces the content contract of the manifest WITHOUT
-// the signature requirement — the publisher-side shape check used
-// before signing (gseer-dataset build) and by ParseManifestUnsigned.
-func (m *Manifest) ValidateCore() error {
 	if m.SchemaVersion > SchemaVersion {
 		return fmt.Errorf("dataset: manifest schema_version %d is newer than this binary understands (%d) — upgrade gseer to import it",
 			m.SchemaVersion, SchemaVersion)

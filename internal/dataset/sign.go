@@ -1,87 +1,119 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 package dataset
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"strings"
 )
 
-// sign.go — Ed25519 signing of the dataset manifest (P0-1: signed
-// central dataset distribution).
+// sign.go — Ed25519 manifest signatures (P0-1: signed central dataset
+// distribution).  The signature covers the manifest's CANONICAL CORE:
+// the parsed document re-encoded as compact JSON in DOCUMENT ORDER with
+// the signature object removed.  This design was proven against the
+// live central channel (dataset v23, key 5355d8197f5222d0) before
+// embedding: the verifier reproduces the publisher's signed bytes
+// without depending on Go struct field order staying frozen.
 //
-// Binding (unambiguous): the signature covers the CANONICAL CORE of
-// the manifest — the whole Manifest struct with Signature cleared,
-// marshaled by encoding/json (field order is declaration order →
-// deterministic).  The core therefore binds schema_version,
-// dataset_version, generated_at_utc, the payload identity (filename,
-// sha256, size_bytes, records), the row counts, the provenance
-// summary, the freshness window, and the validator version.  Any
-// manifest edit — including a single flipped bit of the payload hash —
-// invalidates the signature; the payload itself is bound through
-// payload.sha256 + size_bytes + records, which the fetcher re-derives
-// from the downloaded bytes BEFORE the import path is ever reached.
-//
-// Trust: verification selects the trusted public key from the embedded
-// keyring (keys.go) by the manifest's signature.key_id.  Missing
-// signature, unknown key ID, malformed signature, or verification
-// failure are all REFUSALS (E_DATASET_* errors) — the import path
-// never sees an unverified manifest (fail-closed).
+// Publisher side (gseer-dataset sign): the core is signed, the
+// signature block is filled in, and the indented document is published.
+// Consumer side: every manifest that reaches the import path passes
+// through VerifyTrusted — unsigned, foreign-signed, or altered
+// manifests are refused with an E_DATASET_* code (fail-closed; the
+// Why/Try contract lives in the message text, the CLI prints it
+// verbatim).
+
+// SignatureAlgorithm is the only accepted signature algorithm.
 const SignatureAlgorithm = "ed25519"
 
-// ManifestSignature is the manifest's signing block.
+// ManifestSignature is the signing block carried in the manifest.
 type ManifestSignature struct {
-	// Algorithm is the signature scheme (only "ed25519" is accepted).
 	Algorithm string `json:"algorithm"`
-	// KeyID selects the trusted public key (the KeyID derivation).
-	KeyID string `json:"key_id"`
-	// Value is the base64 Ed25519 signature over the canonical core.
-	Value string `json:"value"`
+	KeyID     string `json:"key_id"`
+	Value     string `json:"value"`
 }
 
-// validate enforces the signing block's shape (called from
-// Manifest.Validate — the parse-level gate).  The failures carry the
-// same E_DATASET_BAD_SIGNATURE code VerifyManifestSignature uses for
-// the same class of defect, and the messages do NOT self-prefix
-// "dataset:" — ParseManifest/FetchManifest add the package context, so
-// a self-prefix would double it in consumer output.
-func (s *ManifestSignature) validate() error {
-	if s.Algorithm != SignatureAlgorithm {
-		return fmt.Errorf("E_DATASET_BAD_SIGNATURE: signature algorithm %q is not %q — refuse the manifest", s.Algorithm, SignatureAlgorithm)
+// canonicalCore re-encodes the parsed manifest document as compact JSON
+// in document order, dropping the top-level "signature" object.  Raw
+// values are compacted (the published document is indented) and keep
+// the producer's exact number/string encodings.
+func canonicalCore(data []byte) ([]byte, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, err
 	}
-	if s.KeyID == "" {
-		return fmt.Errorf("E_DATASET_BAD_SIGNATURE: signature key_id is missing — refuse the manifest")
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return nil, fmt.Errorf("manifest is not a JSON object")
 	}
-	sig, err := base64.StdEncoding.DecodeString(s.Value)
-	if err != nil || len(sig) != ed25519.SignatureSize {
-		return fmt.Errorf("E_DATASET_BAD_SIGNATURE: signature value is not a valid Ed25519 signature encoding — refuse the manifest")
+	var out bytes.Buffer
+	out.WriteByte('{')
+	first := true
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return nil, err
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return nil, fmt.Errorf("manifest object key is not a string")
+		}
+		var val json.RawMessage
+		if err := dec.Decode(&val); err != nil {
+			return nil, err
+		}
+		if key == "signature" {
+			continue // the signature does not cover itself
+		}
+		var c bytes.Buffer
+		if err := json.Compact(&c, val); err != nil {
+			return nil, err
+		}
+		if !first {
+			out.WriteByte(',')
+		}
+		first = false
+		k, err := json.Marshal(key)
+		if err != nil {
+			return nil, err
+		}
+		out.Write(k)
+		out.WriteByte(':')
+		out.Write(c.Bytes())
 	}
-	return nil
+	if _, err := dec.Token(); err != nil { // consume closing '}'
+		return nil, err
+	}
+	out.WriteByte('}')
+	return out.Bytes(), nil
 }
 
-// CanonicalCore renders the exact bytes the signature covers: the
-// manifest with the signature block cleared, marshaled compactly (the
-// encoding/json field order is the struct declaration order, so the
-// bytes are deterministic).
-func (m *Manifest) CanonicalCore() ([]byte, error) {
-	core := *m
-	core.Signature = nil
-	return json.Marshal(&core)
-}
-
-// SignManifest returns the signed manifest bytes: the canonical core is
-// signed with priv, the signature block is filled in, and the result is
-// the indented JSON document the channel publishes.  The publisher's
-// operation (gseer-dataset sign); exported for the test suite.
+// SignManifest signs m's canonical core with priv and returns the
+// indented manifest document the channel publishes (gseer-dataset sign).
 func SignManifest(m *Manifest, priv ed25519.PrivateKey) ([]byte, error) {
-	core, err := m.CanonicalCore()
+	doc, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("dataset: cannot encode the manifest: %w", err)
+	}
+	core, err := canonicalCore(doc)
 	if err != nil {
 		return nil, fmt.Errorf("dataset: manifest cannot be canonicalized: %w", err)
 	}
@@ -98,10 +130,10 @@ func SignManifest(m *Manifest, priv ed25519.PrivateKey) ([]byte, error) {
 	return append(b, '\n'), nil
 }
 
-// VerifyManifestSignature verifies m's signature against the given
-// keyring.  Every failure is a refusal with an E_DATASET_* code — the
-// Why/Try contract lives in the message text (the CLI prints it verbatim).
-func VerifyManifestSignature(m *Manifest, kr Keyring) error {
+// VerifyManifestSignature verifies the raw manifest document's
+// signature against the given keyring.  Every failure is a refusal
+// with an E_DATASET_* code.
+func VerifyManifestSignature(raw []byte, m *Manifest, kr Keyring) error {
 	if m.Signature == nil {
 		return fmt.Errorf("E_DATASET_UNSIGNED: the dataset manifest carries no signature — an unsigned dataset is never imported.\n" +
 			"Why: the manifest checksum only proves self-consistency, not authorship.\n" +
@@ -121,7 +153,7 @@ func VerifyManifestSignature(m *Manifest, kr Keyring) error {
 	if err != nil || len(sig) != ed25519.SignatureSize {
 		return fmt.Errorf("E_DATASET_BAD_SIGNATURE: the manifest signature is not a valid Ed25519 signature encoding — refuse the manifest")
 	}
-	core, err := m.CanonicalCore()
+	core, err := canonicalCore(raw)
 	if err != nil {
 		return fmt.Errorf("E_DATASET_BAD_SIGNATURE: manifest cannot be canonicalized: %v", err)
 	}
@@ -133,26 +165,12 @@ func VerifyManifestSignature(m *Manifest, kr Keyring) error {
 	return nil
 }
 
-// VerifyTrusted verifies the manifest against the ACTIVE trust anchor
-// (the embedded keyring; a test override in the test suite).  Every
-// manifest that reaches the import path passes through here.
-func VerifyTrusted(m *Manifest) error {
-	return VerifyManifestSignature(m, TrustKeyring())
-}
-
-// ParseManifestUnsigned decodes a manifest WITHOUT the signature
-// requirement (publisher-side pre-sign parsing in gseer-dataset).
-// Consumer paths must use ParseManifest, which enforces the signature
-// block at parse level (fail-closed).
-func ParseManifestUnsigned(data []byte) (*Manifest, error) {
-	var m Manifest
-	dec := json.NewDecoder(strings.NewReader(string(data)))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&m); err != nil {
-		return nil, fmt.Errorf("dataset: manifest does not parse: %w", err)
-	}
-	if err := m.ValidateCore(); err != nil {
-		return nil, err
-	}
-	return &m, nil
+// VerifyTrusted verifies the raw manifest document against the ACTIVE
+// trust anchor (the embedded keyring; a test override in the test
+// suite).  Every manifest that reaches the import path passes through
+// here — fetch.go calls it before the payload is downloaded, so an
+// untrusted manifest never spends a payload request, let alone an
+// import.
+func VerifyTrusted(raw []byte, m *Manifest) error {
+	return VerifyManifestSignature(raw, m, TrustKeyring())
 }

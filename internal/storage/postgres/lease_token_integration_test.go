@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 //go:build integration
 
@@ -34,8 +44,8 @@ func TestScanLeaseTokensOnPostgres(t *testing.T) {
 	}
 	if _, head, err := RunMigrations(dsn, lockTimeoutForTest()); err != nil {
 		t.Fatalf("migrations: %v", err)
-	} else if head != 22 {
-		t.Fatalf("migration head = %d, want 22 (…0019 + 0020 + 0021_cert_projection + 0022_row_observed_at)", head)
+	} else if head != 21 {
+		t.Fatalf("migration head = %d, want 21 (…0019 + 0020 + 0021_cert_projection)", head)
 	}
 	if _, err := ApplyRuntimeGrants(ctx, dsn); err != nil {
 		t.Fatalf("runtime grants: %v", err)

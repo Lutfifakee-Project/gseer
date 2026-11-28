@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package observe
 
@@ -332,7 +342,7 @@ func TestDialContextRefusesUnpinnedAddress(t *testing.T) {
 		Now:   func() time.Time { return now },
 	}
 	o := &HTTPObserver{GW: g}
-	client := o.clientFor(g, nil, "127.0.0.1", netip.MustParseAddr("127.0.0.1"), 8080, time.Second)
+	client := o.clientFor(g, nil, "127.0.0.1", netip.MustParseAddr("127.0.0.1"), 8080, "http", time.Second)
 	_, err := client.Get("http://198.51.100.7:8080/")
 	if err == nil || !strings.Contains(err.Error(), "not the gateway-validated address") {
 		t.Fatalf("the dialer must refuse a non-pinned destination: %v", err)

@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package cli
 
@@ -41,23 +51,6 @@ func captureSubHelp(t *testing.T, name string) string {
 func executeRoot(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	buf := &bytes.Buffer{}
-	// Clear every child command's pinned writer first: earlier tests in
-	// this package SetOut a private buffer directly on a SUBcommand of the
-	// shared singleton tree (dataset update, search, ...).  cobra's
-	// OutOrStdout prefers a command's own writer over the inherited one,
-	// so a stale child writer swallowed the RunE output and executeRoot
-	// captured an EMPTY buffer while err stayed nil — the "CLI output
-	// empty" failure mode of the facets E2E on CI.  With the children
-	// nilled, output flows to the root's writer set right below.
-	var clearWriters func(c *cobra.Command)
-	clearWriters = func(c *cobra.Command) {
-		c.SetOut(nil)
-		c.SetErr(nil)
-		for _, sub := range c.Commands() {
-			clearWriters(sub)
-		}
-	}
-	clearWriters(RootCmd)
 	RootCmd.SetOut(buf)
 	RootCmd.SetErr(buf)
 	RootCmd.SetArgs(args)

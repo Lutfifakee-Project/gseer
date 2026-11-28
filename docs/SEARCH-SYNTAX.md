@@ -1,136 +1,13 @@
-# GSEER Search Syntax — Official GQL Reference
+# GSEER Search Syntax — Compatibility Guide
 
-GSEER's query language is **GQL** (the GSEER Query Language).  This
-document is the official, grammar-true syntax reference:
-every example below is verified against the grammar implementation and —
-where marked **[v1]** — against the real central dataset v1 release
-artifact (269 observations, 202 asset rows) through the CLI journey
-`setup` → `dataset update` → `search`. The compatibility layer (the
-second half of this document) stays additive: every query that was valid
-before it stays valid, byte for byte.
+GSEER's query language (GQL) is specified in SPEC-04 §3. This document
+describes the **compatibility layer**: additional operator spellings,
+field aliases, and convenience forms that GQL accepts so queries
+written in the *common asset-search style* used by other engines work
+without translation. Everything here is additive — every query that was
+valid before the compatibility layer stays valid, byte for byte.
 
-## 1. Grammar
-
-GQL is a boolean expression over typed comparisons:
-
-```
-query      := or
-or         := and ( "||" | "or"  and )*        — lowest precedence
-and        := not ( "&&" | "and" not )*
-not        := ( "!" | "not" ) not | primary
-primary    := "(" or ")" | comparison | exists | free-text
-comparison := field op value
-op         := "=" | "==" | "!=" | "<" | "<=" | ">" | ">="
-            | "IN" | "CONTAINS" | "IN_CIDR" | "IN_DOMAIN" | "*="
-exists     := "exists" "(" field ")" | bare-known-field
-value      := double-quoted string (escapes: \\ \" \n …) | bare integer
-```
-
-Precedence is `!` > `&&` > `||`; parentheses group. `=` is sugar for
-`==`; `AND`/`OR`/`NOT` work in any casing. Parse failures abort with
-`GQL_E_PARSE` / `GQL_E_LEX` at the exact position plus a did-you-mean
-hint; semantic failures abort with `GQL_E_FIELD` (unknown field),
-`GQL_E_OP` (operator not valid for the field) or `GQL_E_TYPE` (value
-type). Bounds: ≤ 1024 AST nodes, depth ≤ 32, IN lists ≤ 256 elements.
-Search runs **locally only** — it never triggers discovery, collection,
-probing or scanning (ADR-0010).
-
-## 2. Value rules
-
-| Rule | Example |
-| --- | --- |
-| String values are ALWAYS double-quoted | `protocol="https"` |
-| Integer values are bare (or quoted-numeric, coerced) | `port=443`, `port="443"` |
-| A quoted integer coerces in place (compat) | `port="443"` ≡ `port=443` |
-| A quoted non-numeric value on an int field is a type error with a hint | `port="https"` → `GQL_E_TYPE` |
-| Timestamps are quoted RFC 3339 (or dates for the date fields) | `observed_at > "2026-11-18T00:00:00Z"` |
-| Booleans are the quoted literals `"true"` / `"false"` | `stale=="false"` |
-| Dotted values (IPs, hostnames) must be quoted | `ip="1.1.1.1"` |
-| A bare word that is not a known field is free text | `nginx` |
-
-## 3. Field registry (search_index surface)
-
-| Field | Aliases | Type | Operators |
-| --- | --- | --- | --- |
-| `ip` | — | string(inet) | `==` `!=` `IN` `IN_CIDR` `*=` |
-| `asset_value` | — | string | `==` `!=` `IN` `CONTAINS` `*=` |
-| `asset_kind` | — | string | `==` `!=` `IN` |
-| `domain` | — | string | `==` `!=` `IN` `CONTAINS` `*=` `IN_DOMAIN` |
-| `hostname` | — | string | `==` `!=` `IN` `CONTAINS` `*=` `IN_DOMAIN` |
-| `host_or_ip` | `host` | string | lowered to hostname **or** ip |
-| `port` | — | int | `==` `!=` `<` `<=` `>` `>=` `IN` |
-| `transport` | `base_protocol` | string | `==` `!=` `IN` |
-| `protocol` | — | string | `==` `!=` `IN` |
-| `asn` | — | int | `==` `!=` `<` `<=` `>` `>=` `IN` |
-| `asn_org` | `org`, `organization` | string | `==` `!=` `IN` `CONTAINS` `*=` |
-| `geo_country` | `country`, `ip_country` | string | `==` `!=` `IN` |
-| `geo_region` | `region`, `ip_region` | string | `==` `!=` `IN` |
-| `geo_city` | `city`, `ip_city` | string | `==` `!=` `IN` `CONTAINS` `*=` |
-| `http.status` | `status`, `status_code` | int | ordered + `IN` |
-| `http.title` | `title` | string | `==` `!=` `IN` `CONTAINS` `*=` |
-| `http.server` | `server` | string | `==` `!=` `IN` `CONTAINS` `*=` |
-| `tls.version` | `tls_version` | string | `==` `!=` `IN` |
-| `tls.cert_subject_cn` | `cert_subject`, `cert.subject`, `cert_subject_cn`, `cert.subject.cn` | string | `==` `!=` `IN` `CONTAINS` `*=` |
-| `tls.cert_issuer_cn` | `cert_issuer`, `cert.issuer`, `cert_issuer_cn`, `cert.issuer.cn` | string | `==` `!=` `IN` `CONTAINS` `*=` |
-| `tls.cert_expiry` | `cert_expiry` | timestamp | ordered |
-| `tls.cert_serial` | `cert_sn`, `cert.sn` | string | `==` `!=` `IN` `CONTAINS` `*=` |
-| `tls.cert_sans_dns` | `cert.domain`, `cert_domain` | string | `CONTAINS` covers exact SANs and subdomains |
-| `technologies` | `tech`, `fingerprint` | list | `CONTAINS` |
-| `sources` | — | list | `CONTAINS` |
-| `first_seen`, `last_seen` | — | timestamp | ordered |
-| `observed_at` | — | timestamp | ordered (v0.3.2) |
-| `stale` | — | bool | `==` `!=` |
-| `is_domain`, `is_ipv6`, `cert.is_expired` | — | bool (derived) | `==` `!=` |
-| `after`, `before` | `ip_after`, `ip_before` | date → last_seen | ordered |
-| `cert.not_after.after`, `cert.not_after.before` | — | date → tls.cert_expiry | ordered |
-
-## 4. Freshness semantics (honest, v0.3.2)
-
-Three DISTINCT time surfaces — choose the one that answers your question:
-
-| Surface | Meaning | Moves when |
-| --- | --- | --- |
-| `observed_at` | the row's REAL evidence time — the newest observation's `observed_at` (migration 0022 PG / 0006 SQLite) | only when NEW EVIDENCE arrives |
-| `last_seen` | the store's ingest stamp for the row (also what `after`/`before` lower to) | every ingest **or** dataset import |
-| `first_seen` | the first ingest stamp | never |
-
-`observed_at > "2026-11-18T00:00:00Z"` answers "how old is the EVIDENCE?";
-`after="2026-01-01"` answers "imported/ingested since when?". The
-`gseer dataset status` freshness line reports the artifact's own
-`oldest/newest_observed_at` window — the same clock `observed_at`
-searches.
-
-## 5. Verified examples [v1]
-
-Run against the real central dataset v1 (exact result counts, pinned by
-`TestCentralDatasetV1RealEvidenceE2E`):
-
-```
-port=443                                   → 15   port="443"             → 15
-protocol="https"                           → 15   port=443 && protocol="https" → 15
-ip="1.1.1.1"                               → 1    domain="example.com"   → 1
-host="www.example.com"                     → 1    asn="13335"            → 20
-country="US"                               → 47   is_ipv6="true"         → 24
-port=443 && country!="US"                  → 3    sources CONTAINS "central-ctlog" → 64
-tls_version="TLS 1.3"                      → 15   cert.issuer CONTAINS "Cloudflare" → 4
-cert.subject="example.com"                 → 1    cert.domain CONTAINS "example."   → 4
-organization CONTAINS "Fastly"             → 8    "cloudflare" (free text) → 28
-stale=="false"                             → 202  observed_at > "2026-11-18T00:00:00Z" → 202
-title=="Dashboard"                         → 0    server=="nginx"        → 0
-```
-
-**Why `title`/`server` are 0 on central v1 — an honest dataset fact, not
-a broken parser.** The engine's title/server path is proven by the
-deterministic query-matrix tests (rows with HTTP evidence match). Central
-dataset v1 carries NO HTTP metadata: the pipeline's observation step is a
-TLS `:443` handshake (evidence keys `tls`+`scan` only; `title`/`server`
-keys appear in 0 of 269 records). Zero results here mean "no evidence",
-never "filter silently ignored" — an unknown FIELD is a loud
-`GQL_E_FIELD` error, never an empty result.
-
-## 6. Compatibility layer (additive)
-
-### Boolean operators
+## Boolean operators
 
 | Form | Meaning |
 | --- | --- |
@@ -148,7 +25,7 @@ Example: `(title="Admin" || product="OpenSSH") && port<1000`
 `server*="100%_uptime*"` matches the literal text `100%_uptime` plus
 any suffix.
 
-### Bare-keyword (free-text) search
+## Bare-keyword (free-text) search
 
 A **quoted** keyword with no field searches the stored text surfaces of
 the index — one OR-chain per term, AND across terms:
@@ -175,18 +52,18 @@ too — `gseer search 'nginx'` searches the same surfaces as
 presence test — `gseer search 'hostname'` is the `exists(hostname)`
 form; use `exists(field)` explicitly for presence tests.
 
-### Field aliases
+## Field aliases
 
 | Alias | Canonical field | Example |
 | --- | --- | --- |
 | `host` | `hostname` **or** `ip` | `host="203.0.113.10"`, `host*="www.example."` |
-| `org`, `organization` | `asn_org` | `organization contains "Telecom"` (v0.3.2) |
+| `org` | `asn_org` | `org contains "Telecom"` |
 | `base_protocol` | `transport` | `base_protocol="udp"` |
 | `status_code` | `http.status` | `status_code=200` |
-| `cert.subject.cn`, `cert.subject` | `tls.cert_subject_cn` | `cert.subject="example.com"` (v0.3.2) |
-| `cert.issuer.cn`, `cert.issuer` | `tls.cert_issuer_cn` | `cert.issuer="R3"` (v0.3.2) |
+| `cert.subject.cn` | `tls.cert_subject_cn` | `cert.subject.cn="example.com"` |
+| `cert.issuer.cn` | `tls.cert_issuer_cn` | `cert.issuer.cn="R3"` |
 | `cert.sn`, `cert_sn` | `tls.cert_serial` | `cert.sn="04f2a9c1de7b"` (v0.3.2) |
-| `cert.domain`, `cert_domain` | `tls.cert_sans_dns` | `cert.domain contains "example.com"` (v0.3.2) |
+| `cert.domain`, `cert_domain` | `tls.cert_sans_dns` | `cert.domain contains "example.com"` — the SAN DNS entries as comma-joined text (v0.3.2) |
 | `country`, `region`, `city` | `geo_country`, `geo_region`, `geo_city` | `country="id"` |
 | `app` | `product` | `app="nginx"` (v0.3.2 compat) |
 | `ip_country`, `ip_region`, `ip_city` | `geo_country`, `geo_region`, `geo_city` | `ip_country="id"` (v0.3.2 compat) |
@@ -197,7 +74,7 @@ form; use `exists(field)` explicitly for presence tests.
 | `tls_version` | `tls.version` | |
 | `cert_expiry` | `tls.cert_expiry` | |
 
-### Time filters
+## Time filters
 
 | Field | Lowers to | Example |
 | --- | --- | --- |
@@ -207,12 +84,9 @@ form; use `exists(field)` explicitly for presence tests.
 | `cert.not_after.before` | `tls.cert_expiry <= date` | certificates expiring before the date |
 
 Values accept `"2006-01-02"` (calendar date, midnight UTC) or full RFC
-3339 timestamps. On the personal (SQLite) engine every time comparison
-normalizes BOTH sides through the `gseer_ts` registered function, so a
-user-written `"2026-01-15T00:00:00Z"` compares chronologically against
-the fixed-width micro storage format.
+3339 timestamps.
 
-### Empty-value and presence semantics
+## Empty-value and presence semantics
 
 | Query | Matches |
 | --- | --- |
@@ -220,10 +94,7 @@ the fixed-width micro storage format.
 | `field!=""` | rows where the field is present **and** non-empty |
 | `exists(field)` / bare `field` | rows where the field is not NULL |
 
-Missing text/geo values are stored EMPTY (not NULL) on both engines, so
-`! (country="US")` matches rows with no geo evidence too.
-
-### Derived boolean fields
+## Derived boolean fields
 
 Computed predicates — no dedicated column, no extra data:
 
@@ -233,28 +104,7 @@ Computed predicates — no dedicated column, no extra data:
 | `is_ipv6="true"` / `"false"` | IPv6 address / IPv4 address |
 | `cert.is_expired="true"` / `"false"` | certificate expiry before / after now |
 
-## 7. Performance notes (measured)
-
-- The planner compiles to parameterized SQL with keyset cursor
-  pagination; the default sort is `last_seen DESC` with a
-  `(row_id, row_kind)` tiebreaker — pages are stable across pages.
-- At 30k assets / 90k services (throwaway load-test rows, TEST-NET /
-  RFC 1918 addresses only, dropped after measuring), a complex
-  compound query (`port=443 && protocol="https" && (country="US" ||
-  country="DE")`) plans to an **Index Scan** on
-  `services_asset_port_transport_unique` plus an asset join —
-  2.7 ms total on PostgreSQL 17 (migration 0004's indexes; EXPLAIN
-  evidence in the release kit). A broad `port=443` at 2/90k
-  selectivity stays a sequential scan under the plain-view design —
-  the known, documented v0.0.1 trade-off (0003: the view definition IS
-  the normative contract; a maintained backing table is the contained
-  future performance option).
-- On the personal (SQLite) engine the search_index view materializes
-  its helper projections per query through `ix_observations_service` /
-  `ix_observations_asset` (EXPLAIN QUERY PLAN evidence in the release
-  kit).
-
-## 8. Intentional divergences (honest differences)
+## Intentional divergences (honest differences)
 
 1. **Typed, with one coercion**: integer fields take bare integers
    (`port=443`). A QUOTED integer is coerced in place for
@@ -287,4 +137,32 @@ Computed predicates — no dedicated column, no extra data:
    other a scope position).
 
 See `gseer search --help` for the live field registry and the normative
-grammar.
+grammar (SPEC-04).
+
+## Relevance ordering (R114)
+
+Substring-family predicates (`CONTAINS`, `*=` wildcard, `IN_DOMAIN`)
+match rows at several qualities.  For an ELIGIBLE query with no
+explicit sort, the default ordering ranks tiers: exact match first,
+then prefix match, then the rest of the matched set (recency order is
+no longer the default for these queries).
+
+- Eligible = exactly ONE substring-family predicate (AND-ed non-text
+  filters are allowed).  OR / NOT / free-text expansions / several text
+  predicates keep the plain last_seen default.
+- The matched set never changes — only the ordering does.
+- Bounded-set guard: ranking sorts the whole matched set, so by default
+  it is applied when the set is ≤ 50 000 rows (measured first).  Larger
+  sets fall back to recency order with an explicit notice; force
+  ranking with `--sort relevance:asc`.
+- Pagination cursors carry the relevance tier (an integer) and page 2
+  compares the same CASE expression — pages never skip or repeat rows.
+- EXPLAIN (`gseer search 'q' --explain`) shows the rank CASE and the
+  effective ordering.
+
+## Relevance (R114) — contoh
+    gseer search 'product CONTAINS "nginx"'
+    # exact "nginx" rows first, then "nginx-*" prefixes, then "*nginx*" substrings
+    gseer search 'hostname *= "api.*"'
+    # exact "api." hostname rows first, then the rest of the wildcard matches
+    gseer search 'asn_org CONTAINS "Bench" --sort relevance:asc'   # force ranking

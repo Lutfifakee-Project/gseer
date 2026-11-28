@@ -1,14 +1,25 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package observe
 
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -192,27 +203,36 @@ func (o *HTTPObserver) Run(ctx context.Context, host string, port int) (*ScanRes
 		title   string
 		server  string
 		cType   string
-		bodyTxt string
-		hdrTxt  string
 		hops    []string
 		trunc   bool
 		finalIP = dec.IP
 	)
 	curHost, curPort, curPath := dec.Host, port, "/"
+	// R36 port-aware scheme: the observer speaks plain http AND https —
+	// the scheme follows the hop (443 default https, else http), so a
+	// TLS-only endpoint can be observed without impersonating it.
+	curScheme := "http"
+	if curPort == 443 {
+		curScheme = "https"
+	}
 	// curIP is ALWAYS the freshly authorized hop's validated address
 	// (set from hd.IP before any use — the initializer would be dead).
 	var curIP netip.Addr
 	budget := max(dec.Limits.MaxRequests, 1)
 	failure := ""
 
+	// R36 header evidence accumulator: whitelist-captured response
+	// headers (lowercase keys, values capped, last hop wins).
+	hdrs := map[string]string{}
+
 	// finish is the observation loop's single exit path: it assembles
 	// the honest evidence + facts (whatever the loop recorded — a
 	// complete response, a failure, a denied hop, an exhausted budget)
 	// and returns the run result.
 	finish := func() (*ScanResult, error) {
-		evidence := buildHTTPScanEvidence(status, title, server, cType, bodyTxt, hdrTxt, failure,
+		evidence := buildHTTPScanEvidence(status, title, server, cType, failure,
 			dec.Scope.ID, net.JoinHostPort(dec.Host, strconv.Itoa(port)), finalIP, hops,
-			bytesRead, maxBytes, trunc)
+			bytesRead, maxBytes, trunc, hdrs)
 		facts := scanFacts(now, sourceID, SourceHTTP, ProvenanceHTTP, dec.Host, finalIP, port,
 			serviceProtocolHTTP, evidence, dec.Scope.ID)
 		stats, ierr := o.GW.Store.IngestFacts(ctx, facts)
@@ -275,7 +295,7 @@ func (o *HTTPObserver) Run(ctx context.Context, host string, port int) (*ScanRes
 			return finish()
 		}
 
-		req, rerr := http.NewRequestWithContext(ctx, http.MethodGet, hopURL(curIP, curPort, curPath), nil)
+		req, rerr := http.NewRequestWithContext(ctx, http.MethodGet, hopURL(curIP, curPort, curPath, curScheme), nil)
 		if rerr != nil {
 			failure = "internal: cannot build request: " + rerr.Error()
 			return finish()
@@ -284,7 +304,7 @@ func (o *HTTPObserver) Run(ctx context.Context, host string, port int) (*ScanRes
 		req.Header.Set("User-Agent", ua)
 		req.Header.Set("Accept", "*/*")
 
-		client := o.clientFor(o.GW, leaseGuard, hd.Host, curIP, curPort, timeout)
+		client := o.clientFor(o.GW, leaseGuard, hd.Host, curIP, curPort, curScheme, timeout)
 		resp, derr := client.Do(req)
 		if derr != nil {
 			// A failed connection is an observation OF FAILURE — recorded
@@ -297,6 +317,10 @@ func (o *HTTPObserver) Run(ctx context.Context, host string, port int) (*ScanRes
 		status = resp.StatusCode
 		server = resp.Header.Get("Server")
 		cType = resp.Header.Get("Content-Type")
+		// R36: a bounded whitelist of technology-bearing headers —
+		// keys lowercased, values capped (≤200 chars), LAST hop wins
+		// (the final answer is what the service actually serves).
+		captureHeaders(hdrs, resp.Header)
 
 		// FIX C: the per-hop read consumes the REMAINING budget; the
 		// counter accumulates across hops and is never reset.  Read
@@ -312,12 +336,10 @@ func (o *HTTPObserver) Run(ctx context.Context, host string, port int) (*ScanRes
 		}
 		trunc = trunc || tread
 		title = extractTitle(body)
-		bodyTxt = string(body)
-		hdrTxt = collectResponseHeaders(resp.Header)
 
 		if isRedirect(status) {
 			loc := resp.Header.Get("Location")
-			next, action, perr := decideRedirect(loc, curHost, curPort, hop)
+			next, action, perr := decideRedirect(loc, curHost, curPort, curScheme, hop)
 			switch action {
 			case redirectStopEmptyLoc:
 				res.Redirects = hops
@@ -331,6 +353,7 @@ func (o *HTTPObserver) Run(ctx context.Context, host string, port int) (*ScanRes
 				return finish()
 			default: // redirectFollow
 				curHost, curPort, curPath = next.host, next.port, next.path
+				curScheme = next.scheme
 				continue
 			}
 		}
@@ -354,16 +377,17 @@ const (
 
 // decideRedirect resolves one redirect Location into the next hop.
 // Pure: the Run loop owns all state transitions and hop recording.
-func decideRedirect(loc, curHost string, curPort int, hop int) (redirectTarget, redirectAction, error) {
+func decideRedirect(loc, curHost string, curPort int, curScheme string, hop int) (redirectTarget, redirectAction, error) {
 	if loc == "" {
 		return redirectTarget{}, redirectStopEmptyLoc, nil
 	}
-	next, perr := resolveRedirect(loc, curHost, curPort)
+	next, perr := resolveRedirect(loc, curHost, curPort, curScheme)
 	if perr != nil {
 		return redirectTarget{}, redirectStopUnparseable, perr
 	}
-	if next.scheme != "http" {
-		// Recorded, not followed — TLS is the separate observer.
+	if next.scheme != "http" && next.scheme != "https" {
+		// Recorded, not followed — only http/https are on contract
+		// (https hops are TLS-wrapped over the same authorized socket).
 		next.target = fmt.Sprintf("RECORDED-NOT-FOLLOWED %s (scheme %q — use `gseer scan tls`)", next.target, next.scheme)
 		return next, redirectStopRecorded, nil
 	}
@@ -377,9 +401,9 @@ func decideRedirect(loc, curHost string, curPort int, hop int) (redirectTarget, 
 // buildHTTPScanEvidence assembles the run's evidence object: exactly
 // what the target answered (or the honest failure), with the
 // ACCUMULATED byte counter the scope budget was measured against.
-func buildHTTPScanEvidence(status int, title, server, cType, body, headers, failure string,
+func buildHTTPScanEvidence(status int, title, server, cType, failure string,
 	scopeID int64, target string, finalIP netip.Addr, hops []string,
-	bytesRead, maxBytes int64, trunc bool,
+	bytesRead, maxBytes int64, trunc bool, hdrs map[string]string,
 ) map[string]any {
 	evidence := map[string]any{
 		"http": map[string]any{
@@ -387,8 +411,6 @@ func buildHTTPScanEvidence(status int, title, server, cType, body, headers, fail
 			"title":        title,
 			"server":       server,
 			"content_type": cType,
-			"body":         body,
-			"headers":      headers,
 		},
 		"scan": map[string]any{
 			"scope_id":       scopeID,
@@ -409,7 +431,32 @@ func buildHTTPScanEvidence(status int, title, server, cType, body, headers, fail
 	if trunc {
 		evidence["scan"].(map[string]any)["body_truncated"] = true
 	}
+	if len(hdrs) > 0 {
+		evidence["http"].(map[string]any)["headers"] = hdrs
+	}
 	return evidence
+}
+
+// httpHeaderWhitelist bounds the captured response headers to the
+// technology-bearing set the search surface exposes; anything else is
+// noise for the evidence object.
+var httpHeaderWhitelist = []string{
+	"Server", "X-Powered-By", "Via", "X-Cache", "Age",
+	"Content-Length", "Content-Type", "Alt-Svc",
+}
+
+// captureHeaders copies the whitelisted response headers into the run's
+// accumulator (lowercase keys; values capped at 200 chars; the last
+// hop that set a key wins).
+func captureHeaders(dst map[string]string, h http.Header) {
+	for _, key := range httpHeaderWhitelist {
+		if v := h.Get(key); v != "" {
+			if len(v) > 200 {
+				v = v[:200]
+			}
+			dst[strings.ToLower(key)] = v
+		}
+	}
 }
 
 // clientFor builds one client per hop: it dials ONLY the validated
@@ -427,9 +474,10 @@ func buildHTTPScanEvidence(status int, title, server, cType, body, headers, fail
 // window between the registry read and the connect syscall is
 // irreducible in userspace and documented in docs/SCANNING.md — never
 // overstated.
-func (o *HTTPObserver) clientFor(gw *Gateway, guard *LeaseGuard, host string, ip netip.Addr, port int, timeout time.Duration) *http.Client {
+func (o *HTTPObserver) clientFor(gw *Gateway, guard *LeaseGuard, host string, ip netip.Addr, port int, scheme string, timeout time.Duration) *http.Client {
 	dialer := &net.Dialer{Timeout: timeout}
 	pinned := ip.String()
+	tlsHop := scheme == "https"
 	return &http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{
@@ -451,7 +499,18 @@ func (o *HTTPObserver) clientFor(gw *Gateway, guard *LeaseGuard, host string, ip
 					// (or un-auditable) re-validation.
 					return nil, rerr
 				}
-				return dialer.DialContext(ctx, network, net.JoinHostPort(pinned, strconv.Itoa(port)))
+				conn, derr := dialer.DialContext(ctx, network, net.JoinHostPort(pinned, strconv.Itoa(port)))
+				if derr != nil || !tlsHop {
+					return conn, derr
+				}
+				// R36 port-aware scheme: an https hop (e.g. the initial
+				// `scan http --port 443` or an absolute https redirect)
+				// TLS-wraps the SAME validated socket.  Capture-not-
+				// verify, exactly like the TLS observer: the observation
+				// records what the service presents without evaluating
+				// trust (docs/SCANNING.md §capture-not-verify).
+				tconn := tls.Client(conn, &tls.Config{ServerName: host, InsecureSkipVerify: true}) // #nosec G402 -- deliberate capture-not-verify design
+				return tconn, nil
 			},
 			DisableKeepAlives: true,
 		},
@@ -461,7 +520,7 @@ func (o *HTTPObserver) clientFor(gw *Gateway, guard *LeaseGuard, host string, ip
 	}
 }
 
-func hopURL(ip netip.Addr, port int, path string) string {
+func hopURL(ip netip.Addr, port int, path, scheme string) string {
 	hostPart := ip.String()
 	if ip.Is6() && !ip.Is4In6() {
 		hostPart = "[" + ip.String() + "]"
@@ -469,7 +528,10 @@ func hopURL(ip netip.Addr, port int, path string) string {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
-	return "http://" + hostPart + ":" + strconv.Itoa(port) + path
+	if scheme != "https" {
+		scheme = "http"
+	}
+	return scheme + "://" + hostPart + ":" + strconv.Itoa(port) + path
 }
 
 func isRedirect(status int) bool {
@@ -492,7 +554,7 @@ type redirectTarget struct {
 // resolveRedirect resolves one Location header against the current hop.
 // Relative Locations keep speaking to the SAME validated address (the
 // pinned IP is retained; only the Host header name carries over).
-func resolveRedirect(loc, curHost string, curPort int) (redirectTarget, error) {
+func resolveRedirect(loc, curHost string, curPort int, curScheme string) (redirectTarget, error) {
 	u, err := url.Parse(loc)
 	if err != nil {
 		return redirectTarget{}, err
@@ -509,9 +571,9 @@ func resolveRedirect(loc, curHost string, curPort int) (redirectTarget, error) {
 		return p
 	}
 	if u.IsAbs() {
-		if u.Scheme != "http" {
+		if u.Scheme != "http" && u.Scheme != "https" {
 			out.target = u.String()
-			return out, nil // recorded-not-followed path
+			return out, nil // recorded-not-followed path (off-contract scheme)
 		}
 		out.host = u.Hostname()
 		if p, perr := strconv.Atoi(u.Port()); perr == nil {
@@ -520,17 +582,21 @@ func resolveRedirect(loc, curHost string, curPort int) (redirectTarget, error) {
 		out.path = pathOf(u)
 		out.target = u.String()
 	} else {
-		// A relative Location is a SAME-ORIGIN hop: same scheme (this
-		// observer speaks http only), same validated address, same port,
-		// new path.
-		out.scheme = "http"
+		// A relative Location is a SAME-ORIGIN hop: same scheme (it
+		// inherits the CURRENT hop's scheme), same validated address,
+		// same port, new path.
+		out.scheme = curScheme
 		out.host = curHost
 		out.port = curPort
 		out.path = pathOf(u)
 		out.target = loc
 	}
 	if out.port == 0 {
-		out.port = 80
+		if out.scheme == "https" {
+			out.port = 443
+		} else {
+			out.port = 80
+		}
 	}
 	// Normalize a NEW absolute host the same way the gateway does (a
 	// relative Location keeps the current host verbatim).
@@ -613,47 +679,6 @@ func errText(err error) string {
 		s = strings.ReplaceAll(s, "\n", " ")
 	}
 	return s
-}
-
-// interestingResponseHeaders lists the response headers the observer
-// records as technology/service evidence (a BOUNDED allow-list — never
-// the whole header dump).  The sensitive set (credentials, session
-// state, proxies) is excluded by construction and additionally
-// redaction-checked below.
-var interestingResponseHeaders = []string{
-	"Server", "X-Powered-By", "X-Pingback", "X-Generator", "X-Drupal-Cache",
-	"X-Redirect-By", "X-AspNet-Version", "X-Runtime", "Via", "Link",
-	"X-Gwt-Cache", "X-Served-By", "X-Cache", "Content-Language",
-}
-
-// redactedHeaderNames never enter the evidence even if present in the
-// allow-list above by a later edit (defense in depth for secrets).
-var redactedHeaderNames = map[string]bool{
-	"Set-Cookie": true, "Cookie": true, "Authorization": true,
-	"Proxy-Authorization": true, "Www-Authenticate": true,
-}
-
-// collectResponseHeaders renders the interesting response headers as a
-// canonical "Name: value" block (one header per line, canonical-name
-// order).  Bounded per header (256 bytes) and per count (the fixed
-// allow-list) so the evidence cannot balloon.
-func collectResponseHeaders(h http.Header) string {
-	var out []string
-	for _, name := range interestingResponseHeaders {
-		if redactedHeaderNames[name] {
-			continue
-		}
-		vals := h.Values(name)
-		if len(vals) == 0 {
-			continue
-		}
-		v := vals[0]
-		if len(v) > 256 {
-			v = v[:256]
-		}
-		out = append(out, name+": "+v)
-	}
-	return strings.Join(out, "\n")
 }
 
 func confidenceFor(failure string) string {

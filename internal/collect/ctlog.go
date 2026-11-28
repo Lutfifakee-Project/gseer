@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package collect
 
@@ -45,7 +55,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -104,28 +113,20 @@ type ctlogSTH struct {
 	Timestamp int64  `json:"timestamp"`
 }
 
-// ctlogPlan is one Collect pass's normalized configuration: endpoint with
-// the trailing slash, the effective chunk size, and the run budget.
-type ctlogPlan struct {
-	endpoint string
-	chunk    int
-	budget   int
-}
-
-// ctlogPrepare validates the run contract (HTTP client present, seed-free
-// mode) and normalizes the knobs — endpoint trailing slash, chunk bounds,
-// run budget.  No network I/O.
-func ctlogPrepare(ctx Ctx) (ctlogPlan, error) {
+// Collect implements Collector: one tip-following, budget-bounded pass
+// over a public CT log.  No seeds — seed_mode must be "none".
+func (ctlogConnector) Collect(ctx Ctx) (*Batch, error) {
 	if ctx.Client == nil {
-		return ctlogPlan{}, Fatal(fmt.Errorf("ctlog: no HTTP client configured — register the source with --requests-per-second (docs/SOURCES.md §G)"))
+		return nil, Fatal(fmt.Errorf("ctlog: no HTTP client configured — register the source with --requests-per-second (docs/SOURCES.md §G)"))
 	}
 	switch ctx.Config.SeedMode {
 	case "", "none":
 		// The only honest mode: nothing about this connector reads the
 		// operator's or anyone's seed list.
 	default:
-		return ctlogPlan{}, Fatal(fmt.Errorf("ctlog: seed_mode %q is not supported — this connector is seed-free; register it with --seed-mode none", ctx.Config.SeedMode))
+		return nil, Fatal(fmt.Errorf("ctlog: seed_mode %q is not supported — this connector is seed-free; register it with --seed-mode none", ctx.Config.SeedMode))
 	}
+
 	endpoint := ctx.Config.Endpoint
 	if endpoint == "" {
 		endpoint = ctlogDefaultEndpoint
@@ -144,206 +145,148 @@ func ctlogPrepare(ctx Ctx) (ctlogPlan, error) {
 	if budget <= 0 {
 		budget = DefaultRunLimit
 	}
-	return ctlogPlan{endpoint: endpoint, chunk: chunk, budget: budget}, nil
-}
 
-// ctlogStartIndex resolves where the pass begins: resume from the
-// checkpoint (the cursor stores the LAST consumed index), else the
-// configured absolute index, else tip-following via get-sth.
-func ctlogStartIndex(ctx Ctx, plan ctlogPlan) (uint64, error) {
+	// Start index: resume from the checkpoint, else the configured
+	// absolute index, else tip-following (the freshest window).
+	now := time.Now().UTC()
+	if ctx.Now != nil {
+		now = ctx.Now().UTC()
+	}
+	var start uint64
 	if cur, perr := strconv.ParseUint(strings.TrimSpace(ctx.Cursor), 10, 64); perr == nil && cur > 0 {
-		return cur + 1, nil // the checkpoint stores the LAST consumed index
-	}
-	if ctx.Config.StartIndex > 0 {
-		return ctx.Config.StartIndex, nil
-	}
-	var sth ctlogSTH
-	if err := ctx.Client.GetJSON(ctx.Context, plan.endpoint+"ct/v1/get-sth", &sth); err != nil {
-		return 0, Fatal(fmt.Errorf("ctlog: get-sth failed for %s: %v (tip mode needs the tree size)", plan.endpoint, err))
-	}
-	if sth.TreeSize == 0 {
-		return 0, Fatal(fmt.Errorf("ctlog: %s reports an empty tree (tree_size 0)", plan.endpoint))
-	}
-	// G115: the budget is a validated non-negative count (ctlogPrepare
-	// normalizes it); assert the bound at the single conversion site.
-	if plan.budget < 0 {
-		return 0, Fatal(fmt.Errorf("ctlog: run budget %d out of range", plan.budget))
-	}
-	return ctlogTipStart(sth.TreeSize, uint64(plan.budget)), nil
-}
-
-// ctlogRunState accumulates one pass's fetch counters and fact rows.
-type ctlogRunState struct {
-	raws     []RawFact
-	now      time.Time // the run's honest observed_at
-	fetched  int
-	certs    int
-	precerts int
-	nonLeaf  int
-	names    int
-	leafErrs []error
-	last     uint64 // next absolute index to request (start + fetched)
-}
-
-// consumeEntry decodes one log leaf and folds its facts into the run
-// state (hostname facts, cert/precert/non-leaf/name counters, leaf
-// errors).  A wildcard SAN "*.foo.com" sightings the base name foo.com
-// (the certificate literally names it); the canonicalization itself
-// stays with the fact pipeline.
-func (st *ctlogRunState) consumeEntry(endpoint string, idx uint64, leafInput string) {
-	leafDER, err := base64.StdEncoding.DecodeString(leafInput)
-	if err != nil {
-		st.leafErrs = append(st.leafErrs, fmt.Errorf("entry %d: leaf_input does not decode", idx))
-		return
-	}
-	leafHash := sha256.Sum256(leafDER)
-	info, perr := ctlogParseLeaf(leafDER)
-	if perr != nil {
-		st.nonLeaf++
-		if _, isSkip := perr.(ctlogSkipLeaf); !isSkip {
-			st.leafErrs = append(st.leafErrs, fmt.Errorf("entry %d: %v", idx, perr))
-		}
-		return
-	}
-	if info.precert {
-		st.precerts++
+		start = cur + 1 // the checkpoint stores the LAST consumed index
+	} else if ctx.Config.StartIndex > 0 {
+		start = ctx.Config.StartIndex
 	} else {
-		st.certs++
-	}
-	seenRaw := map[string]bool{}
-	for _, raw := range info.names {
-		raw = strings.TrimPrefix(strings.TrimSpace(raw), "*.")
-		if raw == "" || seenRaw[strings.ToLower(raw)] {
-			continue
+		var sth ctlogSTH
+		if err := ctx.Client.GetJSON(ctx.Context, endpoint+"ct/v1/get-sth", &sth); err != nil {
+			return nil, Fatal(fmt.Errorf("ctlog: get-sth failed for %s: %v (tip mode needs the tree size)", endpoint, err))
 		}
-		seenRaw[strings.ToLower(raw)] = true
-		st.names++
-		st.raws = append(st.raws, ctlogFact(endpoint, idx, leafHash, st.now, info, raw))
+		if sth.TreeSize == 0 {
+			return nil, Fatal(fmt.Errorf("ctlog: %s reports an empty tree (tree_size 0)", endpoint))
+		}
+		start = ctlogTipStart(sth.TreeSize, uint64(budget))
 	}
-}
 
-// ctlogFact builds the hostname fact for one discovered name with full
-// provenance: the log URL, the absolute entry index, the SHA-256 of the
-// raw log leaf (the cryptographic evidence), the cert's issuer and
-// validity window, and the CT log's own timestamp.
-func ctlogFact(endpoint string, idx uint64, leafHash [32]byte, now time.Time, info *ctlogLeafInfo, raw string) RawFact {
-	extra := map[string]any{"ctlog": map[string]any{
-		"log":            endpoint,
-		"index":          idx,
-		"leaf_sha256":    hex.EncodeToString(leafHash[:]),
-		"cert_timestamp": info.timestampUTC.Format(time.RFC3339),
-		"entry_type":     "precert",
-	}}
-	if info.precert {
-		extra["ctlog"].(map[string]any)["entry_type"] = "precert"
-	} else {
-		extra["ctlog"].(map[string]any)["entry_type"] = "x509"
-		if !info.notBefore.IsZero() {
-			extra["ctlog"].(map[string]any)["not_before"] = info.notBefore.Format(time.RFC3339)
-			extra["ctlog"].(map[string]any)["not_after"] = info.notAfter.Format(time.RFC3339)
-		}
-		if info.issuer != "" {
-			extra["ctlog"].(map[string]any)["issuer"] = info.issuer
-		}
-	}
-	return RawFact{
-		AssetKind:  "hostname",
-		Value:      raw,
-		ObservedAt: now,
-		Confidence: "high", // names come from cryptographically logged certificates
-		Extra:      extra,
-	}
-}
-
-// ctlogFetch walks the window [start, ...) chunk by chunk — one get-entries
-// request per chunk — until the run budget or the log's end.  A mid-run
-// transport failure after successful chunks delivers what was read; with
-// nothing read at all it fails the run.
-func ctlogFetch(ctx Ctx, plan ctlogPlan, start uint64, st *ctlogRunState) error {
-	st.last = start
-	for st.fetched < plan.budget {
+	raws := make([]RawFact, 0, 16)
+	var (
+		fetched, certs, precerts, nonLeaf, names int
+		leafErrs                                 []error
+		last                                     = start
+	)
+	for fetched < budget {
 		if err := ctx.Context.Err(); err != nil {
-			return err
+			return nil, err
 		}
-		n := int64(plan.chunk)
-		if rem := int64(plan.budget) - int64(st.fetched); rem < n {
+		n := int64(chunk)
+		if rem := int64(budget) - int64(fetched); rem < n {
 			n = rem
 		}
-		if n <= 0 {
-			return nil // the budget is already met — nothing left to request
-		}
-		end := st.last + uint64(n) - 1
-		url := fmt.Sprintf("%sct/v1/get-entries?start=%d&end=%d", plan.endpoint, st.last, end)
+		end := last + uint64(n) - 1
+		url := fmt.Sprintf("%sct/v1/get-entries?start=%d&end=%d", endpoint, last, end)
 		var resp ctlogGetEntriesResponse
 		if err := ctx.Client.GetJSON(ctx.Context, url, &resp); err != nil {
-			if len(st.raws) > 0 {
+			if len(raws) > 0 {
 				// A mid-run transport failure after successful batches
 				// still delivers what was read (the checkpoint advances
 				// only past ingested records; a retry resumes cleanly).
-				return nil
+				break
 			}
-			return err
+			return nil, err
 		}
 		if len(resp.Entries) == 0 {
-			return nil // the log answered with nothing left at this index
+			break // the log answered with nothing left at this index
 		}
 		for i, e := range resp.Entries {
-			st.consumeEntry(plan.endpoint, st.last+uint64(i), e.LeafInput)
+			idx := last + uint64(i)
+			leafDER, err := base64.StdEncoding.DecodeString(e.LeafInput)
+			if err != nil {
+				leafErrs = append(leafErrs, fmt.Errorf("entry %d: leaf_input does not decode", idx))
+				continue
+			}
+			leafHash := sha256.Sum256(leafDER)
+			info, perr := ctlogParseLeaf(leafDER)
+			if perr != nil {
+				nonLeaf++
+				if _, isSkip := perr.(ctlogSkipLeaf); !isSkip {
+					leafErrs = append(leafErrs, fmt.Errorf("entry %d: %v", idx, perr))
+				}
+				continue
+			}
+			if info.precert {
+				precerts++
+			} else {
+				certs++
+			}
+			seenRaw := map[string]bool{}
+			for _, raw := range info.names {
+				// A wildcard SAN "*.foo.com" sightings the base name
+				// foo.com (the certificate literally names it); the
+				// canonicalization itself stays with the fact pipeline.
+				raw = strings.TrimPrefix(strings.TrimSpace(raw), "*.")
+				if raw == "" || seenRaw[strings.ToLower(raw)] {
+					continue
+				}
+				seenRaw[strings.ToLower(raw)] = true
+				names++
+				extra := map[string]any{"ctlog": map[string]any{
+					"log":            endpoint,
+					"index":          idx,
+					"leaf_sha256":    hex.EncodeToString(leafHash[:]),
+					"cert_timestamp": info.timestampUTC.Format(time.RFC3339),
+					"entry_type":     "precert",
+				}}
+				if info.precert {
+					extra["ctlog"].(map[string]any)["entry_type"] = "precert"
+				} else {
+					extra["ctlog"].(map[string]any)["entry_type"] = "x509"
+					if !info.notBefore.IsZero() {
+						extra["ctlog"].(map[string]any)["not_before"] = info.notBefore.Format(time.RFC3339)
+						extra["ctlog"].(map[string]any)["not_after"] = info.notAfter.Format(time.RFC3339)
+					}
+					if info.issuer != "" {
+						extra["ctlog"].(map[string]any)["issuer"] = info.issuer
+					}
+					if info.subjectCN != "" {
+						extra["ctlog"].(map[string]any)["subject_cn"] = info.subjectCN
+					}
+				}
+				raws = append(raws, RawFact{
+					AssetKind:  "hostname",
+					Value:      raw,
+					ObservedAt: now,
+					Confidence: "high", // names come from cryptographically logged certificates
+					Extra:      extra,
+				})
+			}
 		}
-		st.fetched += len(resp.Entries)
-		st.last += uint64(len(resp.Entries))
+		fetched += len(resp.Entries)
+		last += uint64(len(resp.Entries))
 		if len(resp.Entries) < int(n) {
-			return nil // short answer: the log has nothing further at this index
+			break // short answer: the log has nothing further at this index
 		}
-	}
-	return nil
-}
-
-// Collect implements Collector: one tip-following, budget-bounded pass
-// over a public CT log.  No seeds — seed_mode must be "none".
-//
-// The pass is staged through focused helpers — contract check, start
-// index, fetch loop, batch assembly — each owning exactly one concern;
-// behavior is unchanged from the pre-split single function.
-func (ctlogConnector) Collect(ctx Ctx) (*Batch, error) {
-	plan, err := ctlogPrepare(ctx)
-	if err != nil {
-		return nil, err
-	}
-	start, err := ctlogStartIndex(ctx, plan)
-	if err != nil {
-		return nil, err
-	}
-	st := &ctlogRunState{raws: make([]RawFact, 0, 16)}
-	if ctx.Now != nil {
-		st.now = ctx.Now().UTC()
-	} else {
-		st.now = time.Now().UTC()
-	}
-	if err := ctlogFetch(ctx, plan, start, st); err != nil {
-		return nil, err
 	}
 
 	batch := &Batch{
-		Raws: st.raws,
+		Raws: raws,
 		Done: true, // one bounded batch per run; the next run resumes at the checkpoint
-		Notes: map[string]int{"entries": st.fetched, "certs": st.certs, "precerts": st.precerts,
-			"non_leaf": st.nonLeaf, "names": st.names, "requests": (st.fetched + plan.chunk - 1) / plan.chunk},
+		Notes: map[string]int{"entries": fetched, "certs": certs, "precerts": precerts,
+			"non_leaf": nonLeaf, "names": names, "requests": (int(fetched) + chunk - 1) / chunk},
 	}
 	// The checkpoint stores the LAST consumed absolute index ("": none).
 	// A zero-work run (nothing new at the resume index) must KEEP the
 	// existing checkpoint — echoing ctx.Cursor — instead of wiping the
 	// resume point (caught by the runner-level regression test).
 	switch {
-	case st.fetched > 0:
-		batch.Cursor = strconv.FormatUint(st.last-1, 10)
+	case fetched > 0:
+		batch.Cursor = strconv.FormatUint(last-1, 10)
 	case strings.TrimSpace(ctx.Cursor) != "":
 		batch.Cursor = strings.TrimSpace(ctx.Cursor)
 	}
-	if len(st.leafErrs) > 0 {
+	if len(leafErrs) > 0 {
 		// Unreadable entries are recorded in the batch notes story and
 		// surface via the run stats; the healthy majority still lands.
-		batch.Notes["leaf_errors"] = len(st.leafErrs)
+		batch.Notes["leaf_errors"] = len(leafErrs)
 	}
 	return batch, nil
 }
@@ -363,6 +306,7 @@ type ctlogLeafInfo struct {
 	notBefore    time.Time
 	notAfter     time.Time
 	issuer       string
+	subjectCN    string // certificate Subject CommonName (x509 entries)
 	names        []string
 	precert      bool // pre-certificate entry (TBS SANs, no outer cert)
 }
@@ -397,12 +341,6 @@ func ctlogParseLeaf(leaf []byte) (*ctlogLeafInfo, error) {
 		return nil, ctlogSkipLeaf{why: fmt.Sprintf("leaf version %d is not v1", leaf[0])}
 	}
 	ts := binary.BigEndian.Uint64(leaf[2:10])
-	if ts > uint64(math.MaxInt64) {
-		// G115 guard: the RFC 6962 timestamp is uint64 milliseconds; a
-		// value beyond int64 cannot be a real log time — fail this leaf
-		// instead of wrapping into a negative (bogus) time.
-		return nil, fmt.Errorf("leaf timestamp %d exceeds int64 range", ts)
-	}
 	entryType := binary.BigEndian.Uint16(leaf[10:12])
 	info := &ctlogLeafInfo{
 		timestampUTC: time.UnixMilli(int64(ts)).UTC(),
@@ -423,6 +361,7 @@ func ctlogParseLeaf(leaf []byte) (*ctlogLeafInfo, error) {
 		info.notBefore = cert.NotBefore.UTC()
 		info.notAfter = cert.NotAfter.UTC()
 		info.issuer = cert.Issuer.CommonName
+		info.subjectCN = cert.Subject.CommonName
 		info.names = append([]string{}, cert.DNSNames...)
 		if len(info.names) == 0 && cert.Subject.CommonName != "" {
 			info.names = []string{cert.Subject.CommonName}

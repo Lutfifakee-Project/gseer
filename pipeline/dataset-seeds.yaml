@@ -54,6 +54,34 @@ domains:
   - debian.org
   - gnu.org
   - rfc-editor.org
+  # Rev 14 expansion (owner-authorized 2026-11-27, MASTER MANDATE Phase B.E):
+  # the register below grows PASSIVE DNS discovery only — established
+  # public FOSS/infrastructure properties whose resolution is ordinary
+  # DNS-client behavior via public recursive resolvers (no direct contact
+  # with the target, no enumeration, no active probing).  None of these
+  # are added to tls_hosts: active observation stays exactly as reviewed.
+  #   - apache.org / python.org / golang.org / rust-lang.org — major FOSS
+  #     project web properties (ordinary public web presence)
+  #   - openbsd.org / freebsd.org — BSD project web properties
+  #   - postgresql.org / sqlite.org / nginx.org — widely deployed server
+  #     projects with published infrastructure
+  #   - letsencrypt.org — the CA's public web property (also the issuer
+  #     of most observed certificates)
+  #   - archive.org — public digital library (published terms permit
+  #     normal client access; DNS-only here)
+  #   - ubuntu.com — distribution web property
+  - apache.org
+  - python.org
+  - golang.org
+  - rust-lang.org
+  - openbsd.org
+  - freebsd.org
+  - postgresql.org
+  - sqlite.org
+  - nginx.org
+  - letsencrypt.org
+  - archive.org
+  - ubuntu.com
 
 # Active TLS :443 observation is restricted to THIS subset (each entry
 # justified above); the pipeline observes www.<host> and <host> — one

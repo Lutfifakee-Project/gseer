@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package planner
 
@@ -119,6 +129,11 @@ type Options struct {
 	Timeout time.Duration
 	Cursor  string // opaque base64 from a prior Result.NextCursor
 	Fields  []string
+	// Relevance (R114): anchor for substring-family relevance ordering.
+	// When Sort is empty and an anchor is supplied, the default ordering
+	// becomes relevance ASC, then last_seen DESC; an explicit
+	// `relevance` SortSpec requires an anchor.  See relevance.go.
+	Relevance *RelevanceAnchor
 }
 
 // Defaults and hard caps (PD-1, SPEC-03 §3).
@@ -177,6 +192,10 @@ type Plan struct {
 	// ProjectionFields is the field set the SQL projects (after mode
 	// collapse if ModeAsset).  Empty = default = all search_index cols.
 	ProjectionFields []string
+
+	// Relevance (R114) — carried so the result layer can compute the
+	// same tier per row when encoding the pagination cursor.
+	Relevance *RelevanceAnchor
 }
 
 // CursorPayload is the decoded form of the opaque pagination cursor.
@@ -266,22 +285,37 @@ var searchColumns = map[string]string{
 	"tls.cert_expiry":     "cert_expiry",
 	"tls.cert_serial":     "cert_serial",
 	"tls.cert_sans_dns":   "cert_sans_dns",
+	"tls.cert_not_before": "cert_not_before",
+	"ct.log":              "ct_log",
+	"ct.entry_type":       "ct_entry_type",
+	"ct.subject":          "ct_subject_cn",
+	"ct.issuer":           "ct_issuer",
+	"ct.not_before":       "ct_not_before",
+	"ct.not_after":        "ct_not_after",
+	"ct.leaf_sha256":      "ct_leaf_sha256",
+	"ct.cert_timestamp":   "ct_cert_timestamp",
 	"technologies":        "technologies",
 	"sources":             "sources",
 	"first_seen":          "first_seen",
 	"last_seen":           "last_seen",
-	// v0.3.2 (migration 0022): the row's REAL evidence time — the newest
-	// observation's observed_at (import-stamped last_seen moves on every
-	// ingest; observed_at only moves when new evidence lands).
-	"observed_at": "observed_at",
-	"stale":       "stale",
+	"stale":               "stale",
+	// R36 evidence quality + R37 field expansion (0006/0022 + 0007/0023
+	// project them into the view).
+	"coverage":            "coverage_class",
+	"last_observed":       "last_observed",
+	"prefix":              "ip_prefix",
+	"banner":              "banner",
+	"tls.cert_issuer_org": "cert_issuer_org",
+	"http.headers":        "http_headers",
+	"evidence":            "evidence_kinds",
 }
 
 // sortableFields is the set of fields the planner allows in ORDER BY.
 // List/bool fields are excluded (no meaningful ordering); the rest
 // mirror searchColumns.
 var sortableFields = map[string]bool{
-	"ip": true, "asset_value": true, "asset_kind": true,
+	"relevance": true, // R114: rank over the anchor predicate's tiers
+	"ip":        true, "asset_value": true, "asset_kind": true,
 	"domain": true, "hostname": true, "asn": true, "asn_org": true,
 	"geo_country": true, "geo_region": true, "geo_city": true,
 	"port": true, "transport": true, "protocol": true,
@@ -289,7 +323,11 @@ var sortableFields = map[string]bool{
 	"http.status": true, "http.title": true, "http.server": true,
 	"tls.version": true, "tls.cert_subject_cn": true, "tls.cert_issuer_cn": true,
 	"tls.cert_expiry": true, "tls.cert_serial": true, "tls.cert_sans_dns": true,
-	"first_seen": true, "last_seen": true, "observed_at": true,
+	"tls.cert_not_before": true,
+	"first_seen":          true, "last_seen": true,
+	"coverage": true, "last_observed": true, "prefix": true,
+	"banner": true, "tls.cert_issuer_org": true,
+	"ct.not_before": true, "ct.not_after": true, "ct.cert_timestamp": true,
 }
 
 // allSearchColumns is the canonical projection list, in view order
@@ -302,8 +340,13 @@ var allSearchColumns = []string{
 	"port", "transport", "protocol", "name", "product", "version",
 	"http_status", "http_title", "http_server",
 	"tls_version", "cert_subject_cn", "cert_issuer_cn", "cert_expiry",
-	"cert_serial", "cert_sans_dns",
-	"technologies", "sources", "first_seen", "last_seen", "observed_at", "stale",
+	"cert_serial", "cert_sans_dns", "cert_not_before",
+	"technologies", "sources", "first_seen", "last_seen", "stale",
+	"evidence_kinds", "last_observed", "coverage_class",
+	"http_headers", "cert_issuer_org", "banner", "ip_prefix",
+	"ct_log", "ct_entry_type", "ct_subject_cn", "ct_issuer",
+	"ct_not_before", "ct_not_after", "ct_leaf_sha256", "ct_cert_timestamp",
+	"dns_record",
 }
 
 // columnName resolves a canonical path to its search_index column.
@@ -374,10 +417,19 @@ func compileOptions(opts Options) (limit int, timeout time.Duration, sorts []Sor
 		timeout = 5 * time.Second
 	}
 
-	// Normalize sort.  Empty = default: last_seen DESC.
+	// Normalize sort.  Empty = default: last_seen DESC — or relevance
+	// ASC when an R114 anchor is present (exact > prefix > substring
+	// within the same matched set).  The ONLY secondary keys are the
+	// composite row key: the pagination cursor compares (tier, row_id,
+	// row_kind), so any other tiebreaker would make pages skip or
+	// repeat rows (the same contract as the coverage rank).
 	sorts = opts.Sort
 	if len(sorts) == 0 {
-		sorts = []SortSpec{{Field: "last_seen", Direction: DirDesc}}
+		if opts.Relevance != nil {
+			sorts = []SortSpec{{Field: "relevance", Direction: DirAsc}}
+		} else {
+			sorts = []SortSpec{{Field: "last_seen", Direction: DirDesc}}
+		}
 	}
 	for _, s := range sorts {
 		if !sortableFields[s.Field] {
@@ -386,6 +438,14 @@ func compileOptions(opts Options) (limit int, timeout time.Duration, sorts []Sor
 				Detail: fmt.Sprintf("field %q is not sortable", s.Field),
 				Why:    "list and bool fields have no meaningful ordering; row_id and the witness fields are sortable",
 				Next:   "try: --sort last_seen:desc",
+			}
+		}
+		if s.Field == "relevance" && opts.Relevance == nil {
+			return 0, 0, nil, &Error{
+				Code:   CodePlanSortField,
+				Detail: `sort "relevance" requires a text-match query`,
+				Why:    "the relevance rank is derived from a single substring-family predicate (CONTAINS, *=, IN_DOMAIN); this query has none",
+				Next:   `try: product CONTAINS "nginx" --sort relevance:asc`,
 			}
 		}
 	}
@@ -420,66 +480,6 @@ func resolveProjection(fields []string) ([]string, error) {
 		resolved = append(resolved, col)
 	}
 	return resolved, nil
-}
-
-// mandatoryProjectionColumns is the identity+metadata column set EVERY
-// result row must carry regardless of the caller's projection: the row
-// key (row_id/row_kind/asset_id), the asset identity, the freshness
-// stamps, and the stale flag.  The wire contract (SPEC-07 JSON row
-// shape) declares them non-optional; a projection that dropped any of
-// them zeroed the row metadata (v0.3.2-r2 owner finding) and corrupted
-// the keyset cursor (cursorFromRow needs row_id/row_kind and the sort
-// value off the scanned row).
-var mandatoryProjectionColumns = []string{
-	"row_id", "row_kind", "asset_id", "asset_kind", "asset_value",
-	"first_seen", "last_seen", "observed_at", "stale",
-}
-
-// MandatoryProjectionColumns returns a copy of the identity+metadata
-// column set every projection must carry (the render layer's contract
-// mirror; the search service prunes against this set).
-func MandatoryProjectionColumns() []string {
-	return append([]string{}, mandatoryProjectionColumns...)
-}
-
-// AllSearchColumns returns a copy of the canonical projection list in
-// view order (the CSV/NDJSON renderers' default header order).
-func AllSearchColumns() []string {
-	return append([]string{}, allSearchColumns...)
-}
-
-// ResolveProjectionColumn exports the canonical-path/column-name
-// resolution for the render layer: the search service prunes result
-// rows to the caller's projection and must normalize the exact same
-// spellings (canonical paths like "tls.version" and column names like
-// "tls_version").  Returns "" for unknown names.
-func ResolveProjectionColumn(name string) string {
-	return resolveProjectionColumn(name)
-}
-
-// ensureProjectionColumns augments a caller projection with the
-// mandatory identity/metadata columns and the ORDER BY columns (the
-// keyset cursor reads the sort value back off the scanned last row).
-// The default all-columns projection already contains everything, so it
-// passes through unchanged — the default result shape and SQL never
-// change.  Optional-but-unrequested columns are NOT appended here: the
-// render layer prunes them back off the rows (PruneToProjection), so
-// the wire contract stays "mandatory block + exactly the requested
-// fields".
-func ensureProjectionColumns(projection []string, sorts []SortSpec) []string {
-	out := projection
-	add := func(col string) {
-		if col != "" && !containsString(out, col) {
-			out = append(out, col)
-		}
-	}
-	for _, c := range mandatoryProjectionColumns {
-		add(c)
-	}
-	for _, s := range sorts {
-		add(columnName(s.Field))
-	}
-	return out
 }
 
 // decodeCursorForSort decodes the page cursor (if any) and validates it
@@ -581,10 +581,6 @@ func Compile(root ast.Node, opts Options) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	// v0.3.2-r2 fix: identity/metadata and ORDER BY columns always ride
-	// along in the SELECT — scanRow binds by column name, so a projection
-	// that dropped them zeroed the row metadata and broke the cursor.
-	projection = ensureProjectionColumns(projection, sorts)
 
 	// Decode cursor (if any) and validate it matches the first sort field.
 	cursorPayload, err := decodeCursorForSort(opts.Cursor, sorts)
@@ -611,7 +607,7 @@ func Compile(root ast.Node, opts Options) (*Plan, error) {
 	//                 distinct assets).
 	var curPred string
 	if cursorPayload != nil {
-		curPred = b.renderCursorPredicate(sorts[0], cursorPayload)
+		curPred = b.renderCursorPredicate(sorts[0], cursorPayload, opts.Relevance)
 	}
 	whereSQLNoCursor := whereSQL
 	if curPred != "" {
@@ -621,8 +617,11 @@ func Compile(root ast.Node, opts Options) (*Plan, error) {
 		whereSQL = "(" + whereSQL + " AND " + curPred + ")"
 	}
 
-	// ORDER BY clause (no placeholders).
-	sortClause := renderSort(sorts)
+	// ORDER BY clause.  R114: the relevance rank's $N placeholders are
+	// bound here — they append to b.args AFTER the WHERE/cursor args
+	// (matching their position in the SQL text) and BEFORE the limit
+	// placeholder computed just below.
+	sortClause := renderSort(sorts, b, opts.Relevance)
 
 	// Limit placeholder.
 	args := append([]any{}, b.args...)
@@ -656,6 +655,7 @@ func Compile(root ast.Node, opts Options) (*Plan, error) {
 		Timeout:          timeout,
 		CursorDecoded:    cursorPayload,
 		ProjectionFields: projection,
+		Relevance:        opts.Relevance,
 	}, nil
 }
 
@@ -775,6 +775,20 @@ func (b *builder) compileComparison(c *ast.Comparison, alias string, branch *Bra
 	if sql, ok := b.compileHostOrIP(c, alias); ok {
 		return sql
 	}
+	// R37 dynamic per-name header fields (http.header.<name> and the
+	// http.headers.<name> alias form) lower to a jsonb key extraction
+	// over the captured headers object; the name is validator-charset
+	// checked ([a-z0-9_-]+), so the single-quoted literal is safe.
+	if name, ok := dynamicHeaderKey(c.Field); ok {
+		branch.Witness = true
+		return b.compileColumnOps(fmt.Sprintf(`%s."http_headers" ->> '%s'`, alias, name), c)
+	}
+	// R39 P4 dynamic dns.<key> fields lower to a jsonb key extraction
+	// over the latest_dns projection (dns_record).
+	if name, ok := dynamicDNSKey(c.Field); ok {
+		branch.Witness = true
+		return b.compileColumnOps(fmt.Sprintf(`%s."dns_record" ->> '%s'`, alias, name), c)
+	}
 	col := columnName(c.Field)
 	if col == "" {
 		col = c.Field
@@ -782,6 +796,32 @@ func (b *builder) compileComparison(c *ast.Comparison, alias string, branch *Bra
 	branch.Witness = true
 	qcol := alias + ".\"" + col + "\""
 
+	return b.compileColumnOps(qcol, c)
+}
+
+// dynamicHeaderKey splits a canonical dynamic header field into its
+// validated key part ("http.headers.x-powered-by" → "x-powered-by").
+// The static bare "http.headers" is NOT dynamic — it maps to the
+// http_headers column through searchColumns.
+func dynamicHeaderKey(canonical string) (string, bool) {
+	rest, ok := strings.CutPrefix(canonical, "http.headers.")
+	if !ok || rest == "" {
+		return "", false
+	}
+	return rest, true
+}
+
+// dynamicDNSKey splits a canonical dynamic dns field into its validated
+// key part ("dns.type" → "type") — R39 P4.
+func dynamicDNSKey(canonical string) (string, bool) {
+	rest, ok := strings.CutPrefix(canonical, "dns.")
+	if !ok || rest == "" {
+		return "", false
+	}
+	return rest, true
+}
+
+func (b *builder) compileColumnOps(qcol string, c *ast.Comparison) string {
 	switch c.Op {
 	case ast.OpEq, ast.OpNeq, ast.OpLt, ast.OpLe, ast.OpGt, ast.OpGe:
 		op := opSQL(c.Op)
@@ -793,27 +833,6 @@ func (b *builder) compileComparison(c *ast.Comparison, alias string, branch *Bra
 				return fmt.Sprintf("(%s IS NULL OR %s = '')", qcol, qcol)
 			}
 			return fmt.Sprintf("(%s IS NOT NULL AND %s <> '')", qcol, qcol)
-		}
-		// Boolean columns bind as SQL literals, not string params:
-		// `stale = $1` with a TEXT "false" param silently matches
-		// NOTHING on the SQLite dialect (INTEGER 0/1 vs text) while PG
-		// implicitly casts — the v0.3.2 CI/owner evidence caught exactly
-		// that (stale=="false" → 0 rows over a fresh index).  TRUE/FALSE
-		// are engine-portable literals and the validator only admits
-		// the two literals for TypeBool fields, so no injection surface.
-		if c.Field == "stale" {
-			if want, ok := boolValue(c.Value); ok {
-				if c.Op == ast.OpNeq {
-					if want {
-						return fmt.Sprintf("(%s IS NOT NULL AND %s <> TRUE)", qcol, qcol)
-					}
-					return fmt.Sprintf("(%s IS NOT NULL AND %s <> FALSE)", qcol, qcol)
-				}
-				if want {
-					return fmt.Sprintf("%s = TRUE", qcol)
-				}
-				return fmt.Sprintf("%s = FALSE", qcol)
-			}
 		}
 		return b.simpleCompare(qcol, op, c.Value)
 	case ast.OpIn:
@@ -916,6 +935,9 @@ func (b *builder) compileHostOrIP(c *ast.Comparison, alias string) (string, bool
 
 // boolValue extracts a validated boolean literal ("true"/"false").
 func boolValue(v ast.Value) (bool, bool) {
+	if bv, ok := v.(*ast.BoolValue); ok {
+		return bv.B, true
+	}
 	sv, ok := v.(*ast.StrValue)
 	if !ok {
 		return false, false
@@ -1100,6 +1122,15 @@ func (b *builder) compileIn(qcol string, v ast.Value) string {
 // validator is the canonical source, but the planner must still lower
 // correctly even if invoked outside the validator).
 func (b *builder) compileContains(qcol string, v ast.Value, canonicalField string) string {
+	if canonicalField == "evidence" {
+		// evidence_kinds is jsonb (0022): jsonb `?` tests top-level
+		// string ELEMENTS of an array — exact family membership, not a
+		// substring guess.
+		if sv, ok := v.(*ast.StrValue); ok {
+			return fmt.Sprintf("%s ? $%d", qcol, b.placeholder(sv.S))
+		}
+		return "FALSE"
+	}
 	if isListField(canonicalField) {
 		// Element membership.  GQL CONTAINS on a list takes one value;
 		// element typing mirrors the field (text[] for v0.0.1).
@@ -1186,7 +1217,11 @@ func (b *builder) placeholder(v any) int {
 // NOT unique across the union view (services.id on 'service' rows,
 // assets.id on 'asset-only' rows are independent sequences that can
 // collide numerically), so pagination must advance over both columns.
-func renderSort(sorts []SortSpec) string {
+// renderSort renders the ORDER BY clause.  R114: the relevance field
+// expands to the anchor's tier CASE whose $N placeholders bind through
+// b — AFTER the WHERE/cursor args (matching SQL text order), BEFORE
+// the limit placeholder.
+func renderSort(sorts []SortSpec, b *builder, rel *RelevanceAnchor) string {
 	parts := make([]string, 0, len(sorts)+2)
 	for _, s := range sorts {
 		col := columnName(s.Field)
@@ -1197,10 +1232,96 @@ func renderSort(sorts []SortSpec) string {
 		if s.Direction == DirDesc {
 			nulls = "NULLS FIRST"
 		}
-		parts = append(parts, fmt.Sprintf("\"%s\" %s %s", col, s.Direction.String(), nulls))
+		expr := fmt.Sprintf("\"%s\"", col)
+		if col == "coverage_class" {
+			expr = coverageRankExpr(expr)
+		}
+		if s.Field == "relevance" {
+			expr = relevanceRankExpr(b, rel)
+		}
+		parts = append(parts, fmt.Sprintf("%s %s %s", expr, s.Direction.String(), nulls))
 	}
 	parts = append(parts, `"row_id" ASC NULLS LAST`, `"row_kind" ASC`)
 	return strings.Join(parts, ", ")
+}
+
+// relevanceRankExpr renders the R114 tier CASE for the anchor's
+// predicate family.  Tier 0 = exact (case-insensitive via lower()),
+// tier 1 = prefix (CONTAINS only), tier 2 = the rest of the matched
+// set.  The numbers stay in lockstep with RelevanceAnchor.Tier — the
+// cursor payload carries the tier, and page 2 compares it against this
+// same expression.  PG spells the case-insensitive exact match with
+// lower() (view columns use non-C collations; no COLLATE clause).
+func relevanceRankExpr(b *builder, rel *RelevanceAnchor) string {
+	if rel == nil {
+		return "0"
+	}
+	col := columnName(rel.Field)
+	if col == "" {
+		col = rel.Field
+	}
+	qcol := `"` + col + `"`
+	switch rel.Kind {
+	case RelContains:
+		eqIdx := b.placeholder(rel.Value)
+		preIdx := b.placeholder(likeEscape(rel.Value) + "%")
+		return fmt.Sprintf(`CASE WHEN lower(%s) = lower($%d) THEN 0
+			 WHEN %s ILIKE $%d ESCAPE '\' THEN 1
+			 ELSE 2 END`, qcol, eqIdx, qcol, preIdx)
+	case RelMatch:
+		eqIdx := b.placeholder(rel.Core)
+		return fmt.Sprintf(`CASE WHEN lower(%s) = lower($%d) THEN 0 ELSE 1 END`, qcol, eqIdx)
+	case RelInDomain:
+		eqIdx := b.placeholder(rel.Value)
+		return fmt.Sprintf(`CASE WHEN lower(%s) = lower($%d) THEN 0 ELSE 1 END`, qcol, eqIdx)
+	}
+	return "0"
+}
+
+// CoverageRank maps a coverage_class value to its declared
+// evidence-strength rank (R45): service-observed (6, strongest) down to
+// unclassified (0).  This is the single source of truth the SQL CASE in
+// coverageRankExpr mirrors — cursor payloads carry this integer, so a
+// future class change must update both together (the planner test pins
+// the ladder).
+func CoverageRank(class string) int64 {
+	switch class {
+	case "service-observed":
+		return 6
+	case "tls-observed":
+		return 5
+	case "http-observed":
+		return 4
+	case "routing-confirmed":
+		return 3
+	case "dns-resolved":
+		return 2
+	case "discovered":
+		return 1
+	default:
+		return 0 // unclassified and anything unrecognized
+	}
+}
+
+// coverageRankExpr renders the evidence-strength ORDER BY expression for
+// the coverage field (R45).  The coverage_class values are ordered by the
+// strongest-evidence-wins rule the 0006/0022 derivation defines:
+// service-observed > tls-observed > http-observed > routing-confirmed >
+// dns-resolved > discovered > unclassified.  Sorting by "coverage" uses
+// this rank — transparent (visible in --explain), deterministic and
+// score-free (a declared mapping, not a fabricated relevance number).
+// Anything unrecognized ranks with unclassified (0) so a future class can
+// never silently outrank the declared ladder.
+func coverageRankExpr(qcol string) string {
+	return fmt.Sprintf(`CASE %s
+		  WHEN 'service-observed' THEN 6
+		  WHEN 'tls-observed' THEN 5
+		  WHEN 'http-observed' THEN 4
+		  WHEN 'routing-confirmed' THEN 3
+		  WHEN 'dns-resolved' THEN 2
+		  WHEN 'discovered' THEN 1
+		  ELSE 0
+		END`, qcol)
 }
 
 // renderCursorPredicate emits the strict-advancement predicate for the
@@ -1225,13 +1346,30 @@ func renderSort(sorts []SortSpec) string {
 // The value placeholder is cast to the sort column's type (::bigint for
 // integer fields, ::timestamptz for timestamp fields, ::text otherwise)
 // so the comparison is well-typed regardless of driver type inference.
-func (b *builder) renderCursorPredicate(primary SortSpec, cursor *CursorPayload) string {
+func (b *builder) renderCursorPredicate(primary SortSpec, cursor *CursorPayload, rel *RelevanceAnchor) string {
 	col := columnName(primary.Field)
 	if col == "" {
 		col = primary.Field
 	}
 	cast := columnCast(primary.Field)
 	qcol := `"` + col + `"`
+	if primary.Field == "relevance" && rel != nil {
+		// R114: the ORDER BY ranked by the tier CASE; the cursor
+		// predicate must compare the SAME expression or pages would
+		// skip or repeat rows (same rule as the coverage rank).  Unlike
+		// the constant coverage CASE, the tier CASE carries $N
+		// placeholders and appears THREE times below — each occurrence
+		// binds its own copy, in text order.
+		return b.relevanceCursorPredicate(rel, cursor, primary.Direction)
+	}
+	if col == "coverage_class" {
+		// R45: the ORDER BY used the evidence-strength CASE; the cursor
+		// predicate must compare the SAME expression or pages would skip
+		// or repeat rows.  The cast is dropped for the rank expression —
+		// CASE yields an integer already.
+		qcol = coverageRankExpr(qcol)
+		cast = ""
+	}
 	idIdx := b.placeholder(cursor.RowID)
 	kindIdx := b.placeholder(cursor.RowKind)
 	// rowKeyGT is the strict-advancement fragment over the composite row
@@ -1264,15 +1402,53 @@ func (b *builder) renderCursorPredicate(primary SortSpec, cursor *CursorPayload)
 	)
 }
 
+// relevanceCursorPredicate renders the strict-advancement predicate
+// for the relevance tier (R114).  Binding order follows SQL text order:
+// occurrence 1 of the tier CASE, the strict-compare value, occurrence
+// 2, the tiebreaker-equality value, the composite row key, occurrence
+// 3 (the ASC NULL-tail check; the tier is never NULL so it only
+// completes the shape).
+func (b *builder) relevanceCursorPredicate(rel *RelevanceAnchor, cursor *CursorPayload, dir Direction) string {
+	c1 := relevanceRankExpr(b, rel)
+	// The tier arrives as a string in the cursor payload; the CASE
+	// yields an integer, so both comparisons cast explicitly (the
+	// generic predicate gets its typing from columnCast — dropped here).
+	ltIdx := b.placeholder(cursor.Value)
+	c2 := relevanceRankExpr(b, rel)
+	eqIdx := b.placeholder(cursor.Value)
+	idIdx := b.placeholder(cursor.RowID)
+	kindIdx := b.placeholder(cursor.RowKind)
+	rowKeyGT := fmt.Sprintf(
+		`(row_id > $%d OR (row_id = $%d AND row_kind > $%d))`,
+		idIdx, idIdx, kindIdx,
+	)
+	c3 := relevanceRankExpr(b, rel)
+	if cursor.Null {
+		// Unreachable for relevance (tiers are never NULL) — kept for
+		// shape parity with the generic cursor predicate.
+		return fmt.Sprintf("((%s IS NULL AND %s) OR %s IS NOT NULL)", c1, rowKeyGT, c1)
+	}
+	if dir == DirDesc {
+		return fmt.Sprintf("(%s < ($%d)::bigint OR (%s = ($%d)::bigint AND %s))", c1, ltIdx, c2, eqIdx, rowKeyGT)
+	}
+	return fmt.Sprintf(
+		"(%s > ($%d)::bigint OR (%s = ($%d)::bigint AND %s) OR %s IS NULL)",
+		c1, ltIdx, c2, eqIdx, rowKeyGT, c3,
+	)
+}
+
 // columnCast returns the explicit SQL cast for a sort/cursor value of
 // the given canonical field, so cursor comparisons are well-typed
 // (integer fields compare against ::bigint, timestamp fields against
 // ::timestamptz, everything else ::text).
 func columnCast(field string) string {
 	switch field {
-	case "port", "asn", "http.status":
+	case "port", "asn", "http.status", "coverage":
 		return "::bigint"
-	case "first_seen", "last_seen", "observed_at", "tls.cert_expiry":
+	case "relevance":
+		// R114: the cursor payload carries the tier rank (an integer).
+		return "::bigint"
+	case "first_seen", "last_seen", "tls.cert_expiry":
 		return "::timestamptz"
 	}
 	return "::text"

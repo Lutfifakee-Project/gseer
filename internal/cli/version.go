@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package cli
 
@@ -28,7 +38,7 @@ func registerVersionCmd(root *cobra.Command) {
 The version, commit, and built_at fields are injected at build time via
 -ldflags; an un-injected binary (e.g. 'go run') reports 'dev' and
 'unknown' rather than fabricating values.  'gseer doctor' prints the
-running binary's SHA-256 for checksum verification.`,
+running binary's SHA-256 for checksum verification (SPEC-03 §4).`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, err := fmt.Fprint(cmd.OutOrStdout(), version.Current().String())

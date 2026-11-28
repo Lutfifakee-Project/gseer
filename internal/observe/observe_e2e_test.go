@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package observe
 
@@ -183,8 +193,10 @@ func TestHTTPObserverRecordsHTTPSRedirectNotFollowed(t *testing.T) {
 	f := newE2E(t)
 	ctx := context.Background()
 
-	// A https:// Location is RECORDED (not followed) — TLS is the
-	// separate observer's scope.
+	// R36 contract: an absolute https:// Location IS followed — the
+	// observer speaks https over the same authorized socket — but the
+	// NEW host still re-enters the gateway per hop; an out-of-scope
+	// https target is DENIED and the chain records the denial honestly.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Location", "https://other.example/start")
 		w.WriteHeader(http.StatusMovedPermanently)
@@ -199,8 +211,11 @@ func TestHTTPObserverRecordsHTTPSRedirectNotFollowed(t *testing.T) {
 		t.Fatalf("run failed: %v", err)
 	}
 	joined := strings.Join(res.Redirects, " | ")
-	if !strings.Contains(joined, "RECORDED-NOT-FOLLOWED") {
-		t.Fatalf("https redirect must be recorded-not-followed: %v", res.Redirects)
+	if strings.Contains(joined, "RECORDED-NOT-FOLLOWED") {
+		t.Fatalf("https redirect must be attempted (R36 port-aware scheme), not recorded-not-followed: %v", res.Redirects)
+	}
+	if !strings.Contains(joined, "DENIED") {
+		t.Fatalf("out-of-scope https hop must be denied by the gateway: %v", res.Redirects)
 	}
 }
 

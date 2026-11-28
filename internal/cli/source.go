@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package cli
 
@@ -18,7 +28,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 
 	"github.com/Lutfifakee-Project/gseer/internal/collect"
 )
@@ -86,6 +95,7 @@ var sourceAddReset = func() {}
 
 func newSourceAddCmd() *cobra.Command {
 	f := &sourceAddFlags{}
+	sourceAddReset = func() { *f = sourceAddFlags{} }
 	cmd := &cobra.Command{
 		Use:   "add <name> --type <connector>",
 		Short: "Register a data source in the GSEER database",
@@ -104,26 +114,6 @@ func newSourceAddCmd() *cobra.Command {
 	cmd.Flags().IntVar(&f.limit, "limit-per-run", 0, "per-run record budget (default 500)")
 	cmd.Flags().BoolVar(&f.enable, "enable", false, "enable the source after registration")
 	cmd.Flags().BoolVar(&f.yes, "yes", false, "accept the provider's documented terms reference non-interactively")
-	// sourceAddReset must restore the REGISTERED DEFAULTS, not zero the
-	// struct.  pflag persists values across parses and NEVER re-applies a
-	// default, so a struct-zeroing seam left seed_mode "" — not a valid
-	// seed-mode — on the shared command tree; the next `source add` that
-	// omits the flag then failed with E_USAGE "--seed-mode must be config,
-	// index or none" (caught by the PostgreSQL 16/17 E2E suite).  Scalars
-	// take their registered default; slice flags reset to empty (their
-	// String() default rendering "[]" would CSV-parse back as the literal
-	// element "[]"); Changed is cleared so a fresh parse behaves like a
-	// fresh process (the same idiom as resetHelpVersion).
-	sourceAddReset = func() {
-		cmd.Flags().VisitAll(func(fl *pflag.Flag) {
-			if sv, ok := fl.Value.(pflag.SliceValue); ok {
-				_ = sv.Replace([]string{})
-			} else {
-				_ = fl.Value.Set(fl.DefValue)
-			}
-			fl.Changed = false
-		})
-	}
 	return cmd
 }
 

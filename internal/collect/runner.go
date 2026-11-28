@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package collect
 
@@ -82,6 +92,10 @@ type RunStats struct {
 	Done       bool   `json:"done"`
 	// Skipped is set (with the reason) when nothing ran.
 	Skipped string `json:"skipped,omitempty"`
+	// Notes merges the batches' connector-reported counters (routeviews'
+	// per-reason reject:/bad: tallies, ctlog's entries/logs counters) —
+	// the R35 coverage report reads the rejection reasons from here.
+	Notes map[string]int `json:"notes,omitempty"`
 }
 
 // Run executes one passive pass for the named registered source.
@@ -144,7 +158,20 @@ func (r *Runner) runPass(ctx context.Context, src storage.DataSourceRow, col Col
 		Config:     cfg,
 		Limit:      cfg.LimitPerRun,
 		IndexSeeds: func(kind string, limit int) ([]string, error) { return r.Store.IndexSeedValues(ctx, kind, limit) },
-		Now:        r.now,
+		IndexSeedsAfter: func(kind, after string, limit int) ([]string, error) {
+			return r.Store.IndexSeedsAfter(ctx, kind, after, limit)
+		},
+		Now: r.now,
+	}
+	// R37: the family-aware seed walk when the store provides it
+	// (optional interface — the same pattern as fingerprintSetter).
+	if fs, ok := r.Store.(interface {
+		IndexSeedsFamilyAfter(ctx context.Context, kind, after string, limit int, v6 bool) ([]string, error)
+	}); ok {
+		st := fs
+		c.IndexSeedsFamilyAfter = func(kind, after string, limit int, v6 bool) ([]string, error) {
+			return st.IndexSeedsFamilyAfter(ctx, kind, after, limit, v6)
+		}
 	}
 	if c.Limit <= 0 {
 		c.Limit = DefaultRunLimit
@@ -166,6 +193,12 @@ func (r *Runner) runPass(ctx context.Context, src storage.DataSourceRow, col Col
 		}
 		stats.Batches++
 		stats.Records += len(batch.Raws)
+		for k, v := range batch.Notes {
+			if stats.Notes == nil {
+				stats.Notes = map[string]int{}
+			}
+			stats.Notes[k] += v
+		}
 		if err := r.pipeline(ctx, src, batch, stats); err != nil {
 			return err
 		}

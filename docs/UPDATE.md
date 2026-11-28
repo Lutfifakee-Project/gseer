@@ -4,7 +4,7 @@
 manifest**.  Trust is anchored in an Ed25519 public key **embedded in
 the binary** — never in the URL a manifest came from.  An unsigned or
 wrongly-signed manifest is refused no matter how familiar the download
-URL looks.
+URL looks (owner directive §5).
 
 ## 1. The update chain (in enforcement order)
 
@@ -46,7 +46,7 @@ The manifest location comes from `update.manifest_url` (config file) or
 `GSEER_UPDATE_MANIFEST_URL`.  Without a configured channel the command
 fails with `E_UPDATE_NO_CHANNEL` and a pointer here.
 
-**Update channel note (v0.3.2).** The signed-update *mechanism* is
+**Update channel note (v0.3.1).** The signed-update *mechanism* is
 implemented and shipped (since v0.1.0), but GSEER does **not** host an
 official manifest or update feed: there is no default
 `GSEER_UPDATE_MANIFEST_URL` and no `gseer update --check` success out of
@@ -134,14 +134,43 @@ anchor rotation can never strand an installation mid-update.
   prove an update is an upgrade.  Release builds stamp the version via
   `-ldflags` (Makefile).
 
-## 6. Upgrading a v0.1.0 deployment to v0.2.0 (HISTORICAL)
+## 6. Upgrading a v0.1.0 deployment to v0.2.0 (bare-metal, EU-6)
 
-HISTORY (v0.2.0 era, now retired): the v0.1.0 → v0.2.0 upgrade was a
-source + schema upgrade over the then-existing self-hosted PostgreSQL
-runtime, automated by the hardened setup sequence of that release
-(operator-DSN setup, role bootstrap, migrations to head, the
-least-privilege runtime grant, and the fail-closed privilege audit).
-The self-hosted (PostgreSQL) profile was RETIRED in v0.3.2 (SQLite-only
-architecture), so this procedure no longer applies to any current
-release and the exact commands are intentionally NOT reproduced here;
-see CHANGELOG.md for the historical record.
+The signed-update channel is for BINARY updates; the v0.1.0 → v0.2.0
+upgrade is a source + schema upgrade.  The path is automated by the
+v0.2.0 `gseer setup --self-hosted` (it runs the full hardened order and
+is idempotent — re-running is always safe):
+
+1. **Backup** — `pg_dump -Fc` the v0.1.0 database (migrations are not
+   auto-reversed; the rollback is restore + previous binary).
+2. **Build v0.2.0** — `make build VERSION=v0.2.0`.
+3. **Run the hardened setup once** with the existing operator DSN:
+
+   ```bash
+   gseer setup --self-hosted --db-url "$GSEER_DB_DSN"
+   #   [ ok  ] PG version: 17 (minimum 16, OD-7)      ← PostgreSQL 16+ required (OD-7)
+   #   [boot] bootstrap: created role gseer_policy_owner / gseer_app …
+   #   [ ok  ] migrations: 2 applied, schema at head v17   ← exactly 0016 + 0017
+   #   [ ok  ] runtime credential: password set for gseer_app …
+   #   [ ok  ] privilege audit: PASSED (fail-closed gate, OD-5)
+   ```
+
+   The ledger goes `(6, false)` → `(17, false)`; 0007–0015 are
+   permanently reserved (OD-4) and are never created.  When the audit
+   fails, the output names every failure — repair the deployment
+   (`docs/DEPLOYMENT.md` §3.4), never the check.
+4. **Export the runtime credential** — the DSN printed in step 3
+   (`GSEER_DB_RUNTIME_DSN`); the data-plane commands prefer the
+   least-privilege `gseer_app` identity.
+5. **Run under v0.2.0** — replace the binary, verify `gseer doctor`
+   (`6 PASS, 0 FAIL`).  (Server start/stop steps are historical —
+   removed with the API server.)
+
+**Rollback** = restore the backup + run the v0.1.0 binary on the
+unchanged `GSEER_DB_*` configuration (the v0.1.0 binary is unaffected
+by the new roles; its single-credential model keeps working).  The
+upgrade path is exercised automatically by
+`TestV010ToV020UpgradePath` (build tag `integration`): a real
+`(6, false)` ledger is upgraded through the exact pinned order and the
+runtime paths (suppression via the policy functions) are proven
+afterwards.

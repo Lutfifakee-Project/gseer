@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package planner
 
@@ -607,5 +617,54 @@ func TestCompileCompoundAnyHostAndWitness(t *testing.T) {
 	}
 	if !strings.Contains(p.SQL, "EXISTS (SELECT 1 FROM search_index host_row") {
 		t.Errorf("missing EXISTS subquery:\n%s", p.SQL)
+	}
+}
+
+// TestCompileR37Fields — the R37 search-field expansion (PostgreSQL
+// dialect): the dynamic per-name header field lowers to a jsonb ->>
+// expression; prefix maps to ip_prefix.
+func TestCompileR37Fields(t *testing.T) {
+	p := compile(t, `http.header.x-powered-by == "Next.js"`, Options{})
+	if !strings.Contains(p.SQL, `"http_headers" ->> 'x-powered-by'`) {
+		t.Errorf("dynamic header expr missing:\n%s", p.SQL)
+	}
+	p = compile(t, `prefix == "198.51.100.0/24"`, Options{})
+	if !strings.Contains(p.SQL, `"ip_prefix" = $`) {
+		t.Errorf("prefix → ip_prefix missing:\n%s", p.SQL)
+	}
+}
+
+// TestCompileR39CTFields — the R39 CT search surface (migration 0025):
+// the PG planner lowers ct.* to the shared view's ct_* columns.
+func TestCompileR39CTFields(t *testing.T) {
+	p := compile(t, `ct.not_after >= "2026-01-01T00:00:00Z"`, Options{})
+	if !strings.Contains(p.SQL, `"ct_not_after"`) {
+		t.Errorf("ct_not_after column missing:\n%s", p.SQL)
+	}
+	p = compile(t, `ct.subject *= "*.example.com"`, Options{})
+	if !strings.Contains(p.SQL, `"ct_subject_cn"`) {
+		t.Errorf("ct_subject_cn column missing:\n%s", p.SQL)
+	}
+	p = compile(t, `ct.issuer == "Let's Encrypt"`, Options{})
+	if !strings.Contains(p.SQL, `"ct_issuer"`) {
+		t.Errorf("ct_issuer column missing:\n%s", p.SQL)
+	}
+	p = compile(t, `ct.log CONTAINS "nimbus"`, Options{})
+	if !strings.Contains(p.SQL, `"ct_log"`) {
+		t.Errorf("ct_log column missing:\n%s", p.SQL)
+	}
+}
+
+// TestCompileR39DNSFields — the R39 dynamic dns.<key> fields (migration
+// 0026): the PG planner lowers dns.<key> to a jsonb extraction over the
+// latest_dns projection (dns_record).
+func TestCompileR39DNSFields(t *testing.T) {
+	p := compile(t, `dns.type == "AAAA"`, Options{})
+	if !strings.Contains(p.SQL, `"dns_record" ->> 'type'`) {
+		t.Errorf("dns.type lowering missing:\n%s", p.SQL)
+	}
+	p = compile(t, `dns.query == "venicebiennale.ro"`, Options{})
+	if !strings.Contains(p.SQL, `"dns_record" ->> 'query'`) {
+		t.Errorf("dns.query lowering missing:\n%s", p.SQL)
 	}
 }

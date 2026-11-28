@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package plannersqlite
 
@@ -229,5 +239,91 @@ func TestFreeTextFieldListsMatch(t *testing.T) {
 		if pg[i] != freeTextFieldPaths[i] {
 			t.Errorf("item %d: pg=%q sqlite=%q", i, pg[i], freeTextFieldPaths[i])
 		}
+	}
+}
+
+// TestCompileR37Fields — the R37 search-field expansion: the dynamic
+// per-name header field lowers to json_extract over http_headers; the
+// static prefix field maps to ip_prefix; banner/cert_issuer_org map to
+// their view columns.
+// TestCompileR38Fields — the R38 additions: parentheses group the
+// boolean expression; tls.cert_not_before lowers to its view column;
+// the `service` alias resolves to the name column.
+func TestCompileR38Fields(t *testing.T) {
+	p := compile(t, `port >= 1 AND (asn == 13335 OR asn == 8553)`, planner.Options{})
+	if !strings.Contains(p.SQL, "(") || !strings.Contains(p.SQL, `"asn"`) {
+		t.Errorf("parenthesised group missing:\n%s", p.SQL)
+	}
+	p = compile(t, `tls.cert_not_before >= "2026-01-01T00:00:00Z"`, planner.Options{})
+	if !strings.Contains(p.SQL, `"cert_not_before"`) {
+		t.Errorf("cert_not_before column missing:\n%s", p.SQL)
+	}
+	p = compile(t, `service == "https"`, planner.Options{})
+	if !strings.Contains(p.SQL, `"name"`) {
+		t.Errorf("service → name alias missing:\n%s", p.SQL)
+	}
+}
+
+func TestCompileR37Fields(t *testing.T) {
+	p := compile(t, `http.header.x-powered-by == "Next.js"`, planner.Options{})
+	if !strings.Contains(p.SQL, `json_extract(search_index."http_headers", '$."x-powered-by"')`) {
+		t.Errorf("dynamic header expr missing:\n%s", p.SQL)
+	}
+	p = compile(t, `prefix == "198.51.100.0/24"`, planner.Options{})
+	if !strings.Contains(p.SQL, `"ip_prefix" = ?`) {
+		t.Errorf("prefix → ip_prefix missing:\n%s", p.SQL)
+	}
+	p = compile(t, `banner *= "*OpenSSH*"`, planner.Options{})
+	if !strings.Contains(p.SQL, `"banner"`) {
+		t.Errorf("banner column missing:\n%s", p.SQL)
+	}
+	p = compile(t, `tls.cert_issuer_org CONTAINS "SSL"`, planner.Options{})
+	if !strings.Contains(p.SQL, `"cert_issuer_org"`) {
+		t.Errorf("cert_issuer_org column missing:\n%s", p.SQL)
+	}
+}
+
+// TestCompileR39CTFields — the R39 CT search surface (migration 0009):
+// ct.* lowers to its ct_* view columns; a CT record is a name in a
+// cryptographically logged certificate, kept distinct from the live
+// tls.* observation fields.
+func TestCompileR39CTFields(t *testing.T) {
+	p := compile(t, `ct.not_after >= "2026-01-01T00:00:00Z"`, planner.Options{})
+	if !strings.Contains(p.SQL, `"ct_not_after"`) {
+		t.Errorf("ct_not_after column missing:\n%s", p.SQL)
+	}
+	p = compile(t, `ct.subject *= "*.example.com"`, planner.Options{})
+	if !strings.Contains(p.SQL, `"ct_subject_cn"`) {
+		t.Errorf("ct_subject_cn column missing:\n%s", p.SQL)
+	}
+	p = compile(t, `ct.issuer == "Let's Encrypt"`, planner.Options{})
+	if !strings.Contains(p.SQL, `"ct_issuer"`) {
+		t.Errorf("ct_issuer column missing:\n%s", p.SQL)
+	}
+	p = compile(t, `ct.leaf_sha256 == "abc123"`, planner.Options{})
+	if !strings.Contains(p.SQL, `"ct_leaf_sha256"`) {
+		t.Errorf("ct_leaf_sha256 column missing:\n%s", p.SQL)
+	}
+	p = compile(t, `ct.log CONTAINS "nimbus"`, planner.Options{})
+	if !strings.Contains(p.SQL, `"ct_log"`) {
+		t.Errorf("ct_log column missing:\n%s", p.SQL)
+	}
+}
+
+// TestCompileR39DNSFields — the R39 dynamic dns.<key> fields (migration
+// 0010): dns.type / dns.query / dns.value lower to json_extract over
+// the latest_dns projection (dns_record), mirroring http.header.<name>.
+func TestCompileR39DNSFields(t *testing.T) {
+	p := compile(t, `dns.type == "AAAA"`, planner.Options{})
+	if !strings.Contains(p.SQL, `json_extract(search_index."dns_record", '$."type"')`) {
+		t.Errorf("dns.type lowering missing:\n%s", p.SQL)
+	}
+	p = compile(t, `dns.query == "venicebiennale.ro"`, planner.Options{})
+	if !strings.Contains(p.SQL, `'$."query"'`) {
+		t.Errorf("dns.query lowering missing:\n%s", p.SQL)
+	}
+	p = compile(t, `dns.value CONTAINS "spf"`, planner.Options{})
+	if !strings.Contains(p.SQL, `'$."value"'`) {
+		t.Errorf("dns.value lowering missing:\n%s", p.SQL)
 	}
 }

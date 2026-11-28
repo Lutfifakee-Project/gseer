@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 // Package cli implements the `gseer` command tree (SPEC-03).
 //
@@ -33,6 +43,7 @@ const (
 	ExitConfig       = 3  // Configuration failure
 	ExitUnavailable  = 4  // Service unavailable (endpoint/DB/index)
 	ExitAuth         = 5  // Authentication failure
+	ExitBenchRegress = 6  // Performance regression detected by `gseer bench compare`
 	ExitUsagePlanned = 64 // Usage error (wrong args; planned-command pointer)
 	ExitInternal     = 70 // Internal error (stack trace only with --verbose)
 )
@@ -50,8 +61,8 @@ type rootFlags struct {
 	showVer    bool
 }
 
-// RootCmd is the top-level `gseer` command.  The "Coming later" pointer
-// line is normative — tests parse it.
+// RootCmd is the top-level `gseer` command.  Help text matches SPEC-03 §2
+// verbatim (the "Coming later" pointer line is normative; AC-5.1 parses it).
 var RootCmd = &cobra.Command{
 	Use:   "gseer",
 	Short: "GSEER — internet-asset search engine",
@@ -67,16 +78,16 @@ Quick start:
 Authorized observation (docs/SCANNING.md — default-deny gateway, explicit only):
   gseer scope add cidr 127.0.0.1/32 --protocols http,tls --ports 8080,8443
   gseer scan http --target localhost --port 8080
-Coming later (not in this release — see CHANGELOG.md):
+Coming later (not in this release — see docs/ROADMAP.md):
   asset
-License: MIT — https://github.com/Lutfifakee-Project/gseer`,
+License: GNU AGPL-3.0 — https://github.com/Lutfifakee-Project/gseer`,
 	// Disable the cobra completion subcommand's auto-help banner; we
 	// register `completion` ourselves with the exact short description.
 	CompletionOptions: cobra.CompletionOptions{
 		DisableDefaultCmd: false,
 	},
 	// Silence cobra's default error printing — the cli layer formats
-	// errors per the style guide (what failed → why → next cmd).
+	// errors per the style guide (AC-5.9: what failed → why → next cmd).
 	SilenceErrors: true,
 	SilenceUsage:  true,
 	// Bare `gseer` is the zero-configuration entry point (v0.3.0):
@@ -107,12 +118,23 @@ func init() {
 
 	registerVersionCmd(RootCmd)
 	registerSearchCmd(RootCmd)
+	registerChangesCmd(RootCmd)
+	registerCoverageCmd(RootCmd)
+	registerRelationsCmd(RootCmd)
+	registerBenchCmd(RootCmd)
+	registerFieldsCmd(RootCmd)
+	registerExamplesCmd(RootCmd)
+	registerSelfcheckCmd(RootCmd)
+	registerConfigCmd(RootCmd)
+	registerImportCmd(RootCmd)
+	registerPresetCmd(RootCmd)
 	registerHostCmd(RootCmd)
 	registerSetupCmd(RootCmd)
 	registerDoctorCmd(RootCmd)
 	registerStatusCmd(RootCmd)
 	registerSourceCmd(RootCmd)
 	registerCollectCmd(RootCmd)
+	registerStatsCmd(RootCmd)
 	registerScopeCmd(RootCmd)
 	registerScanCmd(RootCmd)
 	registerSuppressCmd(RootCmd)

@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package collect
 
@@ -10,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -584,4 +595,47 @@ func indexOf(hay, needle string) int {
 		}
 	}
 	return -1
+}
+
+// TestDNSConnectorTXTStaysEvidenceNotAsset (R39 P3): TXT strings are
+// free-form zone data — the queried domain stays the asset, each string
+// rides in the evidence, and empty strings are skipped.
+func TestDNSConnectorTXTStaysEvidenceNotAsset(t *testing.T) {
+	withSeams(t,
+		func() ([]net.IPAddr, error) {
+			return []net.IPAddr{{IP: net.IPv4(203, 0, 113, 7).To4()}}, nil
+		},
+		func() (string, error) { return "", &net.DNSError{Err: "no such host", IsNotFound: true} },
+		func(string) ([]string, error) {
+			return []string{"v=spf1 include:_spf.example.com ~all", "  ", "google-site-verification=abc123"}, nil
+		})
+
+	b, err := dnsConnector{}.Collect(ctxFor(SourceConfig{SeedMode: "config", Seeds: []string{"example.com"}}))
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	var txtFacts int
+	for _, r := range b.Raws {
+		dnsMap, _ := r.Extra["dns"].(map[string]any)
+		if rt, _ := dnsMap["type"].(string); rt != "TXT" {
+			continue
+		}
+		txtFacts++
+		if r.AssetKind != "hostname" || r.Value != "example.com" {
+			t.Errorf("TXT must attach to the queried domain, got kind=%q value=%q", r.AssetKind, r.Value)
+		}
+		val, _ := dnsMap["value"].(string)
+		if strings.TrimSpace(val) == "" {
+			t.Error("empty TXT string became a fact")
+		}
+		if q, _ := dnsMap["query"].(string); q != "example.com" {
+			t.Errorf("TXT fact query name: %q", q)
+		}
+	}
+	if txtFacts != 2 {
+		t.Fatalf("TXT facts: got %d want 2 (empty string skipped)", txtFacts)
+	}
+	if b.Notes["txt"] != 2 {
+		t.Errorf("txt answer counter wrong: %+v", b.Notes)
+	}
 }

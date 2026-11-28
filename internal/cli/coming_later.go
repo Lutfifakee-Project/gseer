@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package cli
 
@@ -13,9 +23,9 @@ import (
 )
 
 // registerComingLaterCmds registers the planned-but-absent command
-// `asset`.  It is registered so that `gseer asset` does
+// `asset` (SPEC-03 §2).  It is registered so that `gseer asset` does
 // not fall through to cobra's generic "unknown command" suggestion;
-// instead it prints the honest pointer line and exits 64.
+// instead it prints the honest pointer line and exits 64 (AC-5.7–5.8).
 //
 // (`scan` graduated to a real command in v0.3.2 — scan.go, behind the
 // default-deny gateway; it is no longer a coming-later stub.)
@@ -27,7 +37,7 @@ func registerComingLaterCmds(root *cobra.Command) {
 	for _, name := range []string{"asset"} {
 		cmd := &cobra.Command{
 			Use:    name,
-			Short:  "Planned, not in this release — see CHANGELOG.md",
+			Short:  "Planned, not in this release — see docs/ROADMAP.md",
 			Hidden: true, // not in the top-level Commands: listing
 			// DisableFlagParsing so any flag (e.g. `gseer update --check`,
 			// `gseer scan --target ...`) reaches RunE rather than tripping
@@ -45,7 +55,7 @@ func registerComingLaterCmds(root *cobra.Command) {
 					"E_NOT_IMPLEMENTED: \"gseer %s\" is planned, not in this release.\n",
 					cmd.Name())
 				if cmd.Name() == "asset" {
-					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Asset detail view is planned for a later release — see CHANGELOG.md for what each release shipped.")
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Asset detail view is planned for a later release — see docs/ROADMAP.md.")
 				}
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Exit code 64.")
 				exitFunc(ExitUsagePlanned)

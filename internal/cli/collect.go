@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package cli
 
@@ -13,12 +23,16 @@ package cli
 // uninvoked (no daemon in v0.0.2 — scheduling is the operator's cron).
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Lutfifakee-Project/gseer/internal/collect"
+	"github.com/Lutfifakee-Project/gseer/internal/storage/sqlite"
 )
 
 func registerCollectCmd(root *cobra.Command) {
@@ -49,7 +63,7 @@ Examples:
   gseer collect run --all
   gseer collect status`,
 	}
-	coll.AddCommand(newCollectRunCmd(), newCollectStatusCmd(), newCollectRedriveCmd())
+	coll.AddCommand(newCollectRunCmd(), newCollectDueCmd(), newCollectStatusCmd(), newCollectRedriveCmd())
 	root.AddCommand(coll)
 }
 
@@ -188,7 +202,14 @@ func runCollectRun(cmd *cobra.Command, source string, runAll bool, _ string) err
 		}
 		printf(out, "[warn] fingerprint enrichment disabled for this run (fail-closed)\n")
 	}
-	runner := collect.NewRunner(store, nil)
+	// The runner shares ONE bounded default HTTP client across the
+	// HTTP connectors (routeviews archive listing/streaming, CT logs):
+	// a nil client here would make every HTTP connector fail (the R35
+	// recovery finding — never regress it).
+	runner := collect.NewRunner(store, collect.NewClient(collect.ClientConfig{
+		RequestsPerSecond: 4,
+		Timeout:           2 * time.Minute,
+	}))
 
 	if source != "" {
 		return runOneSource(cmd, runner, source)
@@ -274,5 +295,103 @@ func runCollectStatus(cmd *cobra.Command, _ []string) error {
 			pad(r.Name, 24), pad(r.Connector, 10), r.Enabled, r.Jobs, r.Pending)
 	}
 	printf(out, "\nJob stats (per run): gseer collect run reports them; history lives in collection_jobs.\n")
+	return nil
+}
+
+func newCollectDueCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "due",
+		Short: "List enabled sources due for refresh (stale first)",
+		Args:  cobra.NoArgs,
+		RunE:  runCollectDue,
+	}
+}
+
+// runCollectDue — the P4 refresh aid: the operator's scheduler stays
+// operator-managed; this lists which ENABLED sources are due right now
+// under the per-source freshness contract (schedule.go intervals),
+// stale first, so "what should I run next" is one command.
+func runCollectDue(cmd *cobra.Command, _ []string) error {
+	out := cmd.OutOrStdout()
+	_, closer, cfg, err := openRegistryStore(cmd)
+	if err != nil {
+		return err
+	}
+	defer closer()
+	ctx := commandContext(cmd)
+	db, err := sqlite.OpenReadOnly(cfg.Database.DSN)
+	if err != nil {
+		printf(out, "E_DB: %s\n", err.Error())
+		exitWith(ExitUnavailable)
+		return nil
+	}
+	defer func() { _ = db.Close() }()
+
+	rows, err := db.QueryContext(ctx,
+		`SELECT id, name, connector, config FROM data_sources WHERE enabled = 1 ORDER BY name`)
+	if err != nil {
+		printf(out, "E_DB: %s\n", err.Error())
+		exitWith(ExitUnavailable)
+		return nil
+	}
+	defer rows.Close()
+
+	now := time.Now().UTC()
+	type dueRow struct {
+		name      string
+		connector string
+		interval  time.Duration
+		last      time.Time
+		neverRun  bool
+		ratio     float64
+	}
+	var list []dueRow
+	for rows.Next() {
+		var id int64
+		var name, connector string
+		var cfgRaw sql.NullString
+		if rows.Scan(&id, &name, &connector, &cfgRaw) != nil {
+			continue
+		}
+		interval := scheduleIntervalFor(connector, []byte(cfgRaw.String))
+		last, lerr := scheduleLastSuccess(ctx, db, id)
+		r := dueRow{name: name, connector: connector, interval: interval, last: last, neverRun: lerr != nil || last.IsZero()}
+		if !r.neverRun {
+			r.ratio = now.Sub(last).Seconds() / interval.Seconds()
+		}
+		list = append(list, r)
+	}
+	// Stale first: never-run and over-interval sources lead, worst
+	// (highest age/interval ratio) at the top; fresh sources follow.
+	sort.SliceStable(list, func(i, j int) bool {
+		si := list[i].neverRun || list[i].ratio >= 1
+		sj := list[j].neverRun || list[j].ratio >= 1
+		if si != sj {
+			return si
+		}
+		return list[i].ratio > list[j].ratio
+	})
+	due := 0
+	for _, r := range list {
+		if r.neverRun || r.ratio >= 1 {
+			due++
+		}
+	}
+	printf(out, "%d of %d enabled source(s) due for refresh (stale first)\n", due, len(list))
+	for _, r := range list {
+		state := fmt.Sprintf("fresh (%.0f%% of interval)", r.ratio*100)
+		switch {
+		case r.neverRun:
+			state = "never-run (due)"
+		case r.ratio >= 1:
+			state = fmt.Sprintf("STALE (due, %.0fx interval)", r.ratio)
+		}
+		lastTxt := "never"
+		if !r.last.IsZero() {
+			lastTxt = r.last.UTC().Format("2006-01-02 15:04")
+		}
+		printf(out, "  %-24s %-12s interval %-7s last %s — %s\n",
+			r.name, r.connector, r.interval.String(), lastTxt, state)
+	}
 	return nil
 }

@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package cli
 
@@ -10,8 +20,8 @@ package cli
 // checks.  These tests pin the release-gating invariants so a future
 // change cannot silently violate them:
 //
-//   - every tracked .go file carries the MIT SPDX header (ADR-0009, README);
-//   - LICENSE is MIT;
+//   - every tracked .go file carries the AGPL header (ADR-0009, README);
+//   - LICENSE is AGPL-3.0;
 //   - no collector/egress package exists (mirrors the import-graph test
 //     at the filesystem level);
 //   - the planned-but-absent commands still exit 64 with an honest
@@ -31,7 +41,7 @@ import (
 
 // moduleRoot comes from import_graph_test.go (runtime.Caller-anchored).
 
-func TestGovernanceEveryGoFileCarriesMITHeader(t *testing.T) {
+func TestGovernanceEveryGoFileCarriesAGPLHeader(t *testing.T) {
 	root := moduleRoot(t)
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -55,8 +65,8 @@ func TestGovernanceEveryGoFileCarriesMITHeader(t *testing.T) {
 		if len(head) > 600 {
 			head = head[:600]
 		}
-		if !strings.Contains(head, "SPDX-License-Identifier: MIT") {
-			t.Errorf("%s: missing MIT header (every tracked .go file carries it)", path)
+		if !strings.Contains(head, "GNU Affero General Public License") {
+			t.Errorf("%s: missing AGPL header (every tracked .go file carries it)", path)
 		}
 		return nil
 	})
@@ -65,15 +75,15 @@ func TestGovernanceEveryGoFileCarriesMITHeader(t *testing.T) {
 	}
 }
 
-func TestGovernanceLicenseIsMIT(t *testing.T) {
+func TestGovernanceLicenseIsAGPL3(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join(moduleRoot(t), "LICENSE"))
 	if err != nil {
 		t.Fatalf("read LICENSE: %v", err)
 	}
 	s := string(b)
-	if !strings.Contains(s, "MIT License") ||
-		!strings.Contains(s, "Permission is hereby granted, free of charge") {
-		t.Error("LICENSE is not the MIT text")
+	if !strings.Contains(s, "GNU AFFERO GENERAL PUBLIC LICENSE") ||
+		!strings.Contains(s, "Version 3, 19 November 2007") {
+		t.Error("LICENSE is not the AGPL-3.0 text")
 	}
 }
 

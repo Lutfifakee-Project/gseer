@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package searchlite
 
@@ -113,42 +123,54 @@ func bindCell(r *search.Row, col string) scanCell {
 // binds.  Direct columns return a raw pointer into the Row; deferred
 // columns return a kind-keyed cell that apply copies after the Scan.
 var scanBindings = map[string]func(*search.Row) scanCell{
-	"row_id":          func(r *search.Row) scanCell { return scanCell{raw: &r.RowID} },
-	"row_kind":        func(r *search.Row) scanCell { return scanCell{raw: &r.RowKind} },
-	"asset_id":        func(r *search.Row) scanCell { return scanCell{raw: &r.AssetID} },
-	"asset_kind":      func(r *search.Row) scanCell { return scanCell{raw: &r.AssetKind} },
-	"asset_value":     func(r *search.Row) scanCell { return scanCell{raw: &r.AssetValue} },
-	"ip":              func(*search.Row) scanCell { return scanCell{kind: "ip"} },
-	"domain":          func(r *search.Row) scanCell { return scanCell{raw: &r.Domain} },
-	"hostname":        func(r *search.Row) scanCell { return scanCell{raw: &r.Hostname} },
-	"asn":             func(*search.Row) scanCell { return scanCell{kind: "asn"} },
-	"asn_org":         func(r *search.Row) scanCell { return scanCell{raw: &r.ASNOrg} },
-	"geo_country":     func(r *search.Row) scanCell { return scanCell{raw: &r.GeoCountry} },
-	"geo_region":      func(r *search.Row) scanCell { return scanCell{raw: &r.GeoRegion} },
-	"geo_city":        func(r *search.Row) scanCell { return scanCell{raw: &r.GeoCity} },
-	"port":            func(*search.Row) scanCell { return scanCell{kind: "port"} },
-	"transport":       func(r *search.Row) scanCell { return scanCell{raw: &r.Transport} },
-	"protocol":        func(r *search.Row) scanCell { return scanCell{raw: &r.Protocol} },
-	"name":            func(r *search.Row) scanCell { return scanCell{raw: &r.Name} },
-	"product":         func(r *search.Row) scanCell { return scanCell{raw: &r.Product} },
-	"version":         func(r *search.Row) scanCell { return scanCell{raw: &r.Version} },
-	"http_status":     func(*search.Row) scanCell { return scanCell{kind: "http_status"} },
-	"http_title":      func(r *search.Row) scanCell { return scanCell{raw: &r.HTTPTitle} },
-	"http_body":       func(r *search.Row) scanCell { return scanCell{raw: &r.HTTPBody} },
-	"http_header":     func(r *search.Row) scanCell { return scanCell{raw: &r.HTTPHeader} },
-	"http_server":     func(r *search.Row) scanCell { return scanCell{raw: &r.HTTPServer} },
-	"tls_version":     func(r *search.Row) scanCell { return scanCell{raw: &r.TLSVersion} },
-	"cert_subject_cn": func(r *search.Row) scanCell { return scanCell{raw: &r.TLSCertSubjectCN} },
-	"cert_issuer_cn":  func(r *search.Row) scanCell { return scanCell{raw: &r.TLSCertIssuerCN} },
-	"cert_expiry":     func(*search.Row) scanCell { return scanCell{kind: "cert_expiry"} },
-	"cert_serial":     func(r *search.Row) scanCell { return scanCell{raw: &r.TLSCertSerial} },
-	"cert_sans_dns":   func(r *search.Row) scanCell { return scanCell{raw: &r.TLSCertSansDNS} },
-	"technologies":    func(*search.Row) scanCell { return scanCell{kind: "technologies", raw: new(any)} },
-	"sources":         func(*search.Row) scanCell { return scanCell{kind: "sources", raw: new(any)} },
-	"first_seen":      func(*search.Row) scanCell { return scanCell{kind: "first_seen"} },
-	"last_seen":       func(*search.Row) scanCell { return scanCell{kind: "last_seen"} },
-	"observed_at":     func(*search.Row) scanCell { return scanCell{kind: "observed_at"} },
-	"stale":           func(*search.Row) scanCell { return scanCell{kind: "stale"} },
+	"row_id":            func(r *search.Row) scanCell { return scanCell{raw: &r.RowID} },
+	"row_kind":          func(r *search.Row) scanCell { return scanCell{raw: &r.RowKind} },
+	"asset_id":          func(r *search.Row) scanCell { return scanCell{raw: &r.AssetID} },
+	"asset_kind":        func(r *search.Row) scanCell { return scanCell{raw: &r.AssetKind} },
+	"asset_value":       func(r *search.Row) scanCell { return scanCell{raw: &r.AssetValue} },
+	"ip":                func(*search.Row) scanCell { return scanCell{kind: "ip"} },
+	"domain":            func(r *search.Row) scanCell { return scanCell{raw: &r.Domain} },
+	"hostname":          func(r *search.Row) scanCell { return scanCell{raw: &r.Hostname} },
+	"asn":               func(*search.Row) scanCell { return scanCell{kind: "asn"} },
+	"asn_org":           func(r *search.Row) scanCell { return scanCell{raw: &r.ASNOrg} },
+	"geo_country":       func(r *search.Row) scanCell { return scanCell{raw: &r.GeoCountry} },
+	"geo_region":        func(r *search.Row) scanCell { return scanCell{raw: &r.GeoRegion} },
+	"geo_city":          func(r *search.Row) scanCell { return scanCell{raw: &r.GeoCity} },
+	"port":              func(*search.Row) scanCell { return scanCell{kind: "port"} },
+	"transport":         func(r *search.Row) scanCell { return scanCell{raw: &r.Transport} },
+	"protocol":          func(r *search.Row) scanCell { return scanCell{raw: &r.Protocol} },
+	"name":              func(r *search.Row) scanCell { return scanCell{raw: &r.Name} },
+	"product":           func(r *search.Row) scanCell { return scanCell{raw: &r.Product} },
+	"version":           func(r *search.Row) scanCell { return scanCell{raw: &r.Version} },
+	"http_status":       func(*search.Row) scanCell { return scanCell{kind: "http_status"} },
+	"http_title":        func(r *search.Row) scanCell { return scanCell{raw: &r.HTTPTitle} },
+	"http_server":       func(r *search.Row) scanCell { return scanCell{raw: &r.HTTPServer} },
+	"tls_version":       func(r *search.Row) scanCell { return scanCell{raw: &r.TLSVersion} },
+	"cert_subject_cn":   func(r *search.Row) scanCell { return scanCell{raw: &r.TLSCertSubjectCN} },
+	"cert_issuer_cn":    func(r *search.Row) scanCell { return scanCell{raw: &r.TLSCertIssuerCN} },
+	"cert_expiry":       func(*search.Row) scanCell { return scanCell{kind: "cert_expiry"} },
+	"cert_serial":       func(r *search.Row) scanCell { return scanCell{raw: &r.TLSCertSerial} },
+	"cert_sans_dns":     func(r *search.Row) scanCell { return scanCell{raw: &r.TLSCertSansDNS} },
+	"technologies":      func(*search.Row) scanCell { return scanCell{kind: "technologies", raw: new(any)} },
+	"sources":           func(*search.Row) scanCell { return scanCell{kind: "sources", raw: new(any)} },
+	"evidence_kinds":    func(*search.Row) scanCell { return scanCell{kind: "evidence_kinds", raw: new(any)} },
+	"last_observed":     func(*search.Row) scanCell { return scanCell{kind: "last_observed"} },
+	"coverage_class":    func(r *search.Row) scanCell { return scanCell{raw: &r.CoverageClass} },
+	"ip_prefix":         func(r *search.Row) scanCell { return scanCell{raw: &r.IPPrefix} },
+	"banner":            func(r *search.Row) scanCell { return scanCell{raw: &r.Banner} },
+	"cert_issuer_org":   func(r *search.Row) scanCell { return scanCell{raw: &r.CertIssuerOrg} },
+	"http_headers":      func(r *search.Row) scanCell { return scanCell{raw: &r.HTTPHeaders} },
+	"ct_log":            func(r *search.Row) scanCell { return scanCell{raw: &r.CTLog} },
+	"ct_entry_type":     func(r *search.Row) scanCell { return scanCell{raw: &r.CTEntryType} },
+	"ct_subject_cn":     func(r *search.Row) scanCell { return scanCell{raw: &r.CTSubjectCN} },
+	"ct_issuer":         func(r *search.Row) scanCell { return scanCell{raw: &r.CTIssuer} },
+	"ct_leaf_sha256":    func(r *search.Row) scanCell { return scanCell{raw: &r.CTLeafSHA256} },
+	"ct_not_before":     func(r *search.Row) scanCell { return scanCell{raw: &r.CTNotBefore} },
+	"ct_not_after":      func(r *search.Row) scanCell { return scanCell{raw: &r.CTNotAfter} },
+	"ct_cert_timestamp": func(r *search.Row) scanCell { return scanCell{raw: &r.CTCertTimestamp} },
+	"first_seen":        func(*search.Row) scanCell { return scanCell{kind: "first_seen"} },
+	"last_seen":         func(*search.Row) scanCell { return scanCell{kind: "last_seen"} },
+	"stale":             func(*search.Row) scanCell { return scanCell{kind: "stale"} },
 }
 
 // numericKinds scan into the integer slot.
@@ -205,6 +227,16 @@ var applyKinds = map[string]func(*scanCell, *search.Row){
 	"sources": func(c *scanCell, r *search.Row) {
 		r.Sources = jsonStrings(*(c.raw.(*any)))
 	},
+	"evidence_kinds": func(c *scanCell, r *search.Row) {
+		r.EvidenceKinds = jsonStrings(*(c.raw.(*any)))
+	},
+	"last_observed": func(c *scanCell, r *search.Row) {
+		if c.str.Valid && c.str.String != "" {
+			if t, err := parseTS(c.str.String); err == nil {
+				r.LastObserved = &t
+			}
+		}
+	},
 	"first_seen": func(c *scanCell, r *search.Row) {
 		if c.str.Valid && c.str.String != "" {
 			if t, err := parseTS(c.str.String); err == nil {
@@ -216,15 +248,6 @@ var applyKinds = map[string]func(*scanCell, *search.Row){
 		if c.str.Valid && c.str.String != "" {
 			if t, err := parseTS(c.str.String); err == nil {
 				r.LastSeen = t
-			}
-		}
-	},
-	"observed_at": func(c *scanCell, r *search.Row) {
-		// The row's REAL evidence time (newest observation observed_at,
-		// migration 0006); NULL when the asset has no observation.
-		if c.str.Valid && c.str.String != "" {
-			if t, err := parseTS(c.str.String); err == nil {
-				r.ObservedAt = &t
 			}
 		}
 	},

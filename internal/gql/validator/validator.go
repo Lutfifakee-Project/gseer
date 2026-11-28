@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 // Package validator is the GQL semantic validator (SPEC-04 §5, §7).
 //
@@ -32,6 +42,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Lutfifakee-Project/gseer/internal/gql/ast"
@@ -101,25 +112,24 @@ var fields = map[string]*Field{
 	"domain":              {Canonical: "domain", Type: TypeString, Ops: opStrText | ast.OpSetInDomain},
 	"hostname":            {Canonical: "hostname", Type: TypeString, Ops: opStrText | ast.OpSetInDomain},
 	"asn":                 {Canonical: "asn", Type: TypeInt, Ops: opOrdered},
-	"asn_org":             {Canonical: "asn_org", Aliases: []string{"org", "organization"}, Type: TypeString, Ops: opStrText},
+	"asn_org":             {Canonical: "asn_org", Aliases: []string{"org"}, Type: TypeString, Ops: opStrText},
 	"geo_country":         {Canonical: "geo_country", Aliases: []string{"country", "ip_country"}, Type: TypeString, Ops: opEqNeqIn},
 	"geo_region":          {Canonical: "geo_region", Aliases: []string{"region", "ip_region"}, Type: TypeString, Ops: opEqNeqIn},
 	"geo_city":            {Canonical: "geo_city", Aliases: []string{"city", "ip_city"}, Type: TypeString, Ops: opStrText},
 	"port":                {Canonical: "port", Type: TypeInt, Ops: opOrdered},
 	"transport":           {Canonical: "transport", Aliases: []string{"base_protocol"}, Type: TypeString, Ops: opEqNeqIn},
 	"protocol":            {Canonical: "protocol", Type: TypeString, Ops: opEqNeqIn},
-	"name":                {Canonical: "name", Type: TypeString, Ops: opStrText},
+	"name":                {Canonical: "name", Aliases: []string{"service"}, Type: TypeString, Ops: opStrText},
 	"product":             {Canonical: "product", Aliases: []string{"app"}, Type: TypeString, Ops: opStrText},
 	"version":             {Canonical: "version", Type: TypeString, Ops: opStrText},
 	"http.status":         {Canonical: "http.status", Aliases: []string{"status", "status_code"}, Type: TypeInt, Ops: opOrdered},
 	"http.title":          {Canonical: "http.title", Aliases: []string{"title"}, Type: TypeString, Ops: opStrText},
 	"http.server":         {Canonical: "http.server", Aliases: []string{"server"}, Type: TypeString, Ops: opStrText},
-	"http.body":           {Canonical: "http.body", Aliases: []string{"body"}, Type: TypeString, Ops: opStrText},
-	"http.header":         {Canonical: "http.header", Aliases: []string{"header"}, Type: TypeString, Ops: opStrText},
 	"tls.version":         {Canonical: "tls.version", Aliases: []string{"tls_version"}, Type: TypeString, Ops: opEqNeqIn},
-	"tls.cert_subject_cn": {Canonical: "tls.cert_subject_cn", Aliases: []string{"cert_subject_cn", "cert_subject", "cert.subject", "cert.subject.cn"}, Type: TypeString, Ops: opStrText},
-	"tls.cert_issuer_cn":  {Canonical: "tls.cert_issuer_cn", Aliases: []string{"cert_issuer_cn", "cert_issuer", "cert.issuer", "cert.issuer.cn"}, Type: TypeString, Ops: opStrText},
-	"tls.cert_expiry":     {Canonical: "tls.cert_expiry", Aliases: []string{"cert_expiry"}, Type: TypeTime, Ops: opOrdered},
+	"tls.cert_subject_cn": {Canonical: "tls.cert_subject_cn", Aliases: []string{"cert_subject_cn", "cert_subject", "cert.subject.cn"}, Type: TypeString, Ops: opStrText},
+	"tls.cert_issuer_cn":  {Canonical: "tls.cert_issuer_cn", Aliases: []string{"cert_issuer_cn", "cert_issuer", "cert.issuer.cn"}, Type: TypeString, Ops: opStrText},
+	"tls.cert_expiry":     {Canonical: "tls.cert_expiry", Aliases: []string{"cert_expiry", "cert.valid_until", "cert.not_after"}, Type: TypeTime, Ops: opOrdered},
+	"tls.cert_not_before": {Canonical: "tls.cert_not_before", Aliases: []string{"cert_valid_from", "cert.valid_from"}, Type: TypeTime, Ops: opOrdered},
 	// v0.3.2 certificate breadth (approved STAGE 4 item 6): the TLS
 	// observer captures cert_serial + cert_sans_dns into evidence and
 	// migration 0021 (PG) / 0005 (personal SQLite) projects them into
@@ -128,18 +138,24 @@ var fields = map[string]*Field{
 	// cover this domain (or a subdomain of it)".
 	"tls.cert_serial":   {Canonical: "tls.cert_serial", Aliases: []string{"cert_sn", "cert.sn"}, Type: TypeString, Ops: opStrText},
 	"tls.cert_sans_dns": {Canonical: "tls.cert_sans_dns", Aliases: []string{"cert.domain", "cert_domain"}, Type: TypeString, Ops: opStrText},
+	// R39 P2 — Certificate Transparency search surface: the seed-free
+	// ctlog connector records $.ctlog evidence; migration 0025 (PG) /
+	// 0009 (personal SQLite) projects it as the ct_* columns.  A CT
+	// record is a name in a cryptographically logged certificate —
+	// deliberately distinct from live TLS/HTTP observation fields.
+	"ct.not_before":     {Canonical: "ct.not_before", Aliases: []string{"ct_not_before"}, Type: TypeTime, Ops: opOrdered},
+	"ct.not_after":      {Canonical: "ct.not_after", Aliases: []string{"ct_not_after"}, Type: TypeTime, Ops: opOrdered},
+	"ct.subject":        {Canonical: "ct.subject", Aliases: []string{"ct.subject_cn", "ct_subject_cn"}, Type: TypeString, Ops: opStrText},
+	"ct.issuer":         {Canonical: "ct.issuer", Aliases: []string{"ct_issuer"}, Type: TypeString, Ops: opStrText},
+	"ct.leaf_sha256":    {Canonical: "ct.leaf_sha256", Aliases: []string{"ct_fingerprint"}, Type: TypeString, Ops: opStrText},
+	"ct.log":            {Canonical: "ct.log", Aliases: []string{"ct.log_source", "ct_log"}, Type: TypeString, Ops: opStrText},
+	"ct.entry_type":     {Canonical: "ct.entry_type", Aliases: []string{"ct_type"}, Type: TypeString, Ops: opEqNeqIn},
+	"ct.cert_timestamp": {Canonical: "ct.cert_timestamp", Aliases: []string{"ct_timestamp"}, Type: TypeTime, Ops: opOrdered},
 	"technologies":      {Canonical: "technologies", Aliases: []string{"tech", "fingerprint"}, Type: TypeList, Ops: ast.OpSetContains},
 	"sources":           {Canonical: "sources", Type: TypeList, Ops: ast.OpSetContains},
 	"first_seen":        {Canonical: "first_seen", Type: TypeTime, Ops: opOrdered},
 	"last_seen":         {Canonical: "last_seen", Type: TypeTime, Ops: opOrdered},
-	// v0.3.2 observed_at: the REAL evidence time — the newest
-	// observation's observed_at behind the row (migration 0022 PG /
-	// 0006 personal SQLite project it from the observations table, the
-	// canonical provenance surface).  Unlike last_seen (bumped by every
-	// ingest/import), observed_at only moves when NEW EVIDENCE arrives,
-	// so freshness filters answer "how old is the evidence?".
-	"observed_at": {Canonical: "observed_at", Type: TypeTime, Ops: opOrdered},
-	"stale":       {Canonical: "stale", Type: TypeBool, Ops: opEqNeq},
+	"stale":             {Canonical: "stale", Type: TypeBool, Ops: opEqNeq},
 	// Derived boolean fields (compatibility syntax; the planner lowers
 	// them to predicates over the underlying columns - no new column).
 	"is_domain":       {Canonical: "is_domain", Type: TypeBool, Ops: opEqNeq},
@@ -151,12 +167,30 @@ var fields = map[string]*Field{
 	// two underlying columns - no new column.
 	"host_or_ip": {Canonical: "host_or_ip", Aliases: []string{"host"}, Type: TypeString, Ops: opStrText},
 
+	// R36 evidence quality (P2/P3): provenance families, coverage class
+	// and the freshness timestamp every search row carries.
+	"coverage":      {Canonical: "coverage", Aliases: []string{"coverage_class"}, Type: TypeString, Ops: opEqNeqIn | ast.OpSetContains},
+	"evidence":      {Canonical: "evidence", Aliases: []string{"evidence_kinds"}, Type: TypeList, Ops: ast.OpSetContains},
+	"last_observed": {Canonical: "last_observed", Type: TypeTime, Ops: opOrdered},
+
+	// R37 search-field expansion: attribution prefix, service banner
+	// evidence, the TLS issuing organization, and the captured HTTP
+	// headers object (static = the whole JSON; per-name access is the
+	// dynamic http.header.<name> / http.headers.<name> form, synthesized
+	// in lookupField).
+	"prefix":              {Canonical: "prefix", Aliases: []string{"ip_prefix"}, Type: TypeString, Ops: opStrText},
+	"banner":              {Canonical: "banner", Type: TypeString, Ops: opStrText},
+	"tls.cert_issuer_org": {Canonical: "tls.cert_issuer_org", Aliases: []string{"cert_issuer_org", "cert.issuer.org"}, Type: TypeString, Ops: opStrText},
+	"http.headers":        {Canonical: "http.headers", Type: TypeString, Ops: opStrText},
+
 	// Compatibility rewrites: the user-written name carries the
 	// direction (after -> >=, before -> <=) over the canonical time field.
 	// ip_after / ip_before are the v0.3.2 IP-aggregation compat aliases
 	// (the aggregation functions themselves — ip_filter()/ip_exclude()/
 	// port_size — remain intentionally unsupported; see
 	// docs/SEARCH-SYNTAX.md).
+	"observed_after":        {Canonical: "observed_after", Type: TypeDate, Ops: opOrdered, RewriteTo: "last_observed", RewriteOp: ast.OpGe},
+	"observed_before":       {Canonical: "observed_before", Type: TypeDate, Ops: opOrdered, RewriteTo: "last_observed", RewriteOp: ast.OpLe},
 	"after":                 {Canonical: "after", Aliases: []string{"ip_after"}, Type: TypeDate, Ops: opOrdered, RewriteTo: "last_seen", RewriteOp: ast.OpGe},
 	"before":                {Canonical: "before", Aliases: []string{"ip_before"}, Type: TypeDate, Ops: opOrdered, RewriteTo: "last_seen", RewriteOp: ast.OpLe},
 	"cert.not_after.after":  {Canonical: "cert.not_after.after", Type: TypeDate, Ops: opOrdered, RewriteTo: "tls.cert_expiry", RewriteOp: ast.OpGe},
@@ -190,13 +224,92 @@ func FieldNames() []string {
 }
 
 // lookupField resolves a user-written field name to its registry entry.
-// The second result is the canonical key ("", when unknown).
+// The second result is the canonical key ("", when unknown).  Unknown
+// names get one more chance: the R37 dynamic per-name header fields.
 func lookupField(name string) (*Field, string) {
-	key, ok := aliases[strings.ToLower(name)]
-	if !ok {
-		return nil, ""
+	lower := strings.ToLower(name)
+	if key, ok := aliases[lower]; ok {
+		return fields[key], key
 	}
-	return fields[key], key
+	if rest, ok := dynamicHeaderName(lower); ok {
+		return dynamicHeaderField(rest), "http.headers." + rest
+	}
+	if rest, ok := dynamicDNSName(lower); ok {
+		return dynamicDNSField(rest), "dns." + rest
+	}
+	return nil, ""
+}
+
+// dynamicDNSName validates the <key> part of a dynamic DNS field
+// (dns.<key>, R39 P4): the dns evidence object's keys are lowercase
+// [a-z0-9_-]+ (type, query, value, pref).  Anything else is not a dns
+// field — the caller reports unknown-field.
+func dynamicDNSName(lower string) (string, bool) {
+	const p = "dns."
+	if !strings.HasPrefix(lower, p) {
+		return "", false
+	}
+	rest := strings.TrimPrefix(lower, p)
+	if rest == "" || !isHeaderKeyCharset(rest) {
+		return "", false
+	}
+	return rest, true
+}
+
+// dynamicDNSField synthesizes (and memoizes) the registry entry for
+// one dynamic dns key — filter-only like the dynamic header fields.
+var dynamicDNSCache sync.Map
+
+func dynamicDNSField(name string) *Field {
+	if f, ok := dynamicDNSCache.Load(name); ok {
+		return f.(*Field)
+	}
+	f := &Field{Canonical: "dns." + name, Type: TypeString, Ops: opStrText}
+	dynamicDNSCache.Store(name, f)
+	return f
+}
+
+// dynamicHeaderName validates the <name> part of a dynamic header
+// field (http.header.<name> or the http.headers.<name> alias form):
+// the HTTP observer captures lowercase header keys, so a valid dynamic
+// name is [a-z0-9_-]+.  Anything else (spaces, quotes, injection
+// shapes) is not a header field — the caller reports unknown-field.
+func dynamicHeaderName(lower string) (string, bool) {
+	for _, p := range []string{"http.header.", "http.headers."} {
+		if strings.HasPrefix(lower, p) {
+			rest := strings.TrimPrefix(lower, p)
+			if rest != "" && isHeaderKeyCharset(rest) {
+				return rest, true
+			}
+		}
+	}
+	return "", false
+}
+
+func isHeaderKeyCharset(s string) bool {
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// dynamicHeaderField synthesizes (and memoizes) the registry entry for
+// one dynamic header name.  Dynamic entries are filter-only: they are
+// deliberately absent from the planner's projection column map, so a
+// projection attempt is rejected by the planner.
+var dynamicHeaderCache sync.Map
+
+func dynamicHeaderField(name string) *Field {
+	if f, ok := dynamicHeaderCache.Load(name); ok {
+		return f.(*Field)
+	}
+	f := &Field{Canonical: "http.headers." + name, Type: TypeString, Ops: opStrText}
+	dynamicHeaderCache.Store(name, f)
+	return f
 }
 
 // knownScopes are the quantifier relations v0.0.1 accepts: the

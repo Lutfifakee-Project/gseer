@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package cli
 
@@ -48,10 +58,10 @@ func registerDoctorCmd(root *cobra.Command) {
 		Short: "Diagnose config, connectivity, database, and index health",
 		Long: `Diagnose config, connectivity, database, and index health.
 
-Reports PASS/FAIL/HINT with a fix line for each check.
+Reports PASS/FAIL/HINT with a fix line for each check (QS-4).
 Wired:
   - config validity
-  - DB reachable + PG version compatible (PostgreSQL 16+)
+  - DB reachable + PG version compatible (PostgreSQL 16+, OD-7)
   - migrations at head (dirty state → gseer db migrate diagnose)
   - binary version / OS-arch / SHA-256 (self-reported; compare with the
     corresponding published release checksum when a binary release is
@@ -59,15 +69,15 @@ Wired:
   - index contents: EMPTY | counts | fixture-labeled honesty label
   - discovery freshness (per-source registry state + last successful
     collection job age)
-  - runtime credential + fail-closed privilege audit (self-hosted:
-    PASS names the verified grants; FAIL names the failures;
+  - runtime credential + fail-closed privilege audit (self-hosted, v0.2.0
+    OD-5: PASS names the verified grants; FAIL names the failures;
     HINT when the runtime credential is not provisioned yet)
   - personal mode (v0.2.1): database file + permissions, SQLite migration
     state, and the same index-contents honesty contract (read-only: the
     doctor never creates or migrates the personal database)
 
 Doctor MUST NOT show a generic "healthy" that hides an empty or fixture-
-filled index.  Doctor is read-only: it never migrates.`,
+filled index (QS-4 normative).  Doctor is read-only: it never migrates.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cmd.OutOrStdout()

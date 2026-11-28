@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package config
 
@@ -56,7 +66,7 @@ func TestLoadValidSelfHosted(t *testing.T) {
 	}
 }
 
-// TestLoadPolicyActiveRejected verifies that any policy.active.*
+// TestLoadPolicyActiveRejected verifies AC-7.x: any policy.active.*
 // key is rejected with E_CONFIG_POLICY_ACTIVE_REJECTED.
 func TestLoadPolicyActiveRejected(t *testing.T) {
 	_, e := loadFixture(t, "invalid-policy-active.yaml")
@@ -66,9 +76,9 @@ func TestLoadPolicyActiveRejected(t *testing.T) {
 	if e.Code != CodeConfigPolicyActiveRejected {
 		t.Errorf("Code: want %q, got %q", CodeConfigPolicyActiveRejected, e.Code)
 	}
-	// The error must point the operator at the rejected-key policy.
-	if !contains(e.Error(), ".env.example") {
-		t.Errorf("error must point at .env.example (rejected-key policy); got: %v", e)
+	// The error must point to v0.0.2 (AC-7.x pointer requirement).
+	if !contains(e.Error(), "v0.0.2") && !contains(e.Why, "v0.0.1") {
+		t.Errorf("error must explain v0.0.1 scope; got: %v", e)
 	}
 }
 

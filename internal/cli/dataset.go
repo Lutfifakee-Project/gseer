@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package cli
 
@@ -50,7 +60,7 @@ observed_at are preserved, and the import rolls back on any failure.
 Search stays local: the dataset only FEEDS the index.`,
 		Args: cobra.NoArgs,
 	}
-	datasetCmd.AddCommand(newDatasetUpdateCmd(), newDatasetCheckCmd(), newDatasetStatusCmd())
+	datasetCmd.AddCommand(newDatasetUpdateCmd(), newDatasetCheckCmd(), newDatasetStatusCmd(), newDatasetHistoryCmd())
 	root.AddCommand(datasetCmd)
 }
 
@@ -111,16 +121,26 @@ func runDatasetUpdate(cmd *cobra.Command, manifestURL string, force bool) error 
 		return nil
 	}
 
-	// Version gate: refuse older/equal without --force (idempotent
-	// re-import stays possible with --force).
+	// Version gate, split honestly (v0.3.3): EQUAL → idempotent no-op;
+	// OLDER → an explicit downgrade refusal (the channel only moves
+	// forward — a rollback silently re-importing stale evidence is
+	// exactly the failure the gate exists to prevent).  --force is the
+	// operator's deliberate override for both.
 	state, err := loadDatasetState(cmd, cfg)
 	if err != nil {
 		printf(out, "E_DB: %s\n", err.Error())
 		exitWith(ExitUnavailable)
 		return nil
 	}
-	if state.Installed && !force && manifest.DatasetVersion <= state.DatasetVersion {
-		printf(out, "[ ok  ] dataset: already at version %d (channel offers %d) — nothing to do\n",
+	if state.Installed && !force && manifest.DatasetVersion < state.DatasetVersion {
+		printf(out, "E_DATASET_DOWNGRADE: the channel offers dataset v%d but v%d is installed — downgrades are refused to protect the index.\n"+
+			"Try: gseer dataset update --force   (deliberately re-import the older version)\n",
+			manifest.DatasetVersion, state.DatasetVersion)
+		exitWith(ExitInvalidInput)
+		return nil
+	}
+	if state.Installed && !force && manifest.DatasetVersion == state.DatasetVersion {
+		printf(out, "[ ok  ] dataset: already at version %d (channel offers %d) — nothing to do (no payload downloaded)\n",
 			state.DatasetVersion, manifest.DatasetVersion)
 		printDatasetFreshness(out, manifest, state)
 		return nil
@@ -202,6 +222,50 @@ func newDatasetCheckCmd() *cobra.Command {
 	return cmd
 }
 
+func newDatasetHistoryCmd() *cobra.Command {
+	var limit int
+	cmd := &cobra.Command{
+		Use:   "history",
+		Short: "List the previously imported dataset versions (newest first)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			out := cmd.OutOrStdout()
+			cfg, cerr := engineConfigOrInit(cmd)
+			if cerr != nil {
+				printf(out, "%s\nTry: gseer setup --help\n", cerr.Error())
+				exitWith(ExitConfig)
+				return nil
+			}
+			res, err := openPersonal(cfg)
+			if err != nil {
+				printf(out, "E_DB: cannot open the personal database: %s\n", err.Error())
+				exitWith(ExitUnavailable)
+				return nil
+			}
+			defer func() { _ = res.DB.Close() }()
+			hist, err := dataset.LoadHistory(commandContext(cmd), res.DB, limit)
+			if err != nil {
+				printf(out, "%s\n", err.Error())
+				exitWith(ExitUnavailable)
+				return nil
+			}
+			if len(hist) == 0 {
+				printf(out, "  dataset history: none — never imported\n")
+				printf(out, "  Try            : gseer dataset update\n")
+				return nil
+			}
+			printf(out, "  dataset import history (newest first — the gate only moves forward):\n")
+			for _, e := range hist {
+				printf(out, "  v%-4d imported %s  records %d  ingested %d  deduped %d  suppressed %d  sha256 %s…\n",
+					e.DatasetVersion, orNeverTime(&e.ImportedAt), e.Records, e.Ingested, e.Deduped, e.Suppressed, head12(e.PayloadSHA256))
+			}
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&limit, "limit", 10, "how many entries to show (newest first)")
+	return cmd
+}
+
 func newDatasetStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
@@ -240,19 +304,6 @@ func newDatasetStatusCmd() *cobra.Command {
 // loadDatasetState opens the personal database and reads the dataset
 // install state (read-only intent; sqlite.Open creates nothing when the
 // file exists — the engine commands provisioned it already).
-// datasetFetcherFromConfig builds the fetcher the CLI uses, applying the
-// config's trusted redirect hosts (R4 P0-5).  An UNSET list (nil) keeps
-// NewFetcher's product defaults (the official GitHub release-asset CDN);
-// an explicitly configured list replaces the defaults verbatim — an
-// empty list trusts nothing (strict fail-closed).
-func datasetFetcherFromConfig(cfg *config.Config) *dataset.Fetcher {
-	f := dataset.NewFetcher()
-	if cfg != nil && cfg.Dataset.TrustedRedirectHosts != nil {
-		f.TrustedRedirectHosts = cfg.Dataset.TrustedRedirectHosts
-	}
-	return f
-}
-
 func loadDatasetState(cmd *cobra.Command, cfg *config.Config) (*dataset.State, error) {
 	res, err := openPersonal(cfg)
 	if err != nil {

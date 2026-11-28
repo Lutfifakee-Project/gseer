@@ -1,10 +1,20 @@
 //go:build integration
 
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package cli
 
@@ -189,7 +199,7 @@ func TestSetupFixtureCLIRoundTrip(t *testing.T) {
 		"QS-6 fixture gate",
 		"Proceed? [y/N]",
 		"DB reachable at",
-		"migrations: 13 applied, schema at head v22", // v0.2.0 set + 0018 + 0019 + 0020 + 0021 + 0022 as FILES (0007–0015 reserved, OD-4)
+		"migrations: 12 applied, schema at head v21", // v0.2.0 set + 0018 + 0019 + 0020 + 0021 as FILES (0007–0015 reserved, OD-4)
 		"fixture source registered (data_sources id=",
 		// Per-fact counters: 7 facts upsert 4 distinct assets (3 facts hit
 		// an asset a sibling fact already inserted), 6 service-bearing facts

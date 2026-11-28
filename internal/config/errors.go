@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package config
 
@@ -32,11 +42,11 @@ type Error struct {
 	Next string
 }
 
-// Error renders the error per the project style guide:
+// Error renders the error per the SPEC-03 §7 style guide:
 //
 //	E_CONFIG_UNKNOWN_KEY: unknown key "policy.active.enabled" in config.
-//	Why: active collection is not part of any release until its authorization gates close.
-//	Try: remove the key; see .env.example for the rejected-key policy.
+//	Why: active collection is not part of any release until its gates close.
+//	Try: remove the key; see docs/ROADMAP.md for v0.0.2 planning.
 func (e *Error) Error() string {
 	var b strings.Builder
 	if e.Code != "" {
@@ -134,8 +144,8 @@ func errUnknownKey(path string) *Error {
 
 func errPolicyActiveRejected(key string) *Error {
 	return newError(CodeConfigPolicyActiveRejected, fmt.Sprintf("key %q is rejected", key)).
-		withWhy("active collection is not part of any release until its authorization gates close; shipped defaults are engineering values only, not authorization to scan.").
-		withNext("remove the key; see .env.example for the rejected-key policy")
+		withWhy("active collection (P2/PAC) is not part of any release until its gates close; PD-2..PD-7 are approved as engineering defaults only, not authorization to scan.").
+		withNext("remove the key; see docs/ROADMAP.md for v0.0.2 planning")
 }
 
 func errInsecure(key string) *Error {

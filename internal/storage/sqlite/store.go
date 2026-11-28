@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package sqlite
 
@@ -34,6 +44,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Lutfifakee-Project/gseer/internal/fprule"
@@ -459,6 +470,15 @@ func (s *Store) insertObservationCore(ctx context.Context, q Querier, o *storage
 		FormatTS(time.Now().UTC()),
 	).Scan(&id)
 	if err == nil {
+		// R44: keep the maintained latest-per-service AND latest-per-asset
+		// projections in sync INSIDE the same transaction as the
+		// observation write (SPEC-05 §2 "maintained on write"; migrations
+		// 0011/0012).  A failure here fails the fact — the projections can
+		// never silently diverge from the observation log on the ingest
+		// path.
+		if merr := maintainLatest(ctx, q, evidence, o.ServiceID, o.AssetID, observedAt, id); merr != nil {
+			return 0, false, merr
+		}
 		return id, true, nil
 	}
 	if !isNoRows(err) {
@@ -486,6 +506,237 @@ func (s *Store) insertObservationCore(ctx context.Context, q Querier, o *storage
 	default:
 		return 0, false, err
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Maintained latest-per-service projection (R44, migration 0011).
+// ---------------------------------------------------------------------------
+
+// maintainLatest upserts the maintained latest-per-service rows
+// (latest_http_t / latest_tls_t / latest_fingerprints_t, migrations 0011)
+// and latest-per-asset rows (latest_ip2asn_t / latest_ctlog_t /
+// latest_dns_t, migration 0012) for one freshly inserted observation.
+// The winner rule mirrors the pre-0011/0012 window views exactly: newest
+// observed_at wins, ties break on the higher observation id.
+// observed_at uses the fixed-width tsLayout, so the string comparison is
+// chronological.  Field values are extracted from the SAME enriched
+// evidence JSON the observation row stores (already marshaled by the
+// caller), so the projection can never carry values the row does not.
+// Service-level families run only when the observation carries a
+// service; asset-level families always run.
+func maintainLatest(ctx context.Context, q Querier, evidenceJSON string, serviceID *int64, assetID int64, observedAt time.Time, obsID int64) error {
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(evidenceJSON), &doc); err != nil {
+		return fmt.Errorf("sqlite: maintain latest_* projection: stored evidence is not valid JSON: %w", err)
+	}
+	ts := FormatTS(observedAt)
+
+	if serviceID != nil {
+		if err := maintainLatestService(ctx, q, doc, ts, *serviceID, obsID); err != nil {
+			return err
+		}
+	}
+	return maintainLatestAsset(ctx, q, doc, ts, assetID, obsID)
+}
+
+// maintainLatestService applies the service-granular projection rows
+// (migration 0011).
+func maintainLatestService(ctx context.Context, q Querier, doc map[string]any, ts string, serviceID int64, obsID int64) error {
+	if hm, ok := asObject(doc["http"]); ok {
+		status := any(nil)
+		if v, ok := hm["status"]; ok && v != nil {
+			if f, ok := v.(float64); ok {
+				status = int64(f)
+			}
+		}
+		// headers: only a JSON object projects (the 0007 rule).
+		headers := any(nil)
+		if hobj, ok := asObject(hm["headers"]); ok {
+			b, merr := json.Marshal(hobj)
+			if merr == nil {
+				headers = string(b)
+			}
+		}
+		_, err := q.ExecContext(ctx, `INSERT INTO latest_http_t (service_id, status, title, server, headers, observed_at, obs_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT (service_id) DO UPDATE SET
+			  status      = excluded.status,
+			  title       = excluded.title,
+			  server      = excluded.server,
+			  headers     = excluded.headers,
+			  observed_at = excluded.observed_at,
+			  obs_id      = excluded.obs_id
+			WHERE excluded.observed_at > latest_http_t.observed_at
+			   OR (excluded.observed_at = latest_http_t.observed_at
+			       AND excluded.obs_id > latest_http_t.obs_id)`,
+			serviceID, status, asTextOrNull(hm["title"]), asTextOrNull(hm["server"]),
+			headers, ts, obsID)
+		if err != nil {
+			return fmt.Errorf("sqlite: maintain latest_http_t: %w", err)
+		}
+	}
+
+	if tm, ok := asObject(doc["tls"]); ok {
+		// cert_sans_dns: a JSON array projects as the comma-joined element
+		// list (the 0007 REPLACE rule); a string passes through as-is.
+		sans := any(nil)
+		switch v := tm["cert_sans_dns"].(type) {
+		case []any:
+			parts := make([]string, 0, len(v))
+			for _, e := range v {
+				if s, ok := e.(string); ok {
+					parts = append(parts, s)
+				}
+			}
+			sans = strings.Join(parts, ",")
+		case string:
+			sans = v
+		}
+		_, err := q.ExecContext(ctx, `INSERT INTO latest_tls_t (service_id, tls_version, cert_subject_cn, cert_issuer_cn, cert_issuer_org, cert_expiry, cert_serial, cert_sans_dns, cert_not_before, observed_at, obs_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT (service_id) DO UPDATE SET
+			  tls_version     = excluded.tls_version,
+			  cert_subject_cn = excluded.cert_subject_cn,
+			  cert_issuer_cn  = excluded.cert_issuer_cn,
+			  cert_issuer_org = excluded.cert_issuer_org,
+			  cert_expiry     = excluded.cert_expiry,
+			  cert_serial     = excluded.cert_serial,
+			  cert_sans_dns   = excluded.cert_sans_dns,
+			  cert_not_before = excluded.cert_not_before,
+			  observed_at     = excluded.observed_at,
+			  obs_id          = excluded.obs_id
+			WHERE excluded.observed_at > latest_tls_t.observed_at
+			   OR (excluded.observed_at = latest_tls_t.observed_at
+			       AND excluded.obs_id > latest_tls_t.obs_id)`,
+			serviceID,
+			asTextOrNull(tm["version"]), asTextOrNull(tm["cert_subject_cn"]),
+			asTextOrNull(tm["cert_issuer_cn"]), asTextOrNull(tm["cert_issuer_org"]),
+			asTextOrNull(tm["cert_expiry"]), asTextOrNull(tm["cert_serial"]),
+			sans, asTextOrNull(tm["cert_not_before"]),
+			ts, obsID)
+		if err != nil {
+			return fmt.Errorf("sqlite: maintain latest_tls_t: %w", err)
+		}
+	}
+
+	if fm, ok := asObject(doc["fingerprint"]); ok {
+		tech := "[]"
+		if arr, ok := fm["technologies"].([]any); ok {
+			b, merr := json.Marshal(arr)
+			if merr == nil {
+				tech = string(b)
+			}
+		}
+		// banner comes from the $.ssh.banner shape (the 0007 projection),
+		// not from the fingerprint payload itself.
+		var banner any
+		if sm, ok := asObject(doc["ssh"]); ok {
+			banner = asTextOrNull(sm["banner"])
+		}
+		_, err := q.ExecContext(ctx, `INSERT INTO latest_fingerprints_t (service_id, technologies, banner, observed_at, obs_id)
+			VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT (service_id) DO UPDATE SET
+			  technologies = excluded.technologies,
+			  banner       = excluded.banner,
+			  observed_at  = excluded.observed_at,
+			  obs_id       = excluded.obs_id
+			WHERE excluded.observed_at > latest_fingerprints_t.observed_at
+			   OR (excluded.observed_at = latest_fingerprints_t.observed_at
+			       AND excluded.obs_id > latest_fingerprints_t.obs_id)`,
+			serviceID, tech, banner, ts, obsID)
+		if err != nil {
+			return fmt.Errorf("sqlite: maintain latest_fingerprints_t: %w", err)
+		}
+	}
+	return nil
+}
+
+// maintainLatestAsset applies the asset-granular projection rows
+// (migration 0012): ip2asn attribution prefix, CT log record, DNS record.
+func maintainLatestAsset(ctx context.Context, q Querier, doc map[string]any, ts string, assetID int64, obsID int64) error {
+	if im, ok := asObject(doc["ip2asn"]); ok {
+		if prefix := asTextOrNull(im["prefix"]); prefix != nil {
+			_, err := q.ExecContext(ctx, `INSERT INTO latest_ip2asn_t (asset_id, prefix, observed_at, obs_id)
+				VALUES (?, ?, ?, ?)
+				ON CONFLICT (asset_id) DO UPDATE SET
+				  prefix      = excluded.prefix,
+				  observed_at = excluded.observed_at,
+				  obs_id      = excluded.obs_id
+				WHERE excluded.observed_at > latest_ip2asn_t.observed_at
+				   OR (excluded.observed_at = latest_ip2asn_t.observed_at
+				       AND excluded.obs_id > latest_ip2asn_t.obs_id)`,
+				assetID, prefix, ts, obsID)
+			if err != nil {
+				return fmt.Errorf("sqlite: maintain latest_ip2asn_t: %w", err)
+			}
+		}
+	}
+
+	if cm, ok := asObject(doc["ctlog"]); ok {
+		_, err := q.ExecContext(ctx, `INSERT INTO latest_ctlog_t (asset_id, "log", entry_type, subject_cn, issuer, not_before, not_after, leaf_sha256, cert_timestamp, observed_at, obs_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT (asset_id) DO UPDATE SET
+			  "log"          = excluded."log",
+			  entry_type     = excluded.entry_type,
+			  subject_cn     = excluded.subject_cn,
+			  issuer         = excluded.issuer,
+			  not_before     = excluded.not_before,
+			  not_after      = excluded.not_after,
+			  leaf_sha256    = excluded.leaf_sha256,
+			  cert_timestamp = excluded.cert_timestamp,
+			  observed_at    = excluded.observed_at,
+			  obs_id         = excluded.obs_id
+			WHERE excluded.observed_at > latest_ctlog_t.observed_at
+			   OR (excluded.observed_at = latest_ctlog_t.observed_at
+			       AND excluded.obs_id > latest_ctlog_t.obs_id)`,
+			assetID,
+			asTextOrNull(cm["log"]), asTextOrNull(cm["entry_type"]),
+			asTextOrNull(cm["subject_cn"]), asTextOrNull(cm["issuer"]),
+			asTextOrNull(cm["not_before"]), asTextOrNull(cm["not_after"]),
+			asTextOrNull(cm["leaf_sha256"]), asTextOrNull(cm["cert_timestamp"]),
+			ts, obsID)
+		if err != nil {
+			return fmt.Errorf("sqlite: maintain latest_ctlog_t: %w", err)
+		}
+	}
+
+	if dm, ok := asObject(doc["dns"]); ok {
+		// dns_record projects the whole $.dns object (the 0010 rule: only
+		// a JSON object, marshaled back from the same decoded evidence).
+		b, merr := json.Marshal(dm)
+		if merr != nil {
+			return fmt.Errorf("sqlite: maintain latest_dns_t: %w", merr)
+		}
+		_, err := q.ExecContext(ctx, `INSERT INTO latest_dns_t (asset_id, dns_record, observed_at, obs_id)
+			VALUES (?, ?, ?, ?)
+			ON CONFLICT (asset_id) DO UPDATE SET
+			  dns_record  = excluded.dns_record,
+			  observed_at = excluded.observed_at,
+			  obs_id      = excluded.obs_id
+			WHERE excluded.observed_at > latest_dns_t.observed_at
+			   OR (excluded.observed_at = latest_dns_t.observed_at
+			       AND excluded.obs_id > latest_dns_t.obs_id)`,
+			assetID, string(b), ts, obsID)
+		if err != nil {
+			return fmt.Errorf("sqlite: maintain latest_dns_t: %w", err)
+		}
+	}
+	return nil
+}
+
+// asObject narrows a decoded JSON value to an object map.
+func asObject(v any) (map[string]any, bool) {
+	m, ok := v.(map[string]any)
+	return m, ok && m != nil
+}
+
+// asTextOrNull renders a decoded JSON scalar as SQL text (null for
+// anything that is not a string), matching the json_extract view reads.
+func asTextOrNull(v any) any {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -626,27 +877,9 @@ RETURNING id`, fixtureSourceTermsRef, FormatTS(time.Now().UTC())).Scan(&id)
 	return id, nil
 }
 
-// PurgeFixtures deletes the fixture dataset in ONE scoped transaction
-// (QS-6, owner-audited scope):
-//
-//   - observations: provenance='fixture' AND source_id = the registered
-//     fixture source (data_sources.name='fixture').  Rows from any other
-//     source are unreachable — even a row that wrongly carries
-//     provenance='fixture' from another source survives.
-//   - services: ONLY services referenced by those fixture observations,
-//     and only once they have become orphaned by the observation purge.
-//     A service still observed by a real source (shared) survives, and
-//     an orphan service that was never part of the fixture dataset is
-//     never touched (the old unscoped orphan sweep is gone).
-//   - assets: ONLY assets that carried fixture relations (directly or
-//     through purged fixture services), and only once they have no
-//     observation, no service and no sources left.  An asset with any
-//     surviving non-fixture relation survives.
-//
-// The snapshot of fixture service/asset ids is taken INSIDE the
-// transaction before the observation delete, so the whole run is atomic
-// (any statement failure rolls everything back) and idempotent (a second
-// run finds no fixture observations and removes nothing).
+// PurgeFixtures deletes every fixture-tagged observation/service/asset
+// in ONE scoped transaction (rows not tagged provenance='fixture' are
+// never touched) — the QS-6 purge parity path.
 func (s *Store) PurgeFixtures(ctx context.Context) (PurgeStats, error) {
 	var stats PurgeStats
 	tx, err := s.DB.BeginTx(ctx, nil)
@@ -655,58 +888,39 @@ func (s *Store) PurgeFixtures(ctx context.Context) (PurgeStats, error) {
 	}
 	rollback := func() { _ = tx.Rollback() }
 
-	// The fixture source registry row (configuration).  Without it there
-	// is no fixture source to purge from — treat as a no-op run rather
-	// than guessing rows by provenance alone.
-	var fsID int64
+	// SQLite has no data-modifying CTEs: count first, delete after —
+	// both inside the same transaction (one serialized connection, SQ-05).
 	if err := tx.QueryRowContext(ctx,
-		`SELECT id FROM data_sources WHERE name = 'fixture'`).Scan(&fsID); err != nil {
-		rollback()
-		if isNoRows(err) {
-			return stats, nil // no fixture source registered: nothing to purge
-		}
-		return stats, fmt.Errorf("sqlite: fixture source lookup: %w", err)
-	}
-
-	// SQLite has no data-modifying CTEs: snapshot the fixture-referenced
-	// service/asset ids first (same transaction, one serialized
-	// connection, SQ-05), then count-then-delete each layer.
-	var svcIDs, assetIDs []int64
-	if err := selectIDsInto(ctx, tx, &svcIDs,
-		`SELECT DISTINCT service_id FROM observations
-		  WHERE provenance = 'fixture' AND source_id = ? AND service_id IS NOT NULL`, fsID); err != nil {
-		rollback()
-		return stats, fmt.Errorf("sqlite: fixture service snapshot: %w", err)
-	}
-	if err := selectIDsInto(ctx, tx, &assetIDs,
-		`SELECT DISTINCT asset_id FROM observations
-		  WHERE provenance = 'fixture' AND source_id = ?`, fsID); err != nil {
-		rollback()
-		return stats, fmt.Errorf("sqlite: fixture asset snapshot: %w", err)
-	}
-	if len(svcIDs) > 0 {
-		if err := selectIDsInto(ctx, tx, &assetIDs,
-			qFixtureAssetsOfServices(len(svcIDs)), idArgs(svcIDs)...); err != nil {
-			rollback()
-			return stats, fmt.Errorf("sqlite: fixture service-asset snapshot: %w", err)
-		}
-	}
-
-	// 1..4 — the four purge layers.  Any failure rolls the whole
-	// transaction back: atomicity is the purge's contract.
-	if stats.ObservationsRemoved, err = purgeFixtureObservations(ctx, tx, fsID); err != nil {
+		`SELECT count(*) FROM observations WHERE provenance = 'fixture'`).Scan(&stats.ObservationsRemoved); err != nil {
 		rollback()
 		return stats, err
 	}
-	if stats.ServicesRemoved, err = purgeOrphanedServices(ctx, tx, svcIDs); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM observations WHERE provenance = 'fixture'`); err != nil {
 		rollback()
 		return stats, err
 	}
-	if stats.AssetsRemoved, err = purgeDetachedAssets(ctx, tx, assetIDs); err != nil {
+	// 2. orphaned services (no observations left).
+	if err := tx.QueryRowContext(ctx,
+		`SELECT count(*) FROM services WHERE NOT EXISTS (SELECT 1 FROM observations o WHERE o.service_id = services.id)`).Scan(&stats.ServicesRemoved); err != nil {
 		rollback()
 		return stats, err
 	}
-	if err = stripFixtureSourceTags(ctx, tx, assetIDs); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM services WHERE NOT EXISTS (SELECT 1 FROM observations o WHERE o.service_id = services.id)`); err != nil {
+		rollback()
+		return stats, err
+	}
+	// 3. assets with no observation, no service and no sources left.
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM assets a WHERE
+		  NOT EXISTS (SELECT 1 FROM observations o WHERE o.asset_id = a.id)
+		  AND NOT EXISTS (SELECT 1 FROM services s WHERE s.asset_id = a.id)
+		  AND (a.sources = '[]' OR json_array_length(a.sources) = 0)`).Scan(&stats.AssetsRemoved); err != nil {
+		rollback()
+		return stats, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM assets WHERE
+		  NOT EXISTS (SELECT 1 FROM observations o WHERE o.asset_id = assets.id)
+		  AND NOT EXISTS (SELECT 1 FROM services s WHERE s.asset_id = assets.id)
+		  AND (assets.sources = '[]' OR json_array_length(assets.sources) = 0)`); err != nil {
 		rollback()
 		return stats, err
 	}
@@ -715,218 +929,6 @@ func (s *Store) PurgeFixtures(ctx context.Context) (PurgeStats, error) {
 		return stats, fmt.Errorf("sqlite: cannot commit the fixture purge: %w", err)
 	}
 	return stats, nil
-}
-
-// purgeFixtureObservations counts then deletes the fixture observations
-// of the fixture source only (purge layer 1).
-func purgeFixtureObservations(ctx context.Context, tx *sql.Tx, fsID int64) (int64, error) {
-	var removed int64
-	if err := tx.QueryRowContext(ctx,
-		`SELECT count(*) FROM observations WHERE provenance = 'fixture' AND source_id = ?`, fsID).Scan(&removed); err != nil {
-		return 0, err
-	}
-	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM observations WHERE provenance = 'fixture' AND source_id = ?`, fsID); err != nil {
-		return 0, err
-	}
-	return removed, nil
-}
-
-// purgeOrphanedServices removes the services the fixture observations
-// referenced — only those now orphaned (a shared service still has
-// non-fixture observations) — and reports how many went away (layer 2).
-func purgeOrphanedServices(ctx context.Context, tx *sql.Tx, svcIDs []int64) (int64, error) {
-	if len(svcIDs) == 0 {
-		return 0, nil
-	}
-	var removed int64
-	if err := tx.QueryRowContext(ctx, qCountOrphanedServices(len(svcIDs)), idArgs(svcIDs)...).Scan(&removed); err != nil {
-		return 0, err
-	}
-	if _, err := tx.ExecContext(ctx, qDeleteOrphanedServices(len(svcIDs)), idArgs(svcIDs)...); err != nil {
-		return 0, err
-	}
-	return removed, nil
-}
-
-// purgeDetachedAssets removes assets that carried fixture relations —
-// only those now fully detached (no observation, no service — fixture
-// OR otherwise — and no sources left, where "no sources" also covers an
-// asset whose ONLY source tag is the fixture source itself: the corpus
-// stamps Sources=['fixture'], a fixture trace rather than a non-fixture
-// relation) — and reports how many went away (layer 3).
-func purgeDetachedAssets(ctx context.Context, tx *sql.Tx, assetIDs []int64) (int64, error) {
-	if len(assetIDs) == 0 {
-		return 0, nil
-	}
-	args := append(idArgs(assetIDs), storage.FixtureSourceName)
-	var removed int64
-	if err := tx.QueryRowContext(ctx, qCountDetachedAssets(len(assetIDs)), args...).Scan(&removed); err != nil {
-		return 0, err
-	}
-	if _, err := tx.ExecContext(ctx, qDeleteDetachedAssets(len(assetIDs)), args...); err != nil {
-		return 0, err
-	}
-	return removed, nil
-}
-
-// strippedAsset is one surviving asset whose sources still name the
-// fixture source.
-type strippedAsset struct {
-	id      int64
-	sources string
-}
-
-// selectTaggedAssets reads the surviving assets that still carry the
-// fixture source tag.  The result rows are closed (deferred) before the
-// function returns, so no read cursor is held open over the same
-// transaction once the rewrites below begin.
-func selectTaggedAssets(ctx context.Context, tx *sql.Tx, assetIDs []int64) ([]strippedAsset, error) {
-	rows, err := tx.QueryContext(ctx, qSelectTaggedAssets(len(assetIDs)), append(idArgs(assetIDs), storage.FixtureSourceName)...)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	var victims []strippedAsset
-	for rows.Next() {
-		var v strippedAsset
-		if err := rows.Scan(&v.id, &v.sources); err != nil {
-			return nil, err
-		}
-		victims = append(victims, v)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return victims, nil
-}
-
-// stripFixtureSourceTags strips the fixture source tag from the assets
-// that SURVIVED the purge (same semantics as RetractSuppressed's
-// source-name strip): a detached-but-shared asset must not keep
-// pointing at the fixture source it no longer carries data from (layer 4).
-func stripFixtureSourceTags(ctx context.Context, tx *sql.Tx, assetIDs []int64) error {
-	if len(assetIDs) == 0 {
-		return nil
-	}
-	victims, err := selectTaggedAssets(ctx, tx, assetIDs)
-	if err != nil {
-		return err
-	}
-	for _, v := range victims {
-		var tags []string
-		if err := json.Unmarshal([]byte(v.sources), &tags); err != nil {
-			return fmt.Errorf("sqlite: purge cannot parse asset sources %q: %w", v.sources, err)
-		}
-		kept := make([]string, 0, len(tags))
-		for _, tag := range tags {
-			if tag != storage.FixtureSourceName {
-				kept = append(kept, tag)
-			}
-		}
-		out, merr := json.Marshal(kept)
-		if merr != nil {
-			return fmt.Errorf("sqlite: purge cannot re-encode asset sources: %w", merr)
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE assets SET sources = ? WHERE id = ?`, string(out), v.id); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// --- fixture-purge query builders -------------------------------------------------
-//
-// The ONLY dynamic content in every builder is the "?,?,…" placeholder
-// list produced by intPlaceholders(n) — guarded by
-// TestIntPlaceholdersSyntax and
-// TestPurgeQueryBuildersVaryOnlyInPlaceholders to be punctuation-only
-// and invariant for every n, so no id or source name can ever be
-// interpolated into the statement text.  Bound values travel as query
-// arguments at the call sites above.
-
-// qFixtureAssetsOfServices snapshots the assets referenced by services.
-func qFixtureAssetsOfServices(n int) string {
-	return `SELECT DISTINCT asset_id FROM services WHERE id IN (` + intPlaceholders(n) + `)`
-}
-
-// qCountOrphanedServices counts the services that would be purged.
-func qCountOrphanedServices(n int) string {
-	return `SELECT count(*) FROM services WHERE id IN (` + intPlaceholders(n) + `)
-	      AND NOT EXISTS (SELECT 1 FROM observations o WHERE o.service_id = services.id)`
-}
-
-// qDeleteOrphanedServices deletes those same services.
-func qDeleteOrphanedServices(n int) string {
-	return `DELETE FROM services WHERE id IN (` + intPlaceholders(n) + `)
-	    AND NOT EXISTS (SELECT 1 FROM observations o WHERE o.service_id = services.id)`
-}
-
-// detachedAssetClause matches assets with NO observation, NO service and
-// no sources left; the trailing ? binds the fixture source name (an
-// asset whose ONLY source tag is the fixture source itself counts as
-// detached — a fixture trace, not a non-fixture relation).
-const detachedAssetClause = `AND NOT EXISTS (SELECT 1 FROM observations o WHERE o.asset_id = assets.id)
-    AND NOT EXISTS (SELECT 1 FROM services s WHERE s.asset_id = assets.id)
-    AND (assets.sources = '[]' OR json_array_length(assets.sources) = 0
-         OR (json_array_length(assets.sources) = 1
-             AND json_extract(assets.sources, '$[0]') = ?))`
-
-// qCountDetachedAssets counts the assets that would be purged.
-func qCountDetachedAssets(n int) string {
-	return `SELECT count(*) FROM assets WHERE id IN (` + intPlaceholders(n) + `) ` + detachedAssetClause
-}
-
-// qDeleteDetachedAssets deletes those same assets.
-func qDeleteDetachedAssets(n int) string {
-	return `DELETE FROM assets WHERE id IN (` + intPlaceholders(n) + `) ` + detachedAssetClause
-}
-
-// qSelectTaggedAssets selects surviving assets that still carry the
-// fixture source tag among their sources (the ? binds the fixture
-// source name twice-rounded by the LIKE guard).
-func qSelectTaggedAssets(n int) string {
-	return `SELECT id, sources FROM assets WHERE id IN (` + intPlaceholders(n) + `)
-     AND sources LIKE '%"'||?||'"%'`
-}
-
-// selectIDsInto runs a single-column integer query into ids (purge
-// snapshot helper; runs on the transaction's Querier).
-func selectIDsInto(ctx context.Context, q Querier, ids *[]int64, query string, args ...any) error {
-	rows, err := q.QueryContext(ctx, query, args...)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return err
-		}
-		*ids = append(*ids, id)
-	}
-	return rows.Err()
-}
-
-// intPlaceholders renders "?,?,…" for n parameters.
-func intPlaceholders(n int) string {
-	b := make([]byte, 0, n*2)
-	for i := 0; i < n; i++ {
-		if i > 0 {
-			b = append(b, ',')
-		}
-		b = append(b, '?')
-	}
-	return string(b)
-}
-
-// idArgs lifts an id slice into query args.
-func idArgs(ids []int64) []any {
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		args[i] = id
-	}
-	return args
 }
 
 // Stats snapshots the index counts (one round-trip, read-only).

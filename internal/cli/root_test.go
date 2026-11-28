@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package cli
 
@@ -56,18 +66,18 @@ func TestRootHelpListsCommands(t *testing.T) {
 		}
 	}
 
-	// The "Coming later" pointer line is normative.  The
+	// The "Coming later" pointer line is normative (SPEC-03 §2).  The
 	// v0.1.0 release promoted update/export to real commands; scan and
 	// asset remain planned.
-	for _, w := range []string{"Coming later", "scan", "asset", "CHANGELOG.md", "export"} {
+	for _, w := range []string{"Coming later", "scan", "asset", "docs/ROADMAP.md", "export"} {
 		if !strings.Contains(help, w) {
 			t.Errorf("help missing pointer-line element %q\n--- help output ---\n%s", w, help)
 		}
 	}
 
-	// The MIT license line.
-	if !strings.Contains(help, "License: MIT") {
-		t.Errorf("help missing MIT license line\n--- help output ---\n%s", help)
+	// The AGPL license line.
+	if !strings.Contains(help, "GNU AGPL-3.0") {
+		t.Errorf("help missing AGPL line\n--- help output ---\n%s", help)
 	}
 }
 

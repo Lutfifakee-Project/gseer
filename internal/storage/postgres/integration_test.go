@@ -1,10 +1,20 @@
 //go:build integration
 
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package postgres
 
@@ -405,8 +415,8 @@ func TestMigrationStatusBranches(t *testing.T) {
 	if st.State != StateUninitialized {
 		t.Errorf("fresh DB state = %s, want UNINITIALIZED", st.State)
 	}
-	if len(st.Pending) != 13 { // 13 up-files (0001–0006 + 0016 + 0017 + 0018 + 0019 + 0020 + 0021 + 0022; head is 22, the 0007–0015 band stays reserved)
-		t.Errorf("fresh DB pending = %v, want 13 files", st.Pending)
+	if len(st.Pending) != 12 { // 12 up-files (0001–0006 + 0016 + 0017 + 0018 + 0019 + 0020 + 0021; head is 21, the 0007–0015 band stays reserved)
+		t.Errorf("fresh DB pending = %v, want 12 files", st.Pending)
 	}
 
 	// AT_HEAD.
@@ -433,11 +443,11 @@ func TestMigrationStatusBranches(t *testing.T) {
 	if st.State != StateBehind {
 		t.Errorf("behind state = %s, want BEHIND", st.State)
 	}
-	if len(st.Pending) != 12 || st.Pending[0] != "0002_helper_views.up.sql" ||
+	if len(st.Pending) != 11 || st.Pending[0] != "0002_helper_views.up.sql" ||
 		st.Pending[1] != "0003_search_index.up.sql" || st.Pending[2] != "0004_search_indexes.up.sql" ||
 		st.Pending[3] != "0005_suppressions.up.sql" || st.Pending[7] != "0018_active_observation.up.sql" ||
 		st.Pending[8] != "0019_scan_concurrency_leases.up.sql" || st.Pending[9] != "0020_scan_lease_tokens.up.sql" ||
-		st.Pending[10] != "0021_cert_projection.up.sql" || st.Pending[11] != "0022_row_observed_at.up.sql" {
+		st.Pending[10] != "0021_cert_projection.up.sql" {
 		t.Errorf("behind pending = %v", st.Pending)
 	}
 

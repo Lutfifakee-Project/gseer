@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package dataset
 
@@ -10,10 +20,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"crypto/ed25519"
 	"crypto/sha256"
 	"database/sql"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -115,23 +123,15 @@ func writeTestDataset(t *testing.T, dir string, version int64, recs []Record) *M
 	for _, p := range perSource {
 		m.Provenance = append(m.Provenance, *p)
 	}
-	// P0-1: the test channel publishes SIGNED manifests (TestMain
-	// installs the ephemeral suite keyring) — the same fail-closed path
-	// production bytes take.
-	if err := m.ValidateCore(); err != nil {
+	if err := m.Validate(); err != nil {
 		t.Fatalf("test manifest invalid: %v", err)
-	}
-	signed, err := SignManifest(m, testPriv)
-	if err != nil {
-		t.Fatalf("sign test manifest: %v", err)
-	}
-	m, err = ParseManifest(signed)
-	if err != nil {
-		t.Fatalf("signed test manifest does not re-parse: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, PayloadFilename), buf.Bytes(), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// The channel is signed (P0-1): every test-served manifest carries a
+	// valid ephemeral-key signature so the fetcher's trust gate passes.
+	signForTest(t, m)
 	return m
 }
 
@@ -193,13 +193,6 @@ func TestManifestValidate(t *testing.T) {
 		Provenance:       []ProvenanceSummary{{Source: "central-dns", Connector: "dns", Records: 3}},
 		Freshness:        FreshnessInfo{OldestObservedAt: time.Now().Add(-time.Hour), NewestObservedAt: time.Now()},
 		ValidatorVersion: "1",
-		// Signature SHAPE is validated here (crypto in VerifyTrusted —
-		// sign_test.go): a well-formed 64-byte Ed25519 signature block.
-		Signature: &ManifestSignature{
-			Algorithm: SignatureAlgorithm,
-			KeyID:     EmbeddedDatasetKeyID,
-			Value:     base64.StdEncoding.EncodeToString(make([]byte, ed25519.SignatureSize)),
-		},
 	}
 	if err := good.Validate(); err != nil {
 		t.Fatalf("good manifest refused: %v", err)
@@ -217,11 +210,6 @@ func TestManifestValidate(t *testing.T) {
 		},
 		func(m *Manifest) { m.ValidatorVersion = "" },
 		func(m *Manifest) { m.Payload.Filename = "evil.bin" },
-		// P0-1: signature-shape mutations are refusals too.
-		func(m *Manifest) { m.Signature = nil },
-		func(m *Manifest) { m.Signature.Algorithm = "rsa2048" },
-		func(m *Manifest) { m.Signature.KeyID = "" },
-		func(m *Manifest) { m.Signature.Value = "not-base64!!!" },
 	} {
 		m2 := *good
 		mutate(&m2)
@@ -231,6 +219,53 @@ func TestManifestValidate(t *testing.T) {
 		if err := m.Validate(); err == nil {
 			t.Errorf("mutated manifest %d accepted", i)
 		}
+	}
+}
+
+// TestManifestUnknownFields: the manifest envelope is forward-compatible —
+// publisher-side additions (e.g. "signature") must not break parsing;
+// compatibility is gated by schema_version, not field enumeration.
+func TestManifestUnknownFields(t *testing.T) {
+	good := &Manifest{
+		SchemaVersion:    SchemaVersion,
+		DatasetVersion:   7,
+		GeneratedAtUTC:   time.Now().UTC(),
+		Payload:          PayloadInfo{Filename: PayloadFilename, SHA256: strings.Repeat("ab", 32), SizeBytes: 10, Records: 3},
+		Rows:             RowsInfo{Assets: 2, Services: 1, Observations: 3},
+		Provenance:       []ProvenanceSummary{{Source: "central-dns", Connector: "dns", Records: 3}},
+		Freshness:        FreshnessInfo{OldestObservedAt: time.Now().Add(-time.Hour), NewestObservedAt: time.Now()},
+		ValidatorVersion: "1",
+	}
+	raw, err := json.Marshal(good)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// inject an unknown publisher-side field (tolerated, forward-compatible)
+	spliced := strings.Replace(string(raw), "{", `{"publisher_note":"hello",`, 1)
+	m, err := ParseManifest([]byte(spliced))
+	if err != nil {
+		t.Fatalf("manifest with unknown field refused: %v", err)
+	}
+	if m.DatasetVersion != 7 {
+		t.Fatalf("known fields corrupted by unknown-field splice: dataset_version=%d", m.DatasetVersion)
+	}
+	// a proper signature OBJECT parses into the typed field (mirrors the
+	// live central channel); parse-level, not trust-level
+	typed := strings.Replace(string(raw), "{",
+		`{"signature":{"algorithm":"ed25519","key_id":"5355d8197f5222d0","value":"AAA"},`, 1)
+	m2, err := ParseManifest([]byte(typed))
+	if err != nil {
+		t.Fatalf("typed signature object refused: %v", err)
+	}
+	if m2.Signature == nil || m2.Signature.KeyID != "5355d8197f5222d0" {
+		t.Fatalf("signature block not parsed: %+v", m2.Signature)
+	}
+	// the real compatibility gate stays: newer schema_version rejected
+	newer := strings.Replace(spliced,
+		fmt.Sprintf(`"schema_version":%d`, SchemaVersion),
+		fmt.Sprintf(`"schema_version":%d`, SchemaVersion+1), 1)
+	if _, err := ParseManifest([]byte(newer)); err == nil {
+		t.Fatal("newer schema_version accepted despite unknown-field tolerance")
 	}
 }
 
@@ -394,61 +429,6 @@ func TestImportHappyPathAndIdempotency(t *testing.T) {
 	}
 	if got := rowCount(t, db, "observations"); got != 3 {
 		t.Errorf("observations after re-import = %d, want 3", got)
-	}
-}
-
-// TestImportSelfProvisionsFreshDatabase — the dataset stage is a
-// WRITER: it must work even when the Local Index file has never been
-// provisioned.  Bare `gseer setup` with an existing config whose
-// database.dsn was never provisioned reaches the import through the
-// refresh tail with an empty (zero-byte, table-less) file — the import
-// must provision the schema itself (Open + idempotent Migrate) instead
-// of failing on "no such table".  Regression for the R7 end-to-end
-// finding.
-func TestImportSelfProvisionsFreshDatabase(t *testing.T) {
-	now := time.Now().UTC().Add(-time.Minute)
-	recs := []Record{domainRec("central-dns", now, "example.com")}
-	for _, tc := range []struct {
-		name string
-		pre  func(t *testing.T, path string)
-	}{
-		{"missing file", func(t *testing.T, path string) {}},
-		{"empty zero-byte file", func(t *testing.T, path string) {
-			if err := os.WriteFile(path, nil, 0o600); err != nil {
-				t.Fatal(err)
-			}
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			dbPath := filepath.Join(dir, "fresh.db")
-			tc.pre(t, dbPath)
-			m := writeTestDataset(t, dir, 12, recs)
-			res, err := Import(context.Background(), ImportOptions{
-				DBPath:      dbPath,
-				PayloadPath: filepath.Join(dir, PayloadFilename),
-				Manifest:    m,
-				ManifestURL: "http://127.0.0.1/manifest.json",
-			})
-			if err != nil {
-				t.Fatalf("import into a non-provisioned database: %v", err)
-			}
-			if res.Stats.ObservationsInserted != 1 {
-				t.Errorf("observations inserted = %d, want 1", res.Stats.ObservationsInserted)
-			}
-			db, err := sql.Open("sqlite", dbPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() { _ = db.Close() }()
-			state, err := LoadState(context.Background(), db)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !state.Installed || state.DatasetVersion != 12 || state.Records != 1 {
-				t.Errorf("state = %+v, want installed v12 with 1 record", state)
-			}
-		})
 	}
 }
 

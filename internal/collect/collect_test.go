@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package collect
 
@@ -197,12 +207,15 @@ func TestRedactURLHidesPassword(t *testing.T) {
 func TestBuiltinConnectorVerdicts(t *testing.T) {
 	reg := Registry()
 	for kind, want := range map[string]struct{ verdict, doc string }{
-		"dns":    {ReviewEnabled, "docs/SOURCES.md"},
-		"ip2asn": {ReviewEnabled, "docs/SOURCES.md"},
-		"ptr":    {ReviewEnabled, "docs/SOURCES.md"},
-		"ctlog":  {ReviewEnabled, "docs/SOURCES.md"},
-		"rdap":   {ReviewDisabled, "docs/SOURCES.md"},
-		"ct":     {ReviewDisabled, "docs/SOURCES.md"},
+		"dns":        {ReviewEnabled, "docs/SOURCES.md"},
+		"ip2asn":     {ReviewEnabled, "docs/SOURCES.md"},
+		"ptr":        {ReviewEnabled, "docs/SOURCES.md"},
+		"ctlog":      {ReviewEnabled, "docs/SOURCES.md"},
+		"rdap":       {ReviewDisabled, "docs/SOURCES.md"},
+		"ct":         {ReviewDisabled, "docs/SOURCES.md"},
+		"routeviews": {ReviewEnabled, "docs/SOURCES.md"},
+		"delegated":  {ReviewEnabled, "docs/SOURCES.md"},
+		"topdomains": {ReviewEnabled, "docs/SOURCES.md §H"},
 	} {
 		c, ok := reg[kind]
 		if !ok {

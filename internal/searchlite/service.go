@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package searchlite
 
@@ -20,6 +30,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Lutfifakee-Project/gseer/internal/gql/ast"
 	"github.com/Lutfifakee-Project/gseer/internal/gql/parser"
 	"github.com/Lutfifakee-Project/gseer/internal/gql/planner"
 	"github.com/Lutfifakee-Project/gseer/internal/gql/plannersqlite"
@@ -93,13 +104,36 @@ func (s *Service) Search(ctx context.Context, q search.Query) (*search.Result, e
 	if verr != nil {
 		return nil, wrapGQLError(verr)
 	}
+	// R114: the anchor comes from the VALIDATED tree (rewrites
+	// participate); nil when the query is not relevance-eligible — the
+	// planner falls back to the plain last_seen default.  Two-phase:
+	// ranking sorts the whole matched set, so it is applied by default
+	// ONLY when the set is bounded (measured first); larger sets keep
+	// recency order and say so honestly — an explicit
+	// --sort relevance:asc forces ranking regardless of size.
+	anchor := planner.RelevanceFor(tree)
+	var relFallback string
+	if anchor != nil && len(sorts) == 0 {
+		n, cerr := s.countMatches(ctx, tree)
+		switch {
+		case cerr != nil:
+			anchor = nil // measurement failed → safe recency default
+			relFallback = fmt.Sprintf("relevance ranking skipped: matched-set measurement failed (%v)", cerr)
+		case n > relevanceMaxRankRows:
+			anchor = nil
+			relFallback = fmt.Sprintf(
+				"matched set is %d rows — above the %d-row relevance ranking cap, so results are in recency order (use --sort relevance:asc to force ranking)",
+				n, relevanceMaxRankRows)
+		}
+	}
 	plan, err := plannersqlite.Compile(tree, planner.Options{
-		Mode:    mode,
-		Sort:    sorts,
-		Limit:   limit,
-		Timeout: timeout,
-		Cursor:  q.Cursor,
-		Fields:  q.Fields,
+		Mode:      mode,
+		Sort:      sorts,
+		Limit:     limit,
+		Timeout:   timeout,
+		Cursor:    q.Cursor,
+		Fields:    q.Fields,
+		Relevance: anchor,
 	})
 	if err != nil {
 		return nil, wrapGQLError(err)
@@ -132,16 +166,6 @@ func (s *Service) Search(ctx context.Context, q search.Query) (*search.Result, e
 	if out.HasMore && len(rows) > 0 {
 		out.NextCursor = cursorFromRow(plan, rows[len(rows)-1])
 	}
-	// v0.3.2-r2 fix: a custom projection returns the mandatory
-	// identity/metadata block plus EXACTLY the requested fields — no
-	// sort/projection column leaks into the wire rows.  Prune AFTER the
-	// cursor derivation (cursorFromRow reads the sort value and the row
-	// key off the unpruned last row).  The default projection (empty
-	// Fields) is untouched.
-	if len(q.Fields) > 0 {
-		search.PruneToProjection(out.Rows, q.Fields)
-		out.VisibleColumns = search.VisibleColumns(q.Fields)
-	}
 
 	if q.WithStats {
 		meta, serr := s.Stats(ctx)
@@ -155,6 +179,14 @@ func (s *Service) Search(ctx context.Context, q search.Query) (*search.Result, e
 			out.Notice = meta.Notice()
 		}
 	}
+	if relFallback != "" {
+		if out.Notice == "" {
+			out.Notice = relFallback
+		} else {
+			out.Notice = relFallback + " — " + out.Notice
+		}
+	}
+	// R114: the fallback notice merges LAST so the stats notice above cannot clobber it.
 	return out, nil
 }
 
@@ -217,6 +249,28 @@ func (s *Service) Validate(gql string) error {
 	return nil
 }
 
+// relevanceMaxRankRows bounds the matched set the default relevance
+// ranking will sort (R114): the rank CASE is unindexed, so ordering
+// corpus-scale sets costs seconds (measured: 2.8 s for a 500k-row set
+// on the 1M-asset corpus vs 335 ms recency).  Above the cap the search
+// falls back to recency with an explicit notice.
+var relevanceMaxRankRows = int64(50000)
+
+// countMatches measures the matched-set size for the two-phase
+// relevance decision (same WHERE the search compiles; COUNT only).
+func (s *Service) countMatches(ctx context.Context, tree ast.Node) (int64, error) {
+	where, args, _, err := plannersqlite.CompileWhere(tree)
+	if err != nil {
+		return 0, err
+	}
+	var n int64
+	if err := s.DB.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM search_index WHERE "+where, args...).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 // Explain compiles the query and renders the SQLite plan (the API's
 // /explain route).
 func (s *Service) Explain(gql string) (string, error) {
@@ -227,7 +281,9 @@ func (s *Service) Explain(gql string) (string, error) {
 	if _, err := validator.Validate(tree); err != nil {
 		return "", wrapGQLError(err)
 	}
-	plan, err := plannersqlite.Compile(tree, planner.Options{})
+	plan, err := plannersqlite.Compile(tree, planner.Options{
+		Relevance: planner.RelevanceFor(tree),
+	})
 	if err != nil {
 		return "", wrapGQLError(err)
 	}
@@ -307,7 +363,7 @@ func mapPlanError(err error, plan *Plan) error {
 // locally to keep the search package untouched).
 func cursorFromRow(plan *Plan, r search.Row) string {
 	primary := plan.Sort[0]
-	val, isNull := rowSortValue(&r, primary.Field)
+	val, isNull := rowSortValue(&r, primary.Field, plan.Relevance)
 	return planner.CursorPayload{
 		SortField: primary.Field,
 		RowID:     r.RowID,
@@ -317,8 +373,55 @@ func cursorFromRow(plan *Plan, r search.Row) string {
 	}.Encode()
 }
 
+// rowStringFields maps canonical string fields to their row accessors —
+// shared by the plain sort cases and the relevance tier lookup.
+var rowStringFields = map[string]func(*search.Row) *string{
+	"ip":                  func(r *search.Row) *string { return r.IP },
+	"domain":              func(r *search.Row) *string { return r.Domain },
+	"hostname":            func(r *search.Row) *string { return r.Hostname },
+	"asn_org":             func(r *search.Row) *string { return r.ASNOrg },
+	"geo_country":         func(r *search.Row) *string { return r.GeoCountry },
+	"geo_region":          func(r *search.Row) *string { return r.GeoRegion },
+	"geo_city":            func(r *search.Row) *string { return r.GeoCity },
+	"asset_value":         func(r *search.Row) *string { return strPtr(r.AssetValue) },
+	"transport":           func(r *search.Row) *string { return r.Transport },
+	"protocol":            func(r *search.Row) *string { return r.Protocol },
+	"name":                func(r *search.Row) *string { return r.Name },
+	"product":             func(r *search.Row) *string { return r.Product },
+	"version":             func(r *search.Row) *string { return r.Version },
+	"http.title":          func(r *search.Row) *string { return r.HTTPTitle },
+	"http.server":         func(r *search.Row) *string { return r.HTTPServer },
+	"tls.version":         func(r *search.Row) *string { return r.TLSVersion },
+	"tls.cert_subject_cn": func(r *search.Row) *string { return r.TLSCertSubjectCN },
+	"tls.cert_issuer_cn":  func(r *search.Row) *string { return r.TLSCertIssuerCN },
+	"banner":              func(r *search.Row) *string { return r.Banner },
+	"ct.log":              func(r *search.Row) *string { return r.CTLog },
+	"ct.entry_type":       func(r *search.Row) *string { return r.CTEntryType },
+	"ct.subject":          func(r *search.Row) *string { return r.CTSubjectCN },
+	"ct.issuer":           func(r *search.Row) *string { return r.CTIssuer },
+	"ct.leaf_sha256":      func(r *search.Row) *string { return r.CTLeafSHA256 },
+}
+
+// strPtr adapts a value string to the nullable shape.
+func strPtr(s string) *string { return &s }
+
 // rowSortValue mirrors search.Row.sortValue (stringified, isNull flag).
-func rowSortValue(r *search.Row, field string) (string, bool) {
+func rowSortValue(r *search.Row, field string, rel *planner.RelevanceAnchor) (string, bool) {
+	if field == "relevance" {
+		// R114: the cursor carries the relevance TIER of the row's
+		// anchor-field value — the same number the ORDER BY CASE
+		// computed in SQL (planner.RelevanceAnchor.Tier is the Go twin
+		// of the dialect CASE).  Tiers are never NULL.
+		if acc, ok := rowStringFields[rel.Field]; ok && acc != nil {
+			p := acc(r)
+			v := ""
+			if p != nil {
+				v = *p
+			}
+			return strconv.Itoa(rel.Tier(v)), false
+		}
+		return "2", false
+	}
 	stringFields := map[string]*string{
 		"ip":                  ptrStr(r.IP),
 		"domain":              ptrStr(r.Domain),
@@ -351,15 +454,19 @@ func rowSortValue(r *search.Row, field string) (string, bool) {
 		return intOrNull(r.ASN)
 	case "http.status":
 		return intOrNull(r.HTTPStatus)
+	case "coverage":
+		// R45: the cursor carries the evidence-strength RANK (planner.
+		// CoverageRank), not the class string — the ORDER BY is the rank
+		// CASE, so the payload must be numeric for page 2 to resume.
+		class := "unclassified"
+		if r.CoverageClass != nil {
+			class = *r.CoverageClass
+		}
+		return fmt.Sprintf("%d", planner.CoverageRank(class)), false
 	case "asset_value":
 		return r.AssetValue, false
 	case "asset_kind":
 		return r.AssetKind, false
-	case "observed_at":
-		if r.ObservedAt == nil {
-			return "", true
-		}
-		return r.ObservedAt.UTC().Format(microLayout), false
 	// The cursor value MUST use the same fixed-width micro layout the
 	// storage layer writes (SQ-02): RFC3339Nano trims trailing zeros,
 	// which breaks the string equality/tiebreaker against stored rows

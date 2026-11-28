@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package sqlite
 
@@ -331,6 +341,65 @@ func (s *Store) DiscardDeadLetters(ctx context.Context, sourceID int64, limit in
 // IndexSeedValues returns up to limit asset values of the given kind,
 // freshest first (seed_mode "index" — no third-party target list is
 // ever consulted).
+// IndexSeedsAfter pages the seed walk (P2): stable value order, strictly
+// after `after` — consecutive runs enrich DIFFERENT names until the whole
+// corpus is covered, then the connector wraps to the start.
+func (s *Store) IndexSeedsAfter(ctx context.Context, kind, after string, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.DB.QueryContext(ctx, `
+SELECT value FROM assets WHERE kind = ? AND value > ?
+ORDER BY value ASC LIMIT ?`, kind, after, limit)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: cannot read index seeds: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// IndexSeedsFamilyAfter is the R37 family-aware seed walk: pages ONE
+// address family (IPv6 when v6) of the given kind in stable value order,
+// strictly after `after`.  The family test is the value shape (a ':'
+// for IPv6), applied IN the query so the walk never scans a v4-only
+// window to reach the v6 range.
+func (s *Store) IndexSeedsFamilyAfter(ctx context.Context, kind, after string, limit int, v6 bool) ([]string, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	family := "NOT LIKE"
+	if v6 {
+		family = "LIKE"
+	}
+	rows, err := s.DB.QueryContext(ctx, `
+SELECT value FROM assets WHERE kind = ? AND value > ? AND value `+family+` '%:%'
+ORDER BY value ASC LIMIT ?`, kind, after, limit)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: cannot read family index seeds: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) IndexSeedValues(ctx context.Context, kind string, limit int) ([]string, error) {
 	if limit <= 0 {
 		limit = 100

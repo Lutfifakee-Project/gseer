@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package dataset
 
@@ -13,7 +23,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -29,24 +38,6 @@ import (
 // ImportMarkerSuffix is the pre-import snapshot's suffix (same directory
 // as the live database — the restore is a same-directory rename).
 const ImportMarkerSuffix = ".dataset-import-backup"
-
-// R4 P0-6 typed outcomes (errors.Is targets) — the CLI's setup contract
-// distinguishes the intermediate install-state failure (data committed,
-// state recording failed) and the benign snapshot-cleanup failure from a
-// plain import failure.
-var (
-	// ErrInstallStatePartial: the payload is fully ingested and
-	// committed, but the install-state bookkeeping failed.  The dataset
-	// must be reported as an INTERMEDIATE state (never successful
-	// readiness); recovery is an idempotent re-import.
-	ErrInstallStatePartial = errors.New("dataset: data ingested but the install state was not recorded")
-	// ErrSnapshotCleanupPartial: import + install state both completed;
-	// only the pre-import snapshot file could not be removed.  Honest
-	// note, never a failure of the dataset itself.
-	ErrSnapshotCleanupPartial = errors.New("dataset: import completed but the snapshot cleanup failed")
-	// errImportInFlight: another import holds the exclusive lock.
-	errImportInFlight = errors.New("another import is already running for this database")
-)
 
 // ProvenanceDataset marks the dataset-import bookkeeping source row:
 // "how this evidence ARRIVED".  The payload's per-record source names
@@ -101,46 +92,12 @@ func Import(ctx context.Context, opts ImportOptions) (*ImportResult, error) {
 	if opts.Manifest == nil {
 		return nil, fmt.Errorf("dataset: import requires a manifest")
 	}
-	// P0-1 fail-closed (defense in depth): the manifest must verify
-	// against the embedded trust anchor HERE, at the import boundary —
-	// even if a future caller reached Import without FetchManifest.
-	if err := VerifyTrusted(opts.Manifest); err != nil {
-		return nil, fmt.Errorf("dataset: import refused: %w", err)
-	}
-
-	// R4 P0-6: exclusive, NON-BLOCKING import lock — two concurrent
-	// imports must not interleave their snapshot/ingest/swap steps (the
-	// second one previously removed the first one's recovery snapshot).
-	releaseLock, lerr := lockImportFile(opts.DBPath + ".dataset-import.lock")
-	if lerr != nil {
-		if errors.Is(lerr, errImportInFlight) {
-			return nil, fmt.Errorf("E_DATASET_IMPORT_INFLIGHT: %w — refused without waiting (exclusive, non-blocking)", lerr)
-		}
-		return nil, lerr
-	}
-	defer releaseLock()
 
 	res, err := sqlite.Open(opts.DBPath)
 	if err != nil {
 		return nil, fmt.Errorf("E_DB_UNAVAILABLE: cannot open the Local Index: %w", err)
 	}
 	db := res.DB
-	// Schema assurance: the import is a WRITER — the Local Index it
-	// opens must actually have the schema before the first
-	// EnsureSource/ingest statement runs.  The engine commands normally
-	// provision it (personalStore = Open + Migrate), but an operator
-	// path can reach the import with a file that does not exist yet
-	// (bare `gseer setup` with an existing config whose database.dsn
-	// has never been provisioned: the discovery bootstrap's openPersonal
-	// creates an empty file, no migrations).  Migrate is idempotent —
-	// on a provisioned database it is an AT_HEAD no-op; on a fresh file
-	// it provisions the full schema so the dataset stage works
-	// everywhere, exactly like every other writer.  Failures roll back
-	// through the same atomic-import path.
-	if _, err := sqlite.Migrate(ctx, db); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("E_DB_UNAVAILABLE: the Local Index could not be provisioned for the import: %w", err)
-	}
 	snapshot := opts.DBPath + ImportMarkerSuffix
 
 	// 1. Recovery: an interrupted import never half-landed — restore
@@ -195,11 +152,11 @@ func Import(ctx context.Context, opts ImportOptions) (*ImportResult, error) {
 	if serr := recordInstall(ctx, db, opts, result); serr != nil {
 		_ = db.Close()
 		_ = os.Remove(snapshot)
-		return result, fmt.Errorf("%w: %w", ErrInstallStatePartial, serr)
+		return result, fmt.Errorf("dataset: import succeeded but recording the install state failed: %w", serr)
 	}
 	_ = db.Close()
 	if err := os.Remove(snapshot); err != nil && !os.IsNotExist(err) {
-		return result, fmt.Errorf("%w: %w", ErrSnapshotCleanupPartial, err)
+		return result, fmt.Errorf("dataset: import succeeded but the snapshot cleanup failed: %w", err)
 	}
 	return result, nil
 }

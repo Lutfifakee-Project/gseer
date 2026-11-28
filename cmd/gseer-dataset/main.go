@@ -1,36 +1,33 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-// gseer-dataset — the maintainer-side companion that builds, signs, and
-// validates the CENTRAL INTERNET-ASSET DATASET (P0-1: signed central
-// dataset distribution).
+// gseer-dataset — the maintainer-side companion that builds and
+// validates the CENTRAL INTERNET-ASSET DATASET (v0.3.2 Rev 9).
 //
-//	gseer-dataset keygen -out SEED_FILE
-//	    generate a new Ed25519 signing keypair: the 32-byte private seed
-//	    goes to SEED_FILE (0600 — keep it in the CI secret store, NEVER
-//	    in the repository), the public half + key ID print for embedding
-//	    into internal/dataset/keys.go (docs/DATASET.md §5).
 //	gseer-dataset build -db STAGING.db -out DIST_DIR -version N
 //	    export the staging Local Index's validated evidence as the
 //	    dataset payload (NDJSON.gz) + manifest (version, checksums,
 //	    provenance, observed_at bounds, freshness).  Fixture rows and
 //	    previous import bookkeeping rows are EXCLUDED; every record is
 //	    validated (schema, asset/service sanity, observed_at window,
-//	    provenance) — an invalid record FAILS the build.  Signing key
-//	    via -key-file or GSEER_DATASET_SIGNING_KEY — without it the
-//	    manifest stays UNSIGNED and the pipeline gate will refuse it.
-//	gseer-dataset sign -dir DIST_DIR -key-file SEED_FILE
-//	    sign the manifest with the private seed (the same key whose
-//	    public half the CLI embeds); the signature binds the canonical
-//	    manifest core — including the payload sha256/size/records.
+//	    provenance) — an invalid record FAILS the build.
 //	gseer-dataset validate -dir DIST_DIR
-//	    re-verify a built artifact: manifest schema, SIGNATURE against
-//	    the trusted keyring, payload checksum, record count, per-record
-//	    validation.  The pipeline refuses to publish without a passing
-//	    validate — an unsigned artifact cannot pass.
+//	    re-verify a built artifact: manifest schema, payload checksum,
+//	    record count, per-record validation.  The pipeline refuses to
+//	    publish without a passing validate.
 //
 // End-user machines never need this binary: the `gseer` CLI downloads
 // and imports the published dataset (gseer dataset update / gseer setup).
@@ -71,12 +68,12 @@ func main() {
 	switch os.Args[1] {
 	case "build":
 		buildCmd(os.Args[2:])
+	case "validate":
+		validateCmd(os.Args[2:])
 	case "sign":
 		signCmd(os.Args[2:])
 	case "keygen":
-		keygenCmd(os.Args[2:])
-	case "validate":
-		validateCmd(os.Args[2:])
+		keygenCmd()
 	default:
 		usage()
 		os.Exit(2)
@@ -84,12 +81,17 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `gseer-dataset — central dataset builder/signer/validator (docs/DATASET.md)
+	fmt.Fprint(os.Stderr, `gseer-dataset — central dataset builder/validator (docs/DATASET.md)
 
-  gseer-dataset keygen   -out SEED_FILE
-  gseer-dataset build    -db STAGING.db -out DIST_DIR -version N [-key-file SEED_FILE]
-  gseer-dataset sign     -dir DIST_DIR -key-file SEED_FILE
-  gseer-dataset validate -dir DIST_DIR
+  gseer-dataset build   -db STAGING.db -out DIST_DIR -version N
+  gseer-dataset validate -dir DIST_DIR [-require-signature]
+  gseer-dataset sign    -manifest MANIFEST.json -seed-file SEED.hex [-out OUT.json]
+  gseer-dataset keygen
+
+sign/keygen implement docs/DATASET.md §5/§6: the PRIVATE seed stays in
+the CI secret store (or an operator-held 0600 file, never the repo);
+keygen prints the seed (import into the secret store) + the public half
+(embed into internal/dataset/keys.go).
 `)
 }
 
@@ -98,7 +100,6 @@ type buildOptions struct {
 	outDir    string
 	version   int64
 	generated string
-	keyFile   string
 }
 
 // stagingRow is one raw evidence row from the staging export query.
@@ -145,7 +146,6 @@ func buildCmd(args []string) {
 	fs.StringVar(&opts.outDir, "out", "", "output directory for the artifact (required)")
 	fs.Int64Var(&opts.version, "version", 0, "monotonic dataset version (required; the pipeline uses the run number)")
 	fs.StringVar(&opts.generated, "generated-at", "", "override generated_at_utc (RFC3339; default: now, for reproducible re-builds)")
-	fs.StringVar(&opts.keyFile, "key-file", "", "Ed25519 signing seed file (0600; default: the GSEER_DATASET_SIGNING_KEY secret)")
 	_ = fs.Parse(args)
 	if opts.dbPath == "" || opts.outDir == "" || opts.version <= 0 {
 		usage()
@@ -198,7 +198,7 @@ func runBuild(opts *buildOptions) error {
 	if summary.total == 0 {
 		return fmt.Errorf("the staging database has NO exportable evidence — the pipeline collected nothing; refusing to publish an empty dataset")
 	}
-	return writeArtifact(opts, summary, generatedAt, loadSigningKeyOrWarn(opts.keyFile))
+	return writeArtifact(opts, summary, generatedAt)
 }
 
 // resolveGeneratedAt resolves the manifest generation timestamp.
@@ -298,11 +298,9 @@ func accumulateBuildSummary(s *buildSummary, rec *dataset.Record) {
 	}
 }
 
-// writeArtifact assembles, validates, signs (when a signing key is
-// available), and writes the manifest next to the finished payload.
-// Without a signing key the manifest is written UNSIGNED with a loud
-// warning — the validate/publish gate refuses unsigned artifacts.
-func writeArtifact(opts *buildOptions, summary *buildSummary, generatedAt time.Time, signKey ed25519.PrivateKey) error {
+// writeArtifact assembles, validates, and writes the manifest next to
+// the finished payload.
+func writeArtifact(opts *buildOptions, summary *buildSummary, generatedAt time.Time) error {
 	payloadPath := filepath.Join(opts.outDir, dataset.PayloadFilename)
 	st, err := os.Stat(payloadPath)
 	if err != nil {
@@ -342,26 +340,12 @@ func writeArtifact(opts *buildOptions, summary *buildSummary, generatedAt time.T
 		manifest.Provenance = append(manifest.Provenance, *p)
 	}
 	sortProvenance(manifest.Provenance)
-	// The publisher-side shape gate (no signature requirement yet —
-	// signing happens right after, when a key is available).
-	if err := manifest.ValidateCore(); err != nil {
+	if err := manifest.Validate(); err != nil {
 		return fmt.Errorf("the generated manifest failed validation: %w", err)
 	}
-	var manifestRaw []byte
-	if signKey != nil {
-		// P0-1: sign the canonical core — the signature binds the
-		// manifest (version, checksums, provenance, freshness) and the
-		// payload identity in one unambiguous block.
-		manifestRaw, err = dataset.SignManifest(manifest, signKey)
-		if err != nil {
-			return fmt.Errorf("cannot sign the manifest: %w", err)
-		}
-	} else {
-		manifestRaw, err = json.MarshalIndent(manifest, "", "  ")
-		if err != nil {
-			return fmt.Errorf("cannot encode the manifest: %w", err)
-		}
-		manifestRaw = append(manifestRaw, '\n')
+	manifestRaw, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return fmt.Errorf("cannot encode the manifest: %w", err)
 	}
 	manifestPath := filepath.Join(opts.outDir, dataset.ManifestFilename)
 	// #nosec G304 -- manifestPath is the operator-provided -out directory
@@ -376,151 +360,8 @@ func writeArtifact(opts *buildOptions, summary *buildSummary, generatedAt time.T
 		summary.oldest.UTC().Format(time.RFC3339), summary.newest.UTC().Format(time.RFC3339))
 	fmt.Printf("[ ok ] payload: %s sha256=%s (%d bytes)\n", dataset.PayloadFilename, manifest.Payload.SHA256, st.Size())
 	fmt.Printf("[ ok ] manifest: %s\n", manifestPath)
-	if signKey != nil {
-		fmt.Printf("[ ok ] signed with key %s (signature binds the manifest core + payload sha256/size/records)\n",
-			dataset.KeyID(signKey.Public().(ed25519.PublicKey)))
-		fmt.Printf("Next: gseer-dataset validate -dir %s   (the pipeline refuses to publish without a passing validate)\n", opts.outDir)
-	} else {
-		fmt.Printf("[WARN] manifest is UNSIGNED — no signing key was provided (-key-file / GSEER_DATASET_SIGNING_KEY).\n")
-		fmt.Printf("       An unsigned dataset CANNOT pass validate and consumers refuse it: gseer-dataset sign -dir %s -key-file <seed>\n", opts.outDir)
-	}
+	fmt.Printf("Next: gseer-dataset validate -dir %s   (the pipeline refuses to publish without a passing validate)\n", opts.outDir)
 	return nil
-}
-
-// ---------------------------------------------------------------------------
-// signing
-// ---------------------------------------------------------------------------
-
-// loadSigningKeyOrWarn resolves the signing key (file > env), returning
-// nil WITHOUT an error when none is configured — the caller prints the
-// unsigned warning.  Key material NEVER reaches errors or stdout.
-func loadSigningKeyOrWarn(keyFile string) ed25519.PrivateKey {
-	key, err := loadSigningKey(keyFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "gseer-dataset: signing key unavailable (%v) — building UNSIGNED\n", err)
-		return nil
-	}
-	return key
-}
-
-// loadSigningKey resolves the Ed25519 private seed: -key-file (0600
-// enforced) or the GSEER_DATASET_SIGNING_KEY secret (base64 or hex, 32
-// bytes).  The seed is consumed in memory only.
-func loadSigningKey(keyFile string) (ed25519.PrivateKey, error) {
-	var raw []byte
-	if keyFile != "" {
-		st, err := os.Stat(keyFile)
-		if err != nil {
-			return nil, fmt.Errorf("cannot stat -key-file: %w", err)
-		}
-		if st.Mode().Perm() != 0o600 {
-			return nil, fmt.Errorf("signing seed file %s has mode %04o — a private seed must be 0600; chmod 600 it and retry", keyFile, uint32(st.Mode().Perm()))
-		}
-		b, err := os.ReadFile(keyFile) // #nosec G304 -- the operator-provided seed path (a maintainer secret file)
-		if err != nil {
-			return nil, fmt.Errorf("cannot read the seed file: %w", err)
-		}
-		raw = b
-	} else if env := os.Getenv("GSEER_DATASET_SIGNING_KEY"); env != "" {
-		raw = []byte(env)
-	} else {
-		return nil, nil // nothing configured — build unsigned, honestly
-	}
-	seed, err := decodeSeed(raw)
-	if err != nil {
-		return nil, err
-	}
-	return ed25519.NewKeyFromSeed(seed), nil
-}
-
-// decodeSeed parses a 32-byte seed in base64-std or hex form.
-func decodeSeed(raw []byte) ([]byte, error) {
-	s := strings.TrimSpace(string(raw))
-	if s == "" {
-		return nil, fmt.Errorf("the signing seed is empty")
-	}
-	if b, err := base64.StdEncoding.DecodeString(s); err == nil && len(b) == ed25519.SeedSize {
-		return b, nil
-	}
-	if b, err := hex.DecodeString(s); err == nil && len(b) == ed25519.SeedSize {
-		return b, nil
-	}
-	return nil, fmt.Errorf("the signing seed is not a 32-byte base64/hex value")
-}
-
-// signCmd signs an existing artifact directory's manifest.
-func signCmd(args []string) {
-	fs := flag.NewFlagSet("sign", flag.ExitOnError)
-	dir := fs.String("dir", "", "artifact directory containing the manifest (required)")
-	keyFile := fs.String("key-file", "", "Ed25519 signing seed file (0600; default: the GSEER_DATASET_SIGNING_KEY secret)")
-	_ = fs.Parse(args)
-	if *dir == "" {
-		usage()
-		os.Exit(2)
-	}
-	key, err := loadSigningKey(*keyFile)
-	if err != nil {
-		fatal("sign FAILED: %v", err)
-	}
-	if key == nil {
-		fatal("sign FAILED: no signing key (-key-file or the GSEER_DATASET_SIGNING_KEY secret)")
-	}
-	manifestPath := filepath.Join(*dir, dataset.ManifestFilename)
-	raw, err := os.ReadFile(manifestPath) // #nosec G304 -- pinned constant filename in the operator's artifact directory
-	if err != nil {
-		fatal("sign FAILED: manifest missing: %v", err)
-	}
-	m, err := dataset.ParseManifestUnsigned(raw)
-	if err != nil {
-		fatal("sign FAILED: %v", err)
-	}
-	signed, err := dataset.SignManifest(m, key)
-	if err != nil {
-		fatal("sign FAILED: %v", err)
-	}
-	// Re-parse through the STRICT gate: what the consumer sees must be
-	// exactly what this command accepts.
-	if _, err := dataset.ParseManifest(signed); err != nil {
-		fatal("sign FAILED: the signed manifest does not re-validate: %v", err)
-	}
-	// #nosec G703 -- manifestPath is filepath.Join(*dir, dataset.ManifestFilename):
-	// the operator-provided -dir with a pinned constant filename; a local,
-	// single-user maintainer flow, same dataflow as the nosec above.
-	if err := os.WriteFile(manifestPath, signed, 0o600); err != nil {
-		fatal("sign FAILED: cannot write the signed manifest: %v", err)
-	}
-	fmt.Printf("[ ok ] manifest signed with key %s\n", dataset.KeyID(key.Public().(ed25519.PublicKey)))
-	fmt.Printf("Next: gseer-dataset validate -dir %s\n", *dir)
-}
-
-// keygenCmd generates a fresh signing keypair: the private seed to the
-// -out file (0600, refused on overwrite), the public half + key ID to
-// stdout (for embedding into internal/dataset/keys.go).  The seed is
-// never printed.
-func keygenCmd(args []string) {
-	fs := flag.NewFlagSet("keygen", flag.ExitOnError)
-	out := fs.String("out", "", "seed file to create (required; 0600)")
-	_ = fs.Parse(args)
-	if *out == "" {
-		usage()
-		os.Exit(2)
-	}
-	if _, err := os.Stat(*out); err == nil {
-		fatal("keygen FAILED: %s already exists — refusing to overwrite a signing key", *out)
-	}
-	seed := make([]byte, ed25519.SeedSize)
-	if _, err := rand.Read(seed); err != nil {
-		fatal("keygen FAILED: cannot generate the seed: %v", err)
-	}
-	if err := os.WriteFile(*out, []byte(hex.EncodeToString(seed)+"\n"), 0o600); err != nil {
-		fatal("keygen FAILED: cannot write the seed file: %v", err)
-	}
-	priv := ed25519.NewKeyFromSeed(seed)
-	pub := priv.Public().(ed25519.PublicKey)
-	fmt.Printf("[ ok ] signing keypair generated: %s (0600; keep it in the CI secret store — NEVER in the repository)\n", *out)
-	fmt.Printf("  public key (base64): %s\n", base64.StdEncoding.EncodeToString(pub))
-	fmt.Printf("  key id             : %s\n", dataset.KeyID(pub))
-	fmt.Printf("Next: embed public key + key id into internal/dataset/keys.go (docs/DATASET.md §5); publish the seed to the pipeline secret GSEER_DATASET_SIGNING_KEY.\n")
 }
 
 // sortProvenance orders the provenance summary deterministically.
@@ -535,6 +376,7 @@ func sortProvenance(list []dataset.ProvenanceSummary) {
 func validateCmd(args []string) {
 	fs := flag.NewFlagSet("validate", flag.ExitOnError)
 	dir := fs.String("dir", "", "artifact directory containing the manifest + payload (required)")
+	requireSig := fs.Bool("require-signature", false, "refuse an unsigned manifest (the publish gate sets this)")
 	_ = fs.Parse(args)
 	if *dir == "" {
 		usage()
@@ -543,13 +385,41 @@ func validateCmd(args []string) {
 	if err := runValidate(*dir); err != nil {
 		fatal("validate FAILED: %v", err)
 	}
-	fmt.Println("[ ok ] dataset artifact validates (manifest schema, SIGNATURE against the trusted keyring, payload checksum, record count, per-record validation)")
+	if err := checkSignature(*dir, *requireSig); err != nil {
+		fatal("signature check FAILED: %v", err)
+	}
+	note := ""
+	if !*requireSig {
+		note = " (unsigned local artifact — publish gates must pass -require-signature)"
+	}
+	fmt.Printf("[ ok ] dataset artifact validates (manifest schema, payload checksum, record count, per-record validation)%s\n", note)
 }
 
-// runValidate re-verifies a built artifact end-to-end.  The signature
-// gate is fail-closed: ParseManifest refuses a missing/malformed
-// signature block, and VerifyTrusted refuses a signature the trusted
-// keyring cannot verify — an unsigned artifact cannot pass.
+// checkSignature verifies the manifest's Ed25519 signature against the
+// embedded trust anchor.  A PRESENT but invalid/foreign signature is
+// always a hard failure; absence is a failure only under
+// -require-signature (the publish gate), so the local build→validate→
+// sign→publish flow keeps working without any silent trust downgrade.
+func checkSignature(dir string, require bool) error {
+	manifestRaw, err := os.ReadFile(filepath.Join(dir, dataset.ManifestFilename)) // #nosec G304 -- pinned constant filename
+	if err != nil {
+		return err
+	}
+	m, err := dataset.ParseManifest(manifestRaw)
+	if err != nil {
+		return err
+	}
+	if m.Signature == nil {
+		if require {
+			return fmt.Errorf("the manifest is unsigned — the publish gate requires a signed manifest (gseer-dataset sign)")
+		}
+		fmt.Println("[warn] manifest is unsigned (local artifact; sign it before publishing)")
+		return nil
+	}
+	return dataset.VerifyTrusted(manifestRaw, m)
+}
+
+// runValidate re-verifies a built artifact end-to-end.
 func runValidate(dir string) error {
 	// #nosec G304 -- dir is the operator-provided artifact directory; the
 	// joined filename is the PINNED constant dataset.ManifestFilename.
@@ -559,9 +429,6 @@ func runValidate(dir string) error {
 	}
 	m, err := dataset.ParseManifest(manifestRaw)
 	if err != nil {
-		return err
-	}
-	if err := dataset.VerifyTrusted(m); err != nil {
 		return err
 	}
 	payloadPath := filepath.Join(dir, m.Payload.Filename)
@@ -777,4 +644,86 @@ func validateRecordForBuild(rec *dataset.Record) error {
 		}
 	}
 	return nil
+}
+
+// keygenCmd generates an Ed25519 signing keypair (docs/DATASET.md §5):
+// the seed goes into the CI secret store, the public half into
+// internal/dataset/keys.go.  Never commit the seed.
+func keygenCmd() {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		fatal("keygen: %v", err)
+	}
+	seed := priv.Seed()
+	fmt.Println("GSEER dataset signing keypair — HANDLING: the seed is a SECRET.")
+	fmt.Printf("seed_hex      : %s\n", hex.EncodeToString(seed))
+	fmt.Printf("seed_handling : import into the CI secret store as GSEER_DATASET_SIGNING_KEY (0600 file, NEVER the repo or an artifact)\n")
+	fmt.Printf("public_b64    : %s\n", base64.StdEncoding.EncodeToString(pub))
+	fmt.Printf("key_id        : %s  (= hex(sha256(pub)[:8]))\n", dataset.KeyID(pub))
+	fmt.Println("next          : embed public_b64 + key_id in internal/dataset/keys.go (add to the keyring — keep the prior entry during rotation)")
+}
+
+// signCmd signs an existing manifest document with the operator's seed
+// (docs/DATASET.md §5).  The seed is read from -seed-file (hex, 0600),
+// -seed (hex, discouraged for shells) or $GSEER_DATASET_SIGNING_KEY.
+func signCmd(args []string) {
+	fs := flag.NewFlagSet("sign", flag.ExitOnError)
+	manifestPath := fs.String("manifest", "", "unsigned manifest document (required)")
+	seedFile := fs.String("seed-file", "", "hex-encoded 32-byte Ed25519 seed (0600 file; preferred)")
+	seedHex := fs.String("seed", "", "hex-encoded 32-byte seed (discouraged — shells keep history)")
+	out := fs.String("out", "", "output path (default: overwrite -manifest in place)")
+	_ = fs.Parse(args)
+	if *manifestPath == "" || (*seedFile == "" && *seedHex == "" && os.Getenv("GSEER_DATASET_SIGNING_KEY") == "") {
+		usage()
+		os.Exit(2)
+	}
+	seedSrc := *seedHex
+	if *seedFile != "" {
+		raw, err := os.ReadFile(*seedFile) // #nosec G304 -- operator-provided key file
+		if err != nil {
+			fatal("cannot read the seed file: %v", err)
+		}
+		seedSrc = strings.TrimSpace(string(raw))
+	} else if seedSrc == "" {
+		seedSrc = os.Getenv("GSEER_DATASET_SIGNING_KEY")
+	}
+	seed, err := hex.DecodeString(strings.TrimSpace(seedSrc))
+	if err != nil || len(seed) != ed25519.SeedSize {
+		fatal("the signing seed must be %d hex-encoded bytes (got %d bytes, err %v)", ed25519.SeedSize, len(seed), err)
+	}
+	priv := ed25519.NewKeyFromSeed(seed)
+	manifestRaw, err := os.ReadFile(*manifestPath) // #nosec G304 -- operator-provided path
+	if err != nil {
+		fatal("cannot read the manifest: %v", err)
+	}
+	m, err := dataset.ParseManifest(manifestRaw)
+	if err != nil {
+		fatal("manifest does not parse: %v", err)
+	}
+	if m.Signature != nil {
+		fmt.Println("[warn] the manifest already carries a signature — it will be REPLACED (re-signing over a published signature breaks nothing: the core is unchanged)")
+	}
+	doc, err := dataset.SignManifest(m, priv)
+	if err != nil {
+		fatal("cannot sign: %v", err)
+	}
+	// self-check before write: the signed document MUST verify against
+	// the same key — refuse to emit anything that would not verify.
+	parsed, err := dataset.ParseManifest(doc)
+	if err != nil {
+		fatal("signed document does not parse: %v", err)
+	}
+	ring := dataset.Keyring{dataset.KeyID(priv.Public().(ed25519.PublicKey)): priv.Public().(ed25519.PublicKey)}
+	if err := dataset.VerifyManifestSignature(doc, parsed, ring); err != nil {
+		fatal("signed document failed self-verification: %v", err)
+	}
+	dst := *out
+	if dst == "" {
+		dst = *manifestPath
+	}
+	if err := os.WriteFile(dst, doc, 0o600); err != nil { // #nosec G304 -- operator-provided output path
+		fatal("cannot write the signed manifest: %v", err)
+	}
+	fmt.Printf("[ ok ] signed by key %s -> %s\n", dataset.KeyID(priv.Public().(ed25519.PublicKey)), dst)
+	fmt.Println("next : gseer-dataset validate -dir <dir> -require-signature   (the publish gate)")
 }

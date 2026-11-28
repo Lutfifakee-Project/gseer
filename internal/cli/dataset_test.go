@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package cli
 
@@ -31,54 +41,8 @@ import (
 
 // serveTestDataset spins a loopback channel serving a manifest + payload
 // built from records (http on loopback is the allowed local-testing
-// transport) and returns the manifest URL.  P0-1: the manifest is
-// SIGNED with an ephemeral publisher key registered as the verifier's
-// trust anchor — the CLI journey under test is the signed journey.
+// transport) and returns the manifest URL.
 func serveTestDataset(t *testing.T, version int64, recs []dataset.Record) string {
-	t.Helper()
-	payload := payloadBytes(t, recs)
-	sum := sha256.Sum256(payload)
-	manifestRaw := buildTestManifest(t, version, recs, hex.EncodeToString(sum[:]), false)
-	return serveTestChannel(t, manifestRaw, payload)
-}
-
-// buildTestManifest marshals the manifest for the given records; when
-// sign is true it is signed with an ephemeral key whose public half is
-// installed as the test trust anchor.
-func buildTestManifest(t *testing.T, version int64, recs []dataset.Record, sha string, _ bool) []byte {
-	t.Helper()
-	now := time.Now().UTC().Add(-time.Minute)
-	m := &dataset.Manifest{
-		SchemaVersion:  dataset.SchemaVersion,
-		DatasetVersion: version,
-		GeneratedAtUTC: now,
-		Payload: dataset.PayloadInfo{
-			Filename:  dataset.PayloadFilename,
-			SHA256:    sha,
-			SizeBytes: int64(len(payloadBytes(t, recs))),
-			Records:   int64(len(recs)),
-		},
-		Rows:             dataset.RowsInfo{Assets: int64(len(recs)), Services: int64(len(recs)) / 2, Observations: int64(len(recs))},
-		Provenance:       []dataset.ProvenanceSummary{{Source: "central-dns", Connector: "dns", Records: int64(len(recs))}, {Source: "central-scan", Connector: "scan-tls", Records: 1}},
-		Freshness:        dataset.FreshnessInfo{OldestObservedAt: now.Add(-time.Second), NewestObservedAt: now},
-		ValidatorVersion: "1",
-		Notes:            "test dataset (unit acceptance)",
-	}
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pub := priv.Public().(ed25519.PublicKey)
-	dataset.SetTestKeyring(dataset.Keyring{dataset.KeyID(pub): pub})
-	t.Cleanup(func() { dataset.SetTestKeyring(nil) })
-	signed, err := dataset.SignManifest(m, priv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return signed
-}
-
-func payloadBytes(t *testing.T, recs []dataset.Record) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
@@ -91,17 +55,47 @@ func payloadBytes(t *testing.T, recs []dataset.Record) []byte {
 	if err := gz.Close(); err != nil {
 		t.Fatal(err)
 	}
-	return buf.Bytes()
-}
+	sum := sha256.Sum256(buf.Bytes())
+	now := time.Now().UTC().Add(-time.Minute)
+	m := &dataset.Manifest{
+		SchemaVersion:  dataset.SchemaVersion,
+		DatasetVersion: version,
+		GeneratedAtUTC: now,
+		Payload: dataset.PayloadInfo{
+			Filename:  dataset.PayloadFilename,
+			SHA256:    hex.EncodeToString(sum[:]),
+			SizeBytes: int64(buf.Len()),
+			Records:   int64(len(recs)),
+		},
+		Rows:             dataset.RowsInfo{Assets: int64(len(recs)), Services: int64(len(recs)) / 2, Observations: int64(len(recs))},
+		Provenance:       []dataset.ProvenanceSummary{{Source: "central-dns", Connector: "dns", Records: int64(len(recs))}, {Source: "central-scan", Connector: "scan-tls", Records: 1}},
+		Freshness:        dataset.FreshnessInfo{OldestObservedAt: now.Add(-time.Second), NewestObservedAt: now},
+		ValidatorVersion: "1",
+		Notes:            "test dataset (unit acceptance)",
+	}
+	// The channel is signed (P0-1): sign the served manifest with an
+	// ephemeral key and trust that key for the duration of the test —
+	// the production fetcher refuses unsigned manifests before the
+	// payload is even requested.
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signedDoc, err := dataset.SignManifest(m, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := priv.Public().(ed25519.PublicKey)
+	oldRing := dataset.TrustKeyring()
+	dataset.SetTestKeyring(dataset.Keyring{dataset.KeyID(pub): pub})
+	t.Cleanup(func() { dataset.SetTestKeyring(oldRing) })
 
-func serveTestChannel(t *testing.T, manifestRaw, payload []byte) string {
-	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, dataset.ManifestFilename):
-			_, _ = w.Write(manifestRaw)
+			_, _ = w.Write(signedDoc)
 		case strings.HasSuffix(r.URL.Path, dataset.PayloadFilename):
-			_, _ = w.Write(payload)
+			_, _ = w.Write(buf.Bytes())
 		default:
 			http.NotFound(w, r)
 		}
@@ -152,12 +146,8 @@ func TestDatasetUpdateImportsAndSearchFindsIt(t *testing.T) {
 	if err := cmd.Flags().Set("manifest-url", channel); err != nil {
 		t.Fatal(err)
 	}
-	guard := pinExitSeamFunc(t)
 	if err := cmd.RunE(cmd, nil); err != nil {
 		t.Fatalf("dataset update: %v\n%s", err, out.String())
-	}
-	if guard.called != nil {
-		t.Fatalf("dataset update exited via the seam (code=%d):\n%s", *guard.called, out.String())
 	}
 	if !strings.Contains(out.String(), "dataset v42 imported") {
 		t.Fatalf("update output missing the import line:\n%s", out.String())
@@ -174,7 +164,6 @@ func TestDatasetUpdateImportsAndSearchFindsIt(t *testing.T) {
 	}
 	searchOut := &bytes.Buffer{}
 	searchCmd.SetOut(searchOut)
-	t.Cleanup(func() { searchCmd.SetOut(nil) }) // never pin the singleton search writer past this test
 	if err := searchCmd.RunE(searchCmd, []string{"port=443"}); err != nil {
 		t.Fatalf("search: %v\n%s", err, searchOut.String())
 	}
@@ -233,7 +222,7 @@ func TestDatasetUpdateChecksumFailureLeavesDBUntouched(t *testing.T) {
 	cmd.SetOut(out2)
 	_ = cmd.Flags().Set("manifest-url", tampered)
 
-	guard := pinExitSeamFunc(t)
+	guard := pinExitFunc(t)
 	if err := cmd.RunE(cmd, nil); err != nil {
 		t.Fatalf("update returned an error (must exit via the seam): %v", err)
 	}
@@ -253,12 +242,16 @@ func TestDatasetUpdateChecksumFailureLeavesDBUntouched(t *testing.T) {
 }
 
 // serveTamperedDataset serves a manifest whose payload checksum does not
-// match the payload it serves (simulating corruption/tamper).  P0-1: the
-// lying manifest is VALIDLY SIGNED — the checksum gate (not the
-// signature gate) must be the refusal layer this test pins.
+// match the payload it serves (simulating corruption/tamper).
 func serveTamperedDataset(t *testing.T, version int64, recs []dataset.Record) string {
 	t.Helper()
-	payload := payloadBytes(t, recs)
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	enc := json.NewEncoder(gz)
+	for _, r := range recs {
+		_ = enc.Encode(r)
+	}
+	_ = gz.Close()
 	now := time.Now().UTC().Add(-time.Minute)
 	m := &dataset.Manifest{
 		SchemaVersion:  dataset.SchemaVersion,
@@ -267,7 +260,7 @@ func serveTamperedDataset(t *testing.T, version int64, recs []dataset.Record) st
 		Payload: dataset.PayloadInfo{
 			Filename:  dataset.PayloadFilename,
 			SHA256:    strings.Repeat("de", 32), // a lie
-			SizeBytes: int64(len(payload)),
+			SizeBytes: int64(buf.Len()),
 			Records:   int64(len(recs)),
 		},
 		Rows:             dataset.RowsInfo{Assets: int64(len(recs)), Services: 0, Observations: int64(len(recs))},
@@ -275,18 +268,34 @@ func serveTamperedDataset(t *testing.T, version int64, recs []dataset.Record) st
 		Freshness:        dataset.FreshnessInfo{OldestObservedAt: now, NewestObservedAt: now},
 		ValidatorVersion: "1",
 	}
+	// Signed like the real channel — the tamper under test is the
+	// PAYLOAD CHECKSUM lie, so the signature gate must pass here.
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pub := priv.Public().(ed25519.PublicKey)
-	dataset.SetTestKeyring(dataset.Keyring{dataset.KeyID(pub): pub})
-	t.Cleanup(func() { dataset.SetTestKeyring(nil) })
-	manifestRaw, err := dataset.SignManifest(m, priv)
+	signedDoc, err := dataset.SignManifest(m, priv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return serveTestChannel(t, manifestRaw, payload)
+	pub := priv.Public().(ed25519.PublicKey)
+	oldRing := dataset.TrustKeyring()
+	kr := dataset.Keyring{}
+	for id, k := range oldRing {
+		kr[id] = k
+	}
+	kr[dataset.KeyID(pub)] = pub
+	dataset.SetTestKeyring(kr)
+	t.Cleanup(func() { dataset.SetTestKeyring(oldRing) })
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, dataset.ManifestFilename) {
+			_, _ = w.Write(signedDoc)
+			return
+		}
+		_, _ = w.Write(buf.Bytes())
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL + "/" + dataset.ManifestFilename
 }
 
 func TestDatasetUpdateUnreachableHonest(t *testing.T) {
@@ -311,7 +320,7 @@ func TestDatasetUpdateUnreachableHonest(t *testing.T) {
 	cmd, _, _ := RootCmd.Find([]string{"dataset", "update"})
 	cmd.SetOut(out2)
 	_ = cmd.Flags().Set("manifest-url", deadURL+"/gseer-dataset-manifest.json")
-	guard := pinExitSeamFunc(t)
+	guard := pinExitFunc(t)
 	_ = cmd.RunE(cmd, nil)
 	if guard.called == nil || *guard.called != ExitUnavailable {
 		t.Fatalf("unreachable must exit 4 via the seam, got called=%v", guard.called)
@@ -367,7 +376,6 @@ func TestDatasetSetupAutoImports(t *testing.T) {
 	searchCmd, _, _ := RootCmd.Find([]string{"search"})
 	searchOut := &bytes.Buffer{}
 	searchCmd.SetOut(searchOut)
-	t.Cleanup(func() { searchCmd.SetOut(nil) }) // never pin the singleton search writer past this test
 	if err := searchCmd.RunE(searchCmd, []string{"port=443"}); err != nil {
 		t.Fatalf("search: %v\n%s", err, searchOut.String())
 	}

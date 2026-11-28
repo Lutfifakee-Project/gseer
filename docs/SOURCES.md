@@ -1,6 +1,6 @@
 # GSEER — Passive Data Source Review Register
 
-> This document is the
+> v0.0.2 Passive Intelligence (owner directive §2).  This document is the
 > review register every connector's `Review()` verdict anchors to.  A
 > connector may only carry the verdict `reviewed-enabled` when the
 > provider's terms clearly permit automated collection AND indexing of
@@ -17,9 +17,10 @@
 | `dns` | operator-configured resolver (system default) | **reviewed-enabled** | standard DNS recursion; the operator names every target; answers are protocol facts |
 | `ip2asn` | Team Cymru IP-to-ASN (DNS interface) | **reviewed-enabled** | explicitly free community service; DNS interface requested "at volume"; conservative rates + caching |
 | `ptr` | operator-configured resolver (system default) | **reviewed-enabled** | standard reverse-DNS (PTR) recursion; same basis as `dns` — operator-named addresses, protocol facts |
-| `ctlog` | public CT logs from the official log list (default: Cloudflare Nimbus2026) | **reviewed-enabled** (§G) | RFC 9162 mandates public `get-sth`/`get-entries`; seed-free tip-following read of a bounded window; certificates are public data; the log is the only endpoint touched |
+| `ctlog` | public CT logs from the official log list (default: Cloudflare Nimbus2026) | **reviewed-enabled** (§G, Rev 14) | RFC 9162 mandates public `get-sth`/`get-entries`; seed-free tip-following read of a bounded window; certificates are public data; the log is the only endpoint touched |
 | `egress-echo` | api.ipify.org (public HTTPS echo, bootstrap context probe only) | **reviewed-enabled** (§F) | one bounded request at setup; returns the caller's own public IP; free service without per-use terms restrictions; provenance `egress-echo` |
-| central dataset | the project's scheduled pipeline over the reviewed-enabled connectors above (§C/§D/§E + scoped TLS observation of the seeds register) | **reviewed-enabled** | rows produced ONLY by reviewed-enabled connectors; validated before publication (gseer-dataset validate) and re-validated at import; provenance preserved per record — `docs/DATASET.md` |
+| central dataset | the project's scheduled pipeline over the reviewed-enabled connectors above (§C/§D/§E + scoped TLS observation of the seeds register) | **reviewed-enabled** (Rev 9) | rows produced ONLY by reviewed-enabled connectors; validated before publication (gseer-dataset validate) and re-validated at import; provenance preserved per record — `docs/DATASET.md` |
+| `pdns` | public key-less passive-DNS-style datasets: HackerTarget hostsearch + Wayback Machine CDX (config `provider`) | **reviewed-enabled** (§J, v0.3.3) | free public interfaces, one query per operator-named seed, rate-capped; published hostname/resolution history recorded as publication facts with lookup time |
 | `rdap` | RIR registration data (ARIN/RIPE NCC et al.) | **disabled** | terms do not grant indexing/redistribution; needs written authorization |
 | `ct` | crt.sh (Sectigo CT aggregation) | **disabled** | no published terms covering automated collection or indexing/reuse |
 
@@ -68,8 +69,8 @@ into third-party search products.
     precertificate/certificate duplication, wildcard names need
     normalization, no liveness or IP data, CT only covers
     publicly-trusted certificates.
-12. **Verdict: `disabled`** — unclear permission for indexing/reuse;
-    keep disabled.  The connector is implemented
+12. **Verdict: `disabled`** — unclear permission for indexing/reuse
+    (owner directive §2: keep disabled).  The connector is implemented
     and unit-tested; flipping `Review()` is a one-line, owner-visible
     change after the terms question is settled (or after switching to a
     provider with explicit API terms — e.g. an account-based CT API with
@@ -121,6 +122,11 @@ into third-party search products.
     and unit-tested for the day the owner secures authorization.
 
 ## §C Public DNS — operator-domain resolution (connector `dns`)
+
+Rev 14 (2026-11-27): the seed register grows from 14 to 26 domains — all
+additions DNS-ONLY (passive resolution via public recursive resolvers;
+none added to the active `tls_hosts` subset).  Per-entry terms basis is
+documented in `pipeline/dataset-seeds.yaml`.
 
 1. **Source identity / endpoint**: the DNS resolution system — the
    operator's configured resolver (default: the operating system's
@@ -317,7 +323,7 @@ factual reasons below are what matters for any future re-review:
   of the echo endpoint, or any expansion of what the bootstrap queries
   from it.
 
-## §G CT log walking — public Certificate Transparency logs (connector `ctlog`)
+## §G CT log walking — public Certificate Transparency logs (connector `ctlog`, Rev 14)
 
 - **Provider / endpoint:** any log from the official public log list
   (`https://www.gstatic.com/ct/log_list/v3/log_list.json`); the connector
@@ -357,7 +363,7 @@ factual reasons below are what matters for any future re-review:
   `dns` connector's separate, terms-reviewed job); pre-certificates and
   RFC 9162 v2 leaves are skipped honestly (counted in the run stats);
   names are sightings, not liveness.
-- **Verdict: `reviewed-enabled`** (owner-scoped).  Re-review
+- **Verdict: `reviewed-enabled`** (Rev 14, owner-scoped).  Re-review
   triggers: any log operator's terms change that restricts public read
   access, a move off the official log list, or any attempt to raise the
   read volume beyond the bounded window.
@@ -367,6 +373,97 @@ factual reasons below are what matters for any future re-review:
   identity-scoped CT search if the owner ever wants it.
 
 
+
+## §H Public domain-popularity lists — Majestic Million (connector `topdomains`, R39)
+
+- **Source identity:** the Majestic Million — the top million domains by
+  referring subnets, published by Majestic (majestic.com) as a free CSV
+  download: `https://downloads.majestic.com/majestic_million.csv`.
+- **License / terms:** the file is published for free public download
+  ("You are free to use this data...") per Majestic's Majestic Million
+  terms page (https://majestic.com/reports/majestic-million).  GSEER
+  ingests the file verbatim at runtime; it attributes the source in
+  every evidence object (`topdomains.attribution`) and does not
+  redistribute the file itself inside the source kit.
+- **Verdict:** reviewed-enabled.  The operator ingests a list the
+  publisher distributes for exactly this purpose; no authentication, no
+  scraping, one polite request per run.
+- **Snapshot honesty:** the list is a periodic AGGREGATE.  There is no
+  per-record timestamp upstream — GSEER records the fetch time as
+  `observed_at` and never claims the domain was "observed live".  The
+  published numbers (rank, RefSubNets, RefIPs) are copied verbatim into
+  evidence, not re-measured.
+- **Freshness / incremental:** line-offset checkpoint (`topdomains`
+  cursor) — a run that hits its record budget resumes at the line
+  offset; the freshness contract is operator-driven re-runs.
+- **Failure handling:** parse-invalid rows are counted
+  (`skipped:invalid`), never fabricated into facts; a transport failure
+  fails the attempt honestly.
+- **Downstream:** the ingested domains are first-class domain assets —
+  the corpus the DNS connector (`seed_mode index`) resolves A/AAAA/
+  CNAME/MX/NS/TXT for (§C) and the CT/DNS relationship layer builds on
+  (R39 P3/P5).  No Internet-wide scanning is involved anywhere.
+
+
+
+## §I BGP RIB archives — RouteViews (connector `routeviews`, Rev 14)
+
+- **Provider:** University of Oregon RouteViews Project — public BGP RIB
+  dumps (routeviews.org), IPv4/IPv6, licensed CC BY 4.0 (attribution is
+  embedded in the connector as `routeviewsAttribution` and travels on
+  every fact as provenance evidence).
+- **What it yields:** prefix → origin-AS mapping ("VRF default" view) as
+  ASN-attribution facts for IP assets already in the index.  BGP/RIB
+  evidence is ROUTING data, never a claim that a port or service is
+  reachable (§D holds for the service layer).
+- **Terms basis:** passive download of a public archive (plain HTTPS
+  GET of the MRT dump), attribution preserved, no contact with the
+  prefixes described, rate and size bounded (`routeviewsDefaultLimit`
+  prefix facts per run, checkpointed cursor).
+- **MOAS / IPv6:** multi-origin sets are recorded as separate facts with
+  the snapshot timestamp; IPv6 prefixes follow the same path as IPv4.
+- **Snapshot freshness:** every fact carries the RIB file timestamp it
+  was derived from — the consumer sees the routing epoch, not the import
+  time.
+- **Status (Rev 14 / v0.3.2):** `reviewed-enabled` at the connector
+  level, but NOT scheduled in the 6-hour dataset pipeline: a full RIB is
+  a large artifact and the dataset payload cap (512 MiB) is reserved for
+  the discovery channel.  The owner runs it on demand
+  (`gseer source add rv --type routeviews …` + `gseer collect run --source rv`)
+  or in a separate lower-frequency workflow when ASN coverage growth is
+  wanted.  This register entry is what unblocks that run.
+
+## §J Passive DNS — published hostname/resolution history (connector `pdns`, v0.3.3)
+
+- **Sources (config `provider`):**
+  - `hackertarget` (default) — the HackerTarget hostsearch API
+    (`https://api.hackertarget.com/hostsearch/?q=<domain>`), a free,
+    key-less, rate-limited public interface answering
+    "hostname,address" lines for a queried domain.
+  - `wayback` — the Internet Archive Wayback Machine CDX index
+    (`https://web.archive.org/cdx/search/cdx?url=*.domain&output=json`),
+    the public archive of crawled URLs; every archived URL's hostname is
+    name-only evidence (the archive publishes what crawlers saw).
+- **What it yields:** the HOSTNAMES published under operator-named
+  domains — the historical layer the live `dns` connector (§C)
+  complements.  HackerTarget's address lines ride in evidence; no
+  service rows are ever produced (Discovery ≠ observation).
+- **Verdict:** reviewed-enabled.  Both interfaces are free and
+  key-less, the operator names every query (one per seed, config or
+  index mode), the shared client caps rate and body size, and the
+  shared-client user agent identifies GSEER.  Answers are recorded
+  with their LOOKUP time (`observed_at` is when GSEER saw the
+  publication, never the provider's historical time).
+- **Snapshot honesty:** passive-DNS-style datasets are aggregates of
+  third-party history.  GSEER records them as publication facts
+  (confidence "medium"), never as live reachability, and the provider
+  answers bound the facts (no guessing, no brute-force enumeration).
+- **Failure handling:** a provider's free-tier quota message is an
+  ERROR, never a hostname; one failed seed does not sink the others'
+  answers (per-seed isolation), and all-failed is an honest error.
+- **Downstream:** hostname assets feed the same index the DNS (§C),
+  PTR (§E) and CT layers build on; cross-source duplication against
+  those layers is visible in `gseer coverage`.
 
 ## How verdicts are enforced (architecture cross-reference)
 

@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package collect
 
@@ -40,6 +50,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/Lutfifakee-Project/gseer/internal/suppress"
@@ -95,6 +106,7 @@ func (dnsConnector) Collect(ctx Ctx) (*Batch, error) {
 		pass.collectCNAME(ctx.Context, r, canonical, now)
 		pass.collectMX(ctx.Context, r, canonical, now)
 		pass.collectNS(ctx.Context, r, canonical, now)
+		pass.collectTXT(ctx.Context, r, canonical, now)
 	}
 	return pass.batch(ctx.Config.Resolver, len(names))
 }
@@ -107,6 +119,7 @@ type dnsPass struct {
 	lookups int // valid seeds that reached the resolver
 	answers int // record answers kept as facts (all types)
 	mx, ns  int // per-type answer counters (Notes truthfulness)
+	txt     int // TXT strings recorded (Notes truthfulness, R39 P3)
 	errs    []error
 }
 
@@ -220,6 +233,29 @@ func (p *dnsPass) collectNS(ctx context.Context, r *net.Resolver, canonical stri
 	}
 }
 
+// collectTXT records the domain's published TXT strings (R39 P3).
+// Best-effort like MX/NS: a TXT lookup failure on a seed whose address
+// lookup succeeded is ordinary DNS (many names carry no TXT), not a
+// transport outage.  Honesty contract: a TXT string is free-form zone
+// data, NOT a hostname — the queried domain stays the asset and every
+// string rides in the evidence ("dns"."value"), so nothing invalid
+// ever becomes an asset and the record keeps its own provenance.
+func (p *dnsPass) collectTXT(ctx context.Context, r *net.Resolver, canonical string, now time.Time) {
+	txts, err := lookupTXT(ctx, r, canonical)
+	if err != nil {
+		return
+	}
+	for _, txt := range txts {
+		if strings.TrimSpace(txt) == "" {
+			continue
+		}
+		p.answers++
+		p.txt++
+		p.raws = append(p.raws, hostnameFact(canonical, "TXT", canonical, now,
+			map[string]any{"value": txt}))
+	}
+}
+
 // hostnameFact builds one hostname answer fact — the shape shared by
 // the CNAME, MX and NS record types (query name, record type, and the
 // type's own evidence fields; medium confidence like every recursive
@@ -257,7 +293,7 @@ func (p *dnsPass) batch(resolver string, seedCount int) (*Batch, error) {
 		Done: true, // point lookups: one batch per pass, no pagination
 		Notes: map[string]int{
 			"lookups": p.lookups, "answers": p.answers, "seeds": seedCount,
-			"mx": p.mx, "ns": p.ns,
+			"mx": p.mx, "ns": p.ns, "txt": p.txt,
 		},
 	}, nil
 }
@@ -327,6 +363,8 @@ var (
 	lookupNS = func(ctx context.Context, r *net.Resolver, host string) ([]*net.NS, error) {
 		return r.LookupNS(ctx, host)
 	}
+	// lookupTXT is shared with the ip2asn connector (same seam shape):
+	// the R39 TXT pass reuses it instead of declaring a duplicate.
 )
 
 func init() { register(dnsConnector{}) }

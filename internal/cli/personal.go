@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package cli
 
@@ -16,8 +26,6 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -65,6 +73,16 @@ func personalSearchService(cfg *config.Config) (*searchlite.Service, func(), err
 	if err != nil {
 		return nil, nil, err
 	}
+	// R48 hardening: search migrates the personal database to head like
+	// every other personal-mode command.  Migrate is a no-op at AT_HEAD,
+	// and after a binary upgrade it lets the FIRST search pick up new
+	// schema (e.g. the R44 maintained projections) instead of silently
+	// running at the old schema's performance shape — or failing on a
+	// column the new planner expects.
+	if _, err := sqlite.Migrate(context.Background(), res.DB); err != nil {
+		_ = res.DB.Close()
+		return nil, nil, err
+	}
 	return searchlite.New(res.DB), func() { _ = res.DB.Close() }, nil
 }
 
@@ -87,149 +105,9 @@ func personalStore(ctx context.Context, cfg *config.Config) (*sqlite.Store, *sql
 // ---------------------------------------------------------------------------
 
 // defaultPersonalDBPath is the personal database location:
-// $GSEER_HOME/gseer.db when GSEER_HOME is set (an EXPLICIT portable
-// install override — respected wherever it points), else the persistent
-// XDG state directory ($XDG_STATE_HOME/gseer/gseer.db, falling back to
-// $HOME/.local/state/gseer/gseer.db).
-//
-// FIX (Rev16 personal DB portability): the default used to be
-// configDir()/gseer.db — ~/.gseer/gseer.db, or GSEER_HOME/gseer.db for
-// portable installs.  When an acceptance harness pointed GSEER_HOME at a
-// volatile directory (the /tmp/asdlc-rollback/store.db finding, seeded by
-// the v0.3.1-era shared-index acceptance scripts that copied an index
-// bundle to $GSEER_HOME/store.db), a tmpfs recycle wiped the database and
-// it looked like a corruption.  Without GSEER_HOME the default now lives
-// in the XDG state directory — persistent, portable, and structurally
-// incapable of resolving under /tmp.  Explicit DSNs (config database.dsn
-// or --db-path) are always respected verbatim, and nothing existing is
-// ever moved, replaced, or deleted automatically — the legacy location is
-// only ever COPIED from (importLegacyPersonalDB below).
+// <platform config dir>/gseer.db (~/.gseer/gseer.db on Linux).
 func defaultPersonalDBPath() string {
-	if v := os.Getenv("GSEER_HOME"); v != "" {
-		return filepath.Join(v, "gseer.db")
-	}
-	return filepath.Join(config.DefaultStateDir(), "gseer.db")
-}
-
-// legacyPersonalDBPath is the PRE-Rev16 default location
-// (configDir()/gseer.db = ~/.gseer/gseer.db for plain installs).  It is
-// used ONLY as the import SOURCE for the safe migration below — never as
-// a write target — so an upgraded install keeps every pre-existing
-// database byte-identical in place.
-func legacyPersonalDBPath() string {
-	return filepath.Join(config.DefaultDir(), "gseer.db")
-}
-
-// importLegacyPersonalDB safely copies a legacy-default database to the
-// new default location, when (and only when):
-//   - the caller resolved dbPath from the DEFAULT (not an explicit DSN),
-//     and it equals the new default exactly;
-//   - the new location does not exist yet (never overwritten);
-//   - the legacy location exists as a regular file.
-//
-// The migration is a COPY followed by a byte-hash verification and an
-// atomic rename from a staged temp name in the TARGET directory; the
-// legacy source is never modified, moved, or deleted, so the only
-// rollback an operator ever needs is "delete the imported copy" (the
-// returned note spells that out along with the exact path).  On ANY
-// failure the staged copy is removed (inline rollback) and the error is
-// returned — a failed import leaves the pre-call state fully intact.
-//
-// GSEER_HOME installs skip the import: their legacy default and new
-// default are the same path, so there is nothing to migrate.
-func importLegacyPersonalDB(target string) (imported bool, note string, err error) {
-	source := legacyPersonalDBPath()
-	if filepath.Clean(source) == filepath.Clean(target) {
-		return false, "", nil // GSEER_HOME install: same path, nothing to migrate
-	}
-	if _, serr := os.Lstat(target); serr == nil {
-		return false, "", nil // new location already provisioned — never overwrite
-	} else if !errors.Is(serr, os.ErrNotExist) {
-		return false, "", fmt.Errorf("cannot inspect the new database location: %w", serr)
-	}
-	si, serr := os.Lstat(source)
-	if serr != nil {
-		if errors.Is(serr, os.ErrNotExist) {
-			return false, "", nil // no legacy database — nothing to import
-		}
-		return false, "", fmt.Errorf("cannot inspect the legacy database %s: %w", source, serr)
-	}
-	if !si.Mode().IsRegular() {
-		return false, "", fmt.Errorf("the legacy database %s is not a regular file — refusing to import (nothing was changed)", source)
-	}
-
-	if derr := os.MkdirAll(filepath.Dir(target), 0o700); derr != nil {
-		return false, "", fmt.Errorf("cannot create the database state directory: %w", derr)
-	}
-	staged := target + ".import-staging"
-	cleanup := func() { _ = os.Remove(staged) } // inline rollback for every failure path
-	if serr := copyFile(source, staged, 0o600); serr != nil {
-		cleanup()
-		return false, "", fmt.Errorf("importing the legacy database %s: %w", source, serr)
-	}
-	srcHash, serr := fileHashBytes(source)
-	if serr != nil {
-		cleanup()
-		return false, "", fmt.Errorf("hashing the legacy database for verification: %w", serr)
-	}
-	dstHash, serr := fileHashBytes(staged)
-	if serr != nil {
-		cleanup()
-		return false, "", fmt.Errorf("hashing the staged copy for verification: %w", serr)
-	}
-	if srcHash != dstHash {
-		cleanup()
-		return false, "", fmt.Errorf("the staged copy of %s failed byte verification — import aborted, the original is untouched", source)
-	}
-	if rerr := os.Rename(staged, target); rerr != nil {
-		cleanup()
-		return false, "", fmt.Errorf("finalizing the legacy database import: %w", rerr)
-	}
-	note = fmt.Sprintf("imported your existing personal database from the pre-Rev16 default\n"+
-		"         location %s (copy verified byte-identical; the original was NOT\n"+
-		"         touched).  To roll back: remove %s and point\n"+
-		"         database.dsn in your config back at the original path.", source, target)
-	return true, note, nil
-}
-
-// volatileDBPathNote returns a short human note when path sits under the
-// OS temp directory (tmpfs on most systems: recycled on reboot or by
-// periodic cleanup).  It is a WARNING, never an error: an explicit
-// override (GSEER_HOME portable install, --db-path, config DSN) is
-// respected exactly as given — the note only makes the consequence
-// visible so the /tmp/asdlc-rollback finding cannot happen silently.
-func volatileDBPathNote(path string) string {
-	abs, aerr := filepath.Abs(path)
-	if aerr != nil {
-		abs = filepath.Clean(path)
-	}
-	tmp := os.TempDir()
-	if tmp == "" {
-		return ""
-	}
-	if abs == tmp || strings.HasPrefix(abs, strings.TrimRight(tmp, string(os.PathSeparator))+string(os.PathSeparator)) {
-		return fmt.Sprintf("NOTE: the resolved database path is under the OS temp directory (%s) — "+
-			"content there is wiped on reboot/cleanup.  For a persistent install run "+
-			"`gseer setup --personal --db-path \"$HOME/.local/state/gseer/gseer.db\"` "+
-			"or unset GSEER_HOME.", tmp)
-	}
-	return ""
-}
-
-// fileHashBytes is the raw SHA-256 of a file, shared by the legacy
-// import verification.  It streams in chunks (a database can be large;
-// the hash must not load it whole) and opens read-only.
-func fileHashBytes(path string) (string, error) {
-	f, err := os.Open(path) //nolint:gosec // G304: the path is a resolved database file inside the operator's own state directory, not operator-supplied input
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = f.Close() }()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("%x", h.Sum(nil)), nil
+	return filepath.Join(configDir(), "gseer.db")
 }
 
 // runSetupPersonal provisions the personal database: creates the file
@@ -239,31 +117,11 @@ func runSetupPersonal(cmd *cobra.Command, dbPath string, loadFixtures bool) erro
 	out := cmd.OutOrStdout()
 	ctx := commandContext(cmd)
 
-	isDefaultPath := dbPath == ""
 	if dbPath == "" {
 		dbPath = defaultPersonalDBPath()
 	}
 	if abs, err := filepath.Abs(dbPath); err == nil {
 		dbPath = abs
-	}
-
-	// FIX (Rev16 portability): the default personal database lives in the
-	// persistent XDG state directory (or an explicit GSEER_HOME override);
-	// a default resolved from the PRE-Rev16 layout is imported (copied +
-	// byte-verified, never moved or deleted) once, and a path under the OS
-	// temp dir always earns an explicit warning — the /tmp/asdlc-rollback/
-	// store.db finding must be impossible to hit silently.
-	if note := volatileDBPathNote(dbPath); note != "" {
-		printf(out, "[note ] %s\n", note)
-	}
-	if isDefaultPath {
-		imported, importNote, ierr := importLegacyPersonalDB(dbPath)
-		if ierr != nil {
-			return fmt.Errorf("E_SETUP: %w", ierr)
-		}
-		if imported {
-			printf(out, "[ ok  ] %s\n", importNote)
-		}
 	}
 
 	if strings.HasPrefix(dbPath, "postgres://") {
@@ -348,6 +206,13 @@ func defaultConfigPath() string {
 	return config.DefaultConfigPath()
 }
 
+// configDir resolves the platform GSEER state directory (delegates to the
+// config package — the same source of truth backs the database file path
+// and the shared-index directory).
+func configDir() string {
+	return config.DefaultDir()
+}
+
 // writePersonalConfig writes the minimal personal config (hand-rolled
 // YAML so no unused sections are serialized).
 func writePersonalConfig(path string, dbPath string) error {
@@ -412,7 +277,7 @@ func runPersonalSearch(out io.Writer, cfg *config.Config, q search.Query, fr fac
 			return nil
 		}
 	}
-	renderSearchWithFacets(out, res, fres, flags.output)
+	renderSearchWithFacets(out, res, fres, jsonOutput(), q.Fields)
 	return nil
 }
 

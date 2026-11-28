@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package collect
 
@@ -30,8 +40,10 @@ package collect
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -69,8 +81,35 @@ func (ip2asnConnector) Collect(ctx Ctx) (*Batch, error) {
 	}
 	var names []string
 	var err error
+	seedWalk := false
 	if ctx.Config.SeedMode == "config" {
 		names = ctx.Config.Seeds
+	} else if ctx.IndexSeedsAfter != nil {
+		// P1 (R36) seed-walk; R37: PER-FAMILY cursors.  The checkpoint
+		// carries BOTH walk positions as "v4=<last v4 seed>|v6=<last v6
+		// seed>" (a bare legacy value means the v4 cursor only).  Each
+		// run pages the IPv4 and IPv6 halves of the corpus separately in
+		// stable value order — with a single text-order cursor the v6
+		// range sat unreachable behind tens of thousands of v4 values —
+		// and wraps each family at its own end.  Consecutive runs enrich
+		// DIFFERENT addresses in BOTH families (the DNS connector's R35
+		// pattern, doubled).
+		seedWalk = true
+		afterV4, afterV6 := splitWalkCursor(strings.TrimSpace(ctx.Cursor))
+		budget := ctx.Limit
+		if budget <= 0 {
+			budget = DefaultRunLimit
+		}
+		half := budget - budget/2
+		v4names, err := walkFamily(ctx, afterV4, half, false)
+		if err != nil {
+			return nil, err
+		}
+		v6names, err := walkFamily(ctx, afterV6, budget-half, true)
+		if err != nil {
+			return nil, err
+		}
+		names = append(v4names, v6names...)
 	} else {
 		names, err = ctx.IndexSeeds("ip", ctx.Limit)
 		if err != nil {
@@ -78,8 +117,24 @@ func (ip2asnConnector) Collect(ctx Ctx) (*Batch, error) {
 		}
 	}
 
+	// P1 (R36) resolver fallback: on a RESTRICTED vantage the system
+	// resolver may SERVFAIL whole zones (the R35 evidence: cymru zones
+	// dead while example.com answers).  With no operator resolver
+	// configured, the FIRST resolver-level failure (timeout/temporary —
+	// NXDOMAIN is an ANSWER, never a trigger) switches the pass to the
+	// built-in public resolvers; the fallback is tallied in the batch
+	// notes, never silent, and the SOURCE stays Cymru.
 	r := dnsResolver(ctx.Config.Resolver)
+	fellBack := false
 	now := time.Now().UTC()
+	// ip2ASNDialTimeout bounds EVERY TXT query (R36 live evidence: a
+	// restricted vantage's system resolver can blackhole a read
+	// forever — the connector never relies on an unbounded transport).
+	lookup := func(r *net.Resolver, name string) ([]string, error) {
+		lctx, cancel := context.WithTimeout(ctx.Context, ip2ASNDialTimeout)
+		defer cancel()
+		return lookupTXT(lctx, r, name)
+	}
 	raws := make([]RawFact, 0, len(names))
 	asks, hits := 0, 0
 	var lookupErrs []error
@@ -95,7 +150,14 @@ func (ip2asnConnector) Collect(ctx Ctx) (*Batch, error) {
 		}
 		asks++
 
-		txt, qerr := lookupTXT(ctx.Context, r, reverseIP(addr)+"."+ip2ASNDomainOf(addr))
+		txt, qerr := lookup(r, reverseIP(addr)+"."+ip2ASNDomainOf(addr))
+		if qerr != nil && !fellBack && ctx.Config.Resolver == "" && resolverLevelFailure(qerr) {
+			if fr := pickFallbackResolver(lookup, reverseIP(addr)+"."+ip2ASNDomainOf(addr)); fr != nil {
+				r = fr
+				fellBack = true
+				txt, qerr = lookup(r, reverseIP(addr)+"."+ip2ASNDomainOf(addr))
+			}
+		}
 		if qerr != nil {
 			lookupErrs = append(lookupErrs, qerr)
 			continue
@@ -104,6 +166,18 @@ func (ip2asnConnector) Collect(ctx Ctx) (*Batch, error) {
 			continue // no route/answer published for this address
 		}
 		rec, perr := parseCymruOrigin(txt[0])
+		if perr == nil {
+			// P0 (R36) integrity: the origin service answers with the
+			// longest-prefix covering route — the returned prefix MUST
+			// actually contain the queried address.  A prefix that does
+			// not cover it is a malformed/mis-mapped answer: audit-only,
+			// never enrichment, never an invented attribution.
+			if pfx, cerr := netip.ParsePrefix(rec.Prefix); cerr != nil {
+				perr = fmt.Errorf("origin answer %q: prefix field: %v", rec.Raw, cerr)
+			} else if ipa, aerr := netip.ParseAddr(addr); aerr != nil || !pfx.Contains(ipa) {
+				perr = fmt.Errorf("origin answer %q: prefix %s does not cover %s", rec.Raw, rec.Prefix, addr)
+			}
+		}
 		if perr != nil {
 			// Malformed answer: keep it for audit, do not enrich.
 			raws = append(raws, RawFact{
@@ -118,7 +192,7 @@ func (ip2asnConnector) Collect(ctx Ctx) (*Batch, error) {
 		// never blocks the ASN enrichment itself).
 		asName := ""
 		if rec.ASN > 0 {
-			nameTXT, nerr := lookupTXT(ctx.Context, r, fmt.Sprintf("AS%d.%s", rec.ASN, asnNameDomain))
+			nameTXT, nerr := lookup(r, fmt.Sprintf("AS%d.%s", rec.ASN, asnNameDomain))
 			if nerr == nil && len(nameTXT) > 0 {
 				asName = parseCymruASName(nameTXT[0])
 			}
@@ -142,17 +216,151 @@ func (ip2asnConnector) Collect(ctx Ctx) (*Batch, error) {
 		})
 	}
 
-	// Every lookup failed → transport down, retryable.
-	if asks > 0 && hits == 0 && len(lookupErrs) == asks {
+	// Every lookup failed → only a TRANSPORT failure is retryable.  An
+	// all-NXDOMAIN pass is an honest ZERO-HIT batch (the source simply
+	// publishes nothing for these addresses — never fabricated, never
+	// an error); a resolver-level total failure stays a hard error.
+	resolverDown := 0
+	for _, lerr := range lookupErrs {
+		if resolverLevelFailure(lerr) {
+			resolverDown++
+		}
+	}
+	if asks > 0 && hits == 0 && len(lookupErrs) == asks && resolverDown == len(lookupErrs) {
 		return nil, fmt.Errorf("ip2asn: all %d lookups failed (resolver %q): %v",
 			asks, resolverLabel(ctx.Config.Resolver), lookupErrs[0])
 	}
-	return &Batch{
-		Raws:  raws,
-		Done:  true,
-		Notes: map[string]int{"asks": asks, "hits": hits, "seeds": len(names)},
-	}, nil
+	notes := map[string]int{"asks": asks, "hits": hits, "seeds": len(names)}
+	if fellBack {
+		notes["resolver_fallback"] = 1
+	}
+	var lastV4, lastV6 string
+	if seedWalk {
+		for _, n := range names {
+			if strings.Contains(n, ":") {
+				lastV6 = n
+			} else {
+				lastV4 = n
+			}
+		}
+		notes["v4_seeds"] = len(names) - countV6(names)
+		notes["v6_seeds"] = countV6(names)
+	}
+	batch := &Batch{Raws: raws, Done: true, Notes: notes}
+	if seedWalk {
+		if len(lastV4) > 0 || len(lastV6) > 0 {
+			// The per-family walk positions = the LAST seed seen in each
+			// family this pass (enriched or not — coverage advances by
+			// value).
+			batch.Cursor = "v4=" + lastV4 + "|v6=" + lastV6
+		} else if strings.TrimSpace(ctx.Cursor) != "" {
+			batch.Cursor = strings.TrimSpace(ctx.Cursor)
+		}
+	}
+	return batch, nil
 }
+
+// splitWalkCursor parses the R37 composite walk cursor.  A bare legacy
+// value (R36 single-cursor format) is the v4 position; the v6 walk then
+// starts fresh.  Returns the (v4, v6) positions.
+func splitWalkCursor(cursor string) (string, string) {
+	if i := strings.Index(cursor, "|"); i >= 0 {
+		v4 := strings.TrimPrefix(cursor[:i], "v4=")
+		v6 := strings.TrimPrefix(cursor[i+1:], "v6=")
+		return v4, v6
+	}
+	return cursor, ""
+}
+
+// walkFamily pages ONE address family's index slice: the seeds strictly
+// after `after` whose TEXT shape matches the family (':' present for
+// IPv6), wrapping to the start of the corpus when the family page is
+// exhausted.  lastSeed is returned via the out parameter so the caller
+// can persist the family cursor even when the page straddles both
+// families' value ranges.
+func walkFamily(ctx Ctx, after string, budget int, v6 bool) ([]string, error) {
+	// Preferred path (R37): a family-aware index query — the walk
+	// never depends on text-order luck to reach the other family.
+	if ctx.IndexSeedsFamilyAfter != nil {
+		names, err := ctx.IndexSeedsFamilyAfter("ip", after, budget, v6)
+		if err == nil && len(names) == 0 && after != "" {
+			names, err = ctx.IndexSeedsFamilyAfter("ip", "", budget, v6) // wrap
+		}
+		return names, err
+	}
+	filter := func(raw []string) []string {
+		family := make([]string, 0, budget)
+		for _, n := range raw {
+			if strings.Contains(n, ":") != v6 {
+				continue
+			}
+			family = append(family, n)
+			if len(family) == budget {
+				break
+			}
+		}
+		return family
+	}
+	names, err := ctx.IndexSeedsAfter("ip", after, budget*walkFamilyScanFactor)
+	if err != nil {
+		return nil, err
+	}
+	family := filter(names)
+	// Wrap on a FAMILY-empty page (not a page-empty one): the text
+	// order interleaves both families, so a page can hold only the
+	// other family's values while this family's slice is exhausted.
+	if len(family) == 0 && after != "" {
+		wrapped, werr := ctx.IndexSeedsAfter("ip", "", budget*walkFamilyScanFactor)
+		if werr != nil {
+			return nil, werr
+		}
+		family = filter(wrapped)
+	}
+	return family, nil
+}
+
+// countV6 counts the IPv6 seeds in a walk page (':' shape test).
+func countV6(names []string) int {
+	n := 0
+	for _, x := range names {
+		if strings.Contains(x, ":") {
+			n++
+		}
+	}
+	return n
+}
+
+// walkFamilyScanFactor widens the family page scan so a family slice
+// can be filled even when the text order interleaves both families
+// heavily (the v4 and v6 value ranges interleave in TEXT sort order).
+const walkFamilyScanFactor = 4
+
+// resolverLevelFailure reports whether a TXT lookup error means the
+// RESOLVER PATH is broken (timeout / temporary / server misbehaving) —
+// as opposed to an authoritative answer like NXDOMAIN (IsNotFound).
+func resolverLevelFailure(err error) bool {
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return dnsErr.IsTimeout || dnsErr.IsTemporary
+	}
+	return false
+}
+
+// pickFallbackResolver probes the built-in public resolvers with the
+// failing query itself and returns the first one that answers (nil when
+// none does — the pass then keeps its original errors).
+func pickFallbackResolver(lookup func(*net.Resolver, string) ([]string, error), name string) *net.Resolver {
+	for _, addr := range []string{"8.8.8.8", "1.1.1.1"} {
+		r := dnsResolver(addr)
+		if _, err := lookup(r, name); err == nil {
+			return r
+		}
+	}
+	return nil
+}
+
+// ip2ASNDialTimeout is the per-query transport deadline (see lookup).
+const ip2ASNDialTimeout = 5 * time.Second
 
 // cymruOrigin is one parsed origin-AS answer.
 type cymruOrigin struct {

@@ -1,17 +1,30 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package observe
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Lutfifakee-Project/gseer/internal/storage"
@@ -62,8 +75,11 @@ type TLSResult struct {
 	SubjectCN   string   `json:"cert_subject_cn,omitempty"`
 	IssuerCN    string   `json:"cert_issuer_cn,omitempty"`
 	NotAfter    string   `json:"cert_expiry,omitempty"`
+	NotBefore   string   `json:"cert_not_before,omitempty"`
 	SANDNSNames []string `json:"cert_sans_dns,omitempty"`
 	Serial      string   `json:"cert_serial,omitempty"`
+	IssuerOrg   string   `json:"cert_issuer_org,omitempty"`
+	CertSHA256  string   `json:"cert_sha256,omitempty"`
 	Facts       int      `json:"facts"`
 	Ingested    int      `json:"ingested"`
 	Deduped     int      `json:"deduped"`
@@ -147,9 +163,12 @@ func (o *TLSObserver) Run(ctx context.Context, host string, port int) (*TLSResul
 		cipher     string
 		subjectCN  string
 		issuerCN   string
+		issuerOrg  string
+		notBefore  string
 		notAfter   string
 		sans       []string
 		serial     string
+		certSHA    string
 	)
 	if derr == nil {
 		cfg := &tls.Config{
@@ -174,9 +193,17 @@ func (o *TLSObserver) Run(ctx context.Context, host string, port int) (*TLSResul
 				leaf := cs.PeerCertificates[0]
 				subjectCN = leaf.Subject.CommonName
 				issuerCN = leaf.Issuer.CommonName
+				if orgs := leaf.Issuer.Organization; len(orgs) > 0 {
+					issuerOrg = strings.Join(orgs, ", ")
+				}
 				notAfter = leaf.NotAfter.UTC().Format(time.RFC3339)
+				notBefore = leaf.NotBefore.UTC().Format(time.RFC3339)
 				sans = leaf.DNSNames
 				serial = leaf.SerialNumber.Text(16)
+				// R36: the SHA-256 digest of the DER leaf — the stable
+				// fingerprint for certificate-diff search (cert_sha256).
+				sum := sha256.Sum256(leaf.Raw)
+				certSHA = hex.EncodeToString(sum[:])
 			}
 		}
 		_ = tconn.Close()
@@ -205,12 +232,21 @@ func (o *TLSObserver) Run(ctx context.Context, host string, port int) (*TLSResul
 	if serial != "" {
 		evidence["tls"].(map[string]any)["cert_serial"] = serial
 	}
+	if issuerOrg != "" {
+		evidence["tls"].(map[string]any)["cert_issuer_org"] = issuerOrg
+	}
+	if certSHA != "" {
+		evidence["tls"].(map[string]any)["cert_sha256"] = certSHA
+	}
 	if failure != "" {
 		evidence["scan"].(map[string]any)["result"] = "failed"
 		evidence["scan"].(map[string]any)["error"] = failure
 	} else {
 		evidence["scan"].(map[string]any)["result"] = "observed"
 		evidence["tls"].(map[string]any)["cert_expiry"] = notAfter
+		if notBefore != "" {
+			evidence["tls"].(map[string]any)["cert_not_before"] = notBefore
+		}
 	}
 
 	facts := scanFacts(now, sourceID, SourceTLS, ProvenanceTLS, dec.Host, dec.IP, port,
@@ -226,7 +262,10 @@ func (o *TLSObserver) Run(ctx context.Context, host string, port int) (*TLSResul
 	res.CipherSuite = cipher
 	res.SubjectCN = subjectCN
 	res.IssuerCN = issuerCN
+	res.IssuerOrg = issuerOrg
+	res.CertSHA256 = certSHA
 	res.NotAfter = notAfter
+	res.NotBefore = notBefore
 	res.SANDNSNames = sans
 	res.Serial = serial
 	res.Facts = len(facts)

@@ -1,32 +1,60 @@
-# GSEER — Troubleshooting
+# GSEER v0.3.2 — Troubleshooting & Selfcheck
 
-Common symptoms, what they mean, and how to recover.  Every command has
-`--help`; `gseer doctor` checks the installation state read-only.
+## Diagnosis cepat
+1. `./bin/gseer version` — harus mencetak `gseer v0.3.2` (commit dan
+   built_at dicetak juga; `unknown` normal untuk build lokal `make build`).
+2. `./bin/gseer selfcheck` — menjalankan invarian index/proyeksi/
+   preset. Semua baris harus `[ ok ]`; baris `FAIL` menunjukkan index
+   korup → hapus `$(GSEER_HOME)/gseer.db` (backup dulu bila berisi data
+   Anda) lalu `gseer setup` ulang.
+3. `./bin/gseer setup` — migrasi schema; output `[ ok ] migrations:
+   schema at head v15 (AT_HEAD)` berarti inisialisasi selesai
+   (v15 = versi head logis yang dicetak CLI; file migrasi internal
+   bernomor lebih granular). Jalankan ulang kapan saja; aman
+   (idempotent).
 
-| Symptom | What it means / what to do |
-| --- | --- |
-| `commit: unknown` / `built_at: unknown` in `gseer version` | Normal for `go install` builds — module downloads carry no VCS metadata. The version is still correct; release binaries carry both fields. |
-| `E_CONFIG_REQUIRED: database.dsn …` | No config anywhere and the command bypassed the zero-config path. Run `gseer setup` (provisions personal mode + writes the config). |
-| `E_SOURCE_TERMS` when enabling/running a source | That connector's provider terms are not cleared for automated collection (`docs/SOURCES.md`). This is a policy gate, not a bug. |
-| `E_QUERY_*` on search/facets | The GQL did not validate. The error names the position and a `Try:` fix; `gseer search '<q>' --validate` checks without touching the DB. |
-| Doctor reports `HINT index: EMPTY` | Normal before the first data import. Run `gseer setup` (bootstrap + dataset import), or register a source and run `gseer collect run`. |
-| `[skip ] context: egress IP undetectable` during setup | The egress echo did not answer (offline?). Nothing was guessed — register a source manually with `gseer source add`. |
-| `E_DATASET_CHECKSUM` on setup/dataset update | The downloaded dataset payload did not match its manifest — the import is refused and the database is untouched. Retry `gseer dataset update` (a fresh read succeeds once the release channel is consistent). |
-| `[warn ] dataset: …` during setup | The dataset channel was unreachable. Setup continues with your local bootstrap; run `gseer dataset update` later. |
-| `E_SCOPE_DENIED` on `scan` | No live scope covers the target/protocol/port — register one with `gseer scope add`. Denials never touch the network. |
-| `E_DB_BACKUP: …` | The backup target must differ from the live database file. |
-| Migration failed mid-setup | `gseer db migrate status`, then `gseer db migrate diagnose`; `force` exists for recovery and asks for confirmation. |
+## Variabel lingkungan
+- `GSEER_HOME` — lokasi home GSEER (default `~/.gseer`). Semua state
+  personal (gseer.db, config.yaml, cursor) ada di sini.
+- `GSEER_PROFILE` — profil konfigurasi alternatif.
+- **Jangan men-set `GSEER_HOME` saat menjalankan `go test`** — merusak
+  isolasi test (first-run/profile). Suite dirancang dijalankan tanpa
+  variabel ini.
 
-## Backup, uninstall, start-over
+## Error umum
+- `E_SOURCE_TERMS` — connector/`data_sources` diaktifkan padahal
+  verdict review-nya bukan `reviewed-enabled` (lihat docs/SOURCES.md).
+  Perbaikan: matikan sumber tersebut atau turunkan verdict-nya; runner
+  menolak sumber tanpa review — ini desain, bukan bug.
+- Dataset manifest gagal diunduh/diparse — `gseer dataset update`
+  mengunduh manifest terpusat dan memverifikasi checksum payload-nya.
+  Field manifest yang tidak dikenal (mis. `signature` sisi-publisher)
+  diabaikan — **CLI ini TIDAK memverifikasi tanda tangan manifest**;
+  integritas data dijaga oleh checksum payload + gate `schema_version`.
+  Bila unduh gagal (offline), setup tetap lanjut dengan local discovery;
+  ulangi `gseer dataset update` saat online.
+- Query "0 result(s)" padahal index terisi — cakupan = dataset yang
+  di-ingest; periksa `gseer setup --load-fixtures` untuk evaluasi,
+  atau ingest dataset Anda (docs/DATASET.md, docs/IMPORT-FORMAT.md).
+  Ingat: tanpa dataset/scan, index kosong.
+- Relevance "bukan exact dulu" pada set besar — set matched > 50.000
+  baris jatuh ke recency + notice; paksa ranking dengan
+  `--sort relevance:asc`.
+- Build gagal: pastikan Go 1.26+ (`go version`); tidak perlu CGO untuk
+  mode personal (SQLite embedded modernc).
+- Database terkunci (SQLite): satu proses `gseer` aktif per file DB
+  pada saat operasi tulis; hentikan proses lain yang memakai
+  GSEER_HOME yang sama.
 
-```bash
-gseer db backup --out ~/gseer-backup.db   # 1. take a snapshot first
-rm "$(command -v gseer)"                  # 2. remove the binary (GOPATH/bin)
-rm -rf ~/.gseer                           # 3. remove data + config (this deletes your index!)
-```
+## Mode PostgreSQL
+Source parity lengkap di kode, tetapi jalur eksekusi PG LIVE belum
+pernah tervalidasi oleh pengembangan (lihat KNOWN-LIMITATIONS.md §4).
+Konfigurasi: docs/CONFIG.md + docs/DEPLOYMENT.md; gunakan migrasi
+yang sama. Laporkan hasil PG Anda sebagai temuan, bukan asumsi.
 
-To start over but keep your data: keep `gseer.db`, delete only
-`~/.gseer/config.yaml`, and run `gseer` again — it re-initializes around
-the existing database.
-
-To move to another machine: copy `gseer.db` (and `config.yaml`), done.
+## Verifikasi paket (bila hasil tidak sesuai README-RELEASE)
+1. `sha256sum -c SHA256SUMS.txt` di dalam paket — 441 berkas harus OK.
+2. Bandingkan `./bin/gseer version` dengan identitas di
+   RELEASE-MANIFEST.md — harus sama (v0.3.2).
+3. Bila checksum tidak cocok: paket rusak saat transfer — unduh ulang;
+   jangan patch manual.

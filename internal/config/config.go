@@ -1,8 +1,18 @@
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package config
 
@@ -69,28 +79,14 @@ type Config struct {
 // Search stays LOCAL: the dataset only FEEDS the index — there is no
 // shared-index query service to depend on.
 //
-// Integrity model (P0-1, v0.3.2): the manifest is SIGNED with Ed25519 —
-// every consumer verifies the signature against the keyring embedded in
-// its binary BEFORE downloading the payload (fail-closed); the payload
-// SHA-256 in the signed manifest binds the payload bytes, and a
-// checksum mismatch refuses the import outright.
+// Integrity model (deliberate, owner-reviewed Rev 8 decision): payload
+// SHA-256 in the manifest + HTTPS transport — no third-party signing
+// ceremony.  A checksum mismatch refuses the import outright.
 type DatasetConfig struct {
 	// ManifestURL is the dataset manifest location.  Empty means the
 	// official project channel (OfficialDatasetManifestURL).  Plain
 	// http:// is accepted ONLY for loopback hosts (local testing).
 	ManifestURL string `yaml:"manifest_url"`
-	// TrustedRedirectHosts explicitly allows the dataset fetcher to
-	// follow a redirect to these hosts (R4 P0-5; cross-host hops are
-	// otherwise refused).  UNSET (key absent) keeps the product default:
-	// the GitHub release-asset CDN hosts the official project channel
-	// redirects to (release-assets.githubusercontent.com and the legacy
-	// objects.githubusercontent.com).  When SET, the list replaces the
-	// default wholesale — exact hostnames only (case-insensitive, ports
-	// are not part of the match, no wildcards); an empty list trusts
-	// nothing.  Trust never bypasses the transport rules, the
-	// prohibited-destination check, or the signature/checksum
-	// verification of the downloaded artifact.
-	TrustedRedirectHosts []string `yaml:"trusted_redirect_hosts"`
 }
 
 // OfficialDatasetManifestURL is the default central-dataset manifest

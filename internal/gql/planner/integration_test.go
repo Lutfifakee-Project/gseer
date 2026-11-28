@@ -1,10 +1,20 @@
 //go:build integration
 
 // GSEER — internet-asset search engine.
-// Copyright (c) 2026 Lutfifakee Project
+// Copyright (C) 2026  The GSEER Authors
 //
-// SPDX-License-Identifier: MIT
-// This file is part of GSEER and is licensed under the MIT License — see LICENSE.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package planner
 
@@ -191,28 +201,7 @@ func pIntRun(t *testing.T, pool *pgxpool.Pool, p *Plan) []resultRow {
 	var out []resultRow
 	for rows.Next() {
 		var r resultRow
-		// v0.3.2-r2: the plan SQL now ALWAYS carries the mandatory
-		// identity/metadata columns next to the requested projection, so
-		// bind BY COLUMN NAME (the production scanner does the same);
-		// unknown columns scan into a discard buffer.
-		fds := rows.FieldDescriptions()
-		dests := make([]any, len(fds))
-		for i, fd := range fds {
-			switch fd.Name {
-			case "port":
-				dests[i] = &r.Port
-			case "asset_value":
-				dests[i] = &r.AssetValue
-			case "http_title":
-				dests[i] = &r.HTTPTitle
-			case "row_kind":
-				dests[i] = &r.RowKind
-			default:
-				var discard any
-				dests[i] = &discard
-			}
-		}
-		if err := rows.Scan(dests...); err != nil {
+		if err := rows.Scan(&r.Port, &r.AssetValue, &r.HTTPTitle, &r.RowKind); err != nil {
 			t.Fatalf("Scan: %v", err)
 		}
 		out = append(out, r)
@@ -499,27 +488,8 @@ func TestPlanCursorPagination(t *testing.T) {
 	if !r1.Next() {
 		t.Fatalf("page1: no rows")
 	}
-	// v0.3.2-r2: the plan SQL always carries the mandatory columns too —
-	// bind by column name (the production scanner does the same).
-	{
-		fds := r1.FieldDescriptions()
-		dests := make([]any, len(fds))
-		for i, fd := range fds {
-			switch fd.Name {
-			case "row_id":
-				dests[i] = &rowID
-			case "row_kind":
-				dests[i] = &rowKind
-			case "port":
-				dests[i] = &portVal
-			default:
-				var discard any
-				dests[i] = &discard
-			}
-		}
-		if err := r1.Scan(dests...); err != nil {
-			t.Fatalf("Scan: %v", err)
-		}
+	if err := r1.Scan(&rowID, &rowKind, &portVal); err != nil {
+		t.Fatalf("Scan: %v", err)
 	}
 	r1.Close()
 
